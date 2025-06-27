@@ -1,0 +1,16 @@
+[package]
+name = "hccr"
+version = "0.1.0"
+edition = "2024"
+authors = ["Ben Spitz <diracdeltafunk@users.noreply.github.com>"]
+
+[lib]
+name = "hccrlib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "hccrdemo"
+path = "src/bin/main.rs"
+
+[dependencies]
+binary_matrix = "0.1.4"
