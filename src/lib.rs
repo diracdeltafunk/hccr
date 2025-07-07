@@ -1,1 +1,1 @@
-mod cong_lattice;
+pub mod cong_lattice;
