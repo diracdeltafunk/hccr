@@ -37,11 +37,95 @@ impl CongLattice {
             restriction_cache: HashMap::new(),
         }
     }
-    // Additional methods for manipulating the lattice go here.
+    pub fn leq(&self, a: usize, b: usize) -> bool {
+        assert!(
+            a < self.num_elements && b < self.num_elements,
+            "Indices out of bounds."
+        );
+        self.poset_relation[a][b]
+    }
+    pub fn meet(&mut self, a: usize, b: usize) -> usize {
+        assert!(
+            a < self.num_elements && b < self.num_elements,
+            "Indices out of bounds."
+        );
+        if let Some(&result) = self.meet_cache.get(&(a, b)) {
+            return result;
+        }
+        // Find the greatest lower bound (meet) of a and b.
+        let mut meet = None;
+        for i in 0..self.num_elements {
+            if self.leq(i, a) && self.leq(i, b) {
+                if meet.is_none() || self.leq(meet.unwrap(), i) {
+                    meet = Some(i);
+                }
+            }
+        }
+        let result = meet.expect("Meet not found");
+        self.meet_cache.insert((a, b), result);
+        result
+    }
+    pub fn join(&mut self, a: usize, b: usize) -> usize {
+        assert!(
+            a < self.num_elements && b < self.num_elements,
+            "Indices out of bounds."
+        );
+        if let Some(&result) = self.join_cache.get(&(a, b)) {
+            return result;
+        }
+        // Find the least upper bound (join) of a and b.
+        let mut join = None;
+        for i in 0..self.num_elements {
+            if self.leq(a, i) && self.leq(b, i) {
+                if join.is_none() || self.leq(i, join.unwrap()) {
+                    join = Some(i);
+                }
+            }
+        }
+        let result = join.expect("Join not found");
+        self.join_cache.insert((a, b), result);
+        result
+    }
+    // Returns the sublattice spanned by `elements` and a vector v such that
+    // v[i] is the index of the i-th element of the sublattice in the original
+    // lattice.
+    pub fn sublattice(self, elements: Vec<usize>) -> (Self, Vec<usize>) {
+        unimplemented!("sublattice method is not yet implemented");
+    }
 }
 
 impl Debug for CongLattice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "CongLattice with {} elements", self.num_elements)
+    }
+}
+
+// Test meet and join
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_meet() {
+        let mut lattice = CongLattice::total_order(5);
+        // Check that meet(a,b) == a iff a <= b
+        for i in 0..5 {
+            for j in i..5 {
+                assert_eq!(lattice.meet(i, j), i);
+                assert_eq!(lattice.meet(j, i), i);
+            }
+        }
+    }
+
+    #[test]
+    fn test_join() {
+        let mut lattice = CongLattice::total_order(5);
+        // Check that join(a,b) == b iff a <= b
+        for i in 0..5 {
+            for j in i..5 {
+                assert_eq!(lattice.join(i, j), j);
+                assert_eq!(lattice.join(j, i), j);
+            }
+        }
     }
 }
