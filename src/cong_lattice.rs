@@ -1,4 +1,3 @@
-use binary_matrix::BinaryMatrix64;
 use std::collections::HashMap;
 
 mod cong_lattice {
@@ -8,8 +7,8 @@ mod cong_lattice {
     // cache restriction / meet / join / etc. operations.
     pub struct CongLattice {
         pub num_elements: usize,
-        poset_relation: BinaryMatrix64,
-        equivalence_relation: BinaryMatrix64,
+        poset_relation: Vec<Vec<bool>>,
+        equivalence_relation: Vec<Vec<bool>>,
         meet_cache: HashMap<(usize, usize), usize>,
         join_cache: HashMap<(usize, usize), usize>,
         restriction_cache: HashMap<(usize, usize), Vec<(usize, usize)>>,
@@ -19,16 +18,20 @@ mod cong_lattice {
         // Construct a total order with trivial equivalence relation.
         pub fn total_order(num_elements: usize) -> Self {
             assert!(num_elements > 0, "Number of elements must be positive.");
-            let mut poset_relation = BinaryMatrix64::zero(num_elements, num_elements);
+            let poset_relation = vec![vec![false; num_elements]; num_elements];
             for i in 0..num_elements {
                 for j in i..num_elements {
-                    poset_relation[(i, j)] = 1;
+                    poset_relation[i][j] = true;
                 }
+            }
+            let equivalence_relation = vec![vec![false; num_elements]; num_elements];
+            for i in 0..num_elements {
+                equivalence_relation[i][i] = true;
             }
             CongLattice {
                 num_elements,
                 poset_relation,
-                equivalence_relation: BinaryMatrix64::identity(num_elements),
+                equivalence_relation,
                 meet_cache: HashMap::new(),
                 join_cache: HashMap::new(),
                 restriction_cache: HashMap::new(),

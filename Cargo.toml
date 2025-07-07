@@ -13,4 +13,3 @@ name = "hccrdemo"
 path = "src/bin/main.rs"
 
 [dependencies]
-binary_matrix = "0.1.4"
