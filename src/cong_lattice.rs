@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 
 // A CongLattice encodes the data of a finite lattice, together with an
-// equivalence relation on its elements which is a congruence relation in the
-// sense of universal algebra. The data structure also has some hash tables to
-// cache restriction / meet / join / etc. operations.
+// equivalence relation on its elements which is a congruence relation on the
+// underlying poset in the sense of universal algebra. The data structure also
+// has some hash tables to cache (co)restriction / meet / join / etc.
 pub struct CongLattice {
     pub num_elements: usize,
     poset_relation: Vec<Vec<bool>>,
@@ -12,6 +12,7 @@ pub struct CongLattice {
     meet_cache: HashMap<(usize, usize), usize>,
     join_cache: HashMap<(usize, usize), usize>,
     restriction_cache: HashMap<(usize, usize), Vec<(usize, usize)>>,
+    corestriction_cache: HashMap<(usize, usize), Vec<(usize, usize)>>,
 }
 
 impl CongLattice {
@@ -35,6 +36,7 @@ impl CongLattice {
             meet_cache: HashMap::new(),
             join_cache: HashMap::new(),
             restriction_cache: HashMap::new(),
+            corestriction_cache: HashMap::new(),
         }
     }
     pub fn leq(&self, a: usize, b: usize) -> bool {
@@ -43,6 +45,26 @@ impl CongLattice {
             "Indices out of bounds."
         );
         self.poset_relation[a][b]
+    }
+    pub fn equiv(&self, a: usize, b: usize) -> bool {
+        assert!(
+            a < self.num_elements && b < self.num_elements,
+            "Indices out of bounds."
+        );
+        self.equivalence_relation[a][b]
+    }
+    // Check if [a] <= [b] in the quotient poset
+    pub fn preceq(&self, a: usize, b: usize) -> bool {
+        assert!(
+            a < self.num_elements && b < self.num_elements,
+            "Indices out of bounds."
+        );
+        for i in 0..self.num_elements {
+            if self.equivalence_relation[a][i] && self.poset_relation[i][b] {
+                return true;
+            }
+        }
+        false
     }
     pub fn meet(&mut self, a: usize, b: usize) -> usize {
         assert!(
@@ -53,10 +75,10 @@ impl CongLattice {
             return result;
         }
         // Find the greatest lower bound (meet) of a and b.
-        let mut meet = None;
+        let mut meet: Option<usize> = None;
         for i in 0..self.num_elements {
-            if self.leq(i, a) && self.leq(i, b) {
-                if meet.is_none() || self.leq(meet.unwrap(), i) {
+            if self.poset_relation[i][a] && self.poset_relation[i][b] {
+                if meet.is_none() || self.poset_relation[meet.unwrap()][i] {
                     meet = Some(i);
                 }
             }
@@ -74,10 +96,10 @@ impl CongLattice {
             return result;
         }
         // Find the least upper bound (join) of a and b.
-        let mut join = None;
+        let mut join: Option<usize> = None;
         for i in 0..self.num_elements {
-            if self.leq(a, i) && self.leq(b, i) {
-                if join.is_none() || self.leq(i, join.unwrap()) {
+            if self.poset_relation[a][i] && self.poset_relation[b][i] {
+                if join.is_none() || self.poset_relation[i][join.unwrap()] {
                     join = Some(i);
                 }
             }
@@ -86,11 +108,48 @@ impl CongLattice {
         self.join_cache.insert((a, b), result);
         result
     }
-    // Returns the sublattice spanned by `elements` and a vector v such that
-    // v[i] is the index of the i-th element of the sublattice in the original
-    // lattice.
-    pub fn sublattice(self, elements: Vec<usize>) -> (Self, Vec<usize>) {
-        unimplemented!("sublattice method is not yet implemented");
+    // Given an edge a -> b in the lattice, returns the list of all edges
+    // meet(x,a) -> a
+    // for x <= b
+    pub fn restriction(&mut self, a: usize, b: usize) -> Vec<(usize, usize)> {
+        assert!(
+            a <= b,
+            "First argument must be less than or equal to second."
+        );
+        assert!(b < self.num_elements, "Indices out of bounds.");
+        if let Some(result) = self.restriction_cache.get(&(a, b)) {
+            return result.clone();
+        }
+        let mut restriction = Vec::new();
+        for i in 0..self.num_elements {
+            if self.poset_relation[i][b] {
+                restriction.push((self.meet(i, a), a));
+            }
+        }
+        self.restriction_cache.insert((a, b), restriction.clone());
+        restriction
+    }
+    // Given an edge a -> b in the lattice, returns the list of all edges
+    // b -> join(x,b)
+    // for x >= a
+    pub fn corestriction(&mut self, a: usize, b: usize) -> Vec<(usize, usize)> {
+        assert!(
+            a <= b,
+            "First argument must be less than or equal to second."
+        );
+        assert!(b < self.num_elements, "Indices out of bounds.");
+        if let Some(result) = self.corestriction_cache.get(&(a, b)) {
+            return result.clone();
+        }
+        let mut corestriction = Vec::new();
+        for i in 0..self.num_elements {
+            if self.poset_relation[a][i] {
+                corestriction.push((b, self.join(i, b)));
+            }
+        }
+        self.corestriction_cache
+            .insert((a, b), corestriction.clone());
+        corestriction
     }
 }
 
