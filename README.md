@@ -1,3 +1,6 @@
 # hccr
 
-## Homotopical Combinatorics Computations in Rust
+    Homotopical    
+    Combinatorics  
+    Computations in
+    Rust           
