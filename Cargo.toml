@@ -13,3 +13,4 @@ name = "hccrdemo"
 path = "src/bin/main.rs"
 
 [dependencies]
+bitvec = "1.0.1"
