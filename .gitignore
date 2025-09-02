@@ -1,2 +1,5 @@
 /target
 Cargo.lock
+GEMINI.md
+CLAUDE.md
+.DS_Store
