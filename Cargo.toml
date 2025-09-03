@@ -5,7 +5,7 @@ edition = "2024"
 authors = ["Ben Spitz <diracdeltafunk@users.noreply.github.com>"]
 
 [lib]
-name = "hccrlib"
+name = "hccr"
 path = "src/lib.rs"
 
 [[bin]]

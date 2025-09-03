@@ -1,4 +1,4 @@
-use hccrlib::cong_lattice;
+use hccr::cong_lattice;
 
 fn main() {
     // Create a total order lattice with 5 elements

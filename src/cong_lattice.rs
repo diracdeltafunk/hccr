@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 
-// Indexes into a lower-triangular matrix
-// e.g. for n = 4 we have
-// 0 1 2 3
-// 4 5 6 _
-// 7 8 _ _
-// 9 _ _ _
-// so 2 -> (0,2) and 7 -> (2,0).
+/// Indexes into a lower-triangular matrix
+/// e.g. for n = 4 we have
+/// 0 1 2 3
+/// 4 5 6 _
+/// 7 8 _ _
+/// 9 _ _ _
+/// so 2 -> (0,2) and 7 -> (2,0).
 fn idx_to_pair(n: usize, idx: usize) -> (usize, usize) {
     assert!(
         n + 1 < (usize::MAX as f64).sqrt() as usize && 2 * idx < n * (n + 1),
