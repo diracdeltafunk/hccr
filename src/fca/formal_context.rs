@@ -1,8 +1,3 @@
-//! This module implements Formal Concept Analysis (FCA) structures and algorithms.
-//! It includes definitions for FormalContext and FormalConcept, along with methods for
-//! computing intents and extents, checking for reduced contexts, and validating concepts.
-//! The implementation uses bit vectors for efficient representation of relations.
-
 use crate::fca::bit_fiddling::*;
 use bitvec::prelude::*;
 
