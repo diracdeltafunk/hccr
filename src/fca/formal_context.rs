@@ -3,37 +3,8 @@
 //! computing intents and extents, checking for reduced contexts, and validating concepts.
 //! The implementation uses bit vectors for efficient representation of relations.
 
+use crate::fca::bit_fiddling::*;
 use bitvec::prelude::*;
-use std::sync::Arc;
-
-fn is_subset(a: &BitVec, b: &BitVec) -> bool {
-    if a.len() != b.len() {
-        return false; // Different lengths, cannot be subset
-    }
-    let mut temp = a.clone();
-    temp &= b;
-    temp == *a
-}
-
-// Determines if any row of the binary matrix x is an intersection of other rows
-// If so, returns the index of the first such row
-// Else, returns None
-// ASSUMES x is a matrix, i.e. each bitvec in x has the same length.
-fn redundant_row(x: &Vec<BitVec>) -> Option<usize> {
-    for i in 0..x.len() {
-        let mut best_approx = BitVec::repeat(true, x[0].len());
-        for j in 0..x.len() {
-            if i != j && is_subset(&x[i], &x[j]) {
-                best_approx &= &x[j];
-            }
-        }
-        if best_approx == x[i] {
-            // Row i is the intersection of other rows
-            return Some(i);
-        }
-    }
-    None
-}
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct FormalContext<A = String, B = String> {
@@ -140,47 +111,6 @@ impl<A: Eq, B: Eq> FormalContext<A, B> {
             .position(|a| a == attr)
             .expect("Attribute not found in context");
         self.modify_relation_idx(obj_idx, attr_idx, value);
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct FormalConcept<A = String, B = String> {
-    context: Arc<FormalContext<A, B>>,
-    extent: BitVec, // A subset of objects
-    intent: BitVec, // A subset of attributes
-}
-
-impl<A, B> FormalConcept<A, B> {
-    pub fn validate(&self) -> bool {
-        self.extent == self.context.induce_l(&self.intent)
-            && self.intent == self.context.induce_r(&self.extent)
-    }
-}
-
-impl<A: PartialEq, B: PartialEq> PartialEq for FormalConcept<A, B> {
-    fn eq(&self, other: &Self) -> bool {
-        *self.context == *other.context && self.extent == other.extent
-    }
-}
-
-impl<A: Eq, B: Eq> Eq for FormalConcept<A, B> {}
-
-impl<A: PartialEq, B: PartialEq> PartialOrd for FormalConcept<A, B> {
-    // Concepts are ordered by subset containment of their extents, provided they are from the same context.
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        if *self.context != *other.context {
-            return None; // Cannot compare concepts from different contexts
-        }
-        if self.extent == other.extent {
-            return Some(std::cmp::Ordering::Equal);
-        }
-        if is_subset(&self.extent, &other.extent) {
-            return Some(std::cmp::Ordering::Less);
-        }
-        if is_subset(&other.extent, &self.extent) {
-            return Some(std::cmp::Ordering::Greater);
-        }
-        None
     }
 }
 
