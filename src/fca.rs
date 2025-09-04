@@ -15,6 +15,26 @@ fn is_subset(a: &BitVec, b: &BitVec) -> bool {
     temp == *a
 }
 
+// Determines if any row of the binary matrix x is an intersection of other rows
+// If so, returns the index of the first such row
+// Else, returns None
+// ASSUMES x is a matrix, i.e. each bitvec in x has the same length.
+fn redundant_row(x: &Vec<BitVec>) -> Option<usize> {
+    for i in 0..x.len() {
+        let mut best_approx = BitVec::repeat(true, x[0].len());
+        for j in 0..x.len() {
+            if i != j && is_subset(&x[i], &x[j]) {
+                best_approx &= &x[j];
+            }
+        }
+        if best_approx == x[i] {
+            // Row i is the intersection of other rows
+            return Some(i);
+        }
+    }
+    None
+}
+
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct FormalContext<A = String, B = String> {
     objects: Vec<A>,                  // A subset of objects is an extent
@@ -70,29 +90,19 @@ impl<A, B> FormalContext<A, B> {
     /// Check if the context is reduced, meaning no row or column of the relation is the intersection of other rows or columns (resp).
     /// Note that if a row is the intersection of other rows, then it is the intersection of specifically those rows which are ≥ it.
     pub fn is_reduced(&self) -> bool {
-        for i in 0..self.objects.len() {
-            let mut best_approx = BitVec::repeat(true, self.attributes.len());
-            for j in 0..self.objects.len() {
-                if i != j && is_subset(&self.relation[i], &self.relation[j]) {
-                    best_approx &= &self.relation[j];
-                }
-            }
-            if best_approx == self.relation[i] {
-                return false; // Found a row that is the intersection of other rows
-            }
+        redundant_row(&self.relation).is_none()
+            && redundant_row(&self.relation_transposed).is_none()
+    }
+    /// Modifies in place! Removes redundant rows and columns to obtain a reduced context
+    pub fn reduce(&mut self) {
+        while let Some(i) = redundant_row(&self.relation) {
+            self.objects.remove(i);
+            self.relation.remove(i);
         }
-        for j in 0..self.attributes.len() {
-            let mut best_approx = BitVec::repeat(true, self.objects.len());
-            for i in 0..self.attributes.len() {
-                if j != i && is_subset(&self.relation_transposed[j], &self.relation_transposed[i]) {
-                    best_approx &= &self.relation_transposed[i];
-                }
-            }
-            if best_approx == self.relation_transposed[j] {
-                return false; // Found a column that is the intersection of other columns
-            }
+        while let Some(i) = redundant_row(&self.relation_transposed) {
+            self.attributes.remove(i);
+            self.relation_transposed.remove(i);
         }
-        true
     }
 }
 
