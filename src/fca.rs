@@ -88,7 +88,6 @@ impl<A, B> FormalContext<A, B> {
         extent
     }
     /// Check if the context is reduced, meaning no row or column of the relation is the intersection of other rows or columns (resp).
-    /// Note that if a row is the intersection of other rows, then it is the intersection of specifically those rows which are ≥ it.
     pub fn is_reduced(&self) -> bool {
         redundant_row(&self.relation).is_none()
             && redundant_row(&self.relation_transposed).is_none()
@@ -98,10 +97,16 @@ impl<A, B> FormalContext<A, B> {
         while let Some(i) = redundant_row(&self.relation) {
             self.objects.remove(i);
             self.relation.remove(i);
+            for c in &mut self.relation_transposed {
+                c.remove(i);
+            }
         }
         while let Some(i) = redundant_row(&self.relation_transposed) {
             self.attributes.remove(i);
             self.relation_transposed.remove(i);
+            for r in &mut self.relation {
+                r.remove(i);
+            }
         }
     }
 }
@@ -189,5 +194,26 @@ mod tests {
         let b = bitvec![1, 1, 1];
         assert!(is_subset(&a, &b));
         assert!(!is_subset(&b, &a));
+    }
+    #[test]
+    fn test_reduction() {
+        let mut context = FormalContext {
+            objects: vec!["a", "b", "c"],
+            attributes: vec!["1", "2", "3"],
+            relation: vec![
+                bitvec![1, 0, 1], // a
+                bitvec![1, 1, 1], // b
+                bitvec![0, 1, 1], // c
+            ],
+            relation_transposed: vec![
+                bitvec![1, 1, 0], // 1
+                bitvec![0, 1, 1], // 2
+                bitvec![1, 1, 1], // 3
+            ],
+        };
+        assert!(!context.is_reduced());
+        context.reduce();
+        assert!(context.relation == vec![bitvec![1, 0], bitvec![0, 1]]);
+        assert!(context.is_reduced());
     }
 }
