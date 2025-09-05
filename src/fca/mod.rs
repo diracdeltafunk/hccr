@@ -6,6 +6,7 @@
 mod bit_fiddling;
 mod formal_concept;
 mod formal_context;
+mod pcbo;
 
 pub use formal_concept::*;
 pub use formal_context::*;

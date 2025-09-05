@@ -1,14 +1,14 @@
+use crate::fca::FormalContext;
 use crate::fca::bit_fiddling::*;
-use crate::fca::formal_context::FormalContext;
 
 use bitvec::prelude::*;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct FormalConcept<A = String, B = String> {
-    context: Arc<FormalContext<A, B>>,
-    extent: BitVec, // A subset of objects
-    intent: BitVec, // A subset of attributes
+    pub context: Arc<FormalContext<A, B>>,
+    pub extent: BitVec, // A subset of objects
+    pub intent: BitVec, // A subset of attributes
 }
 
 impl<A, B> FormalConcept<A, B> {

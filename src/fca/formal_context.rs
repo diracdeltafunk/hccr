@@ -3,8 +3,8 @@ use bitvec::prelude::*;
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct FormalContext<A = String, B = String> {
-    objects: Vec<A>,                  // A subset of objects is an extent
-    attributes: Vec<B>,               // A subset of attributes is an intent
+    pub objects: Vec<A>,              // A subset of objects is an extent
+    pub attributes: Vec<B>,           // A subset of attributes is an intent
     relation: Vec<BitVec>,            // The intent of each object
     relation_transposed: Vec<BitVec>, // The extent of each attribute
 }
@@ -38,6 +38,10 @@ impl<A, B> FormalContext<A, B> {
         self.relation[obj_idx].set(attr_idx, value);
         self.relation_transposed[attr_idx].set(obj_idx, value);
     }
+    /// `get_relation_idx(i,j)` returns (i,j) entry of the context matrix
+    pub fn get_relation_idx(&self, obj_idx: usize, attr_idx: usize) -> bool {
+        self.relation[obj_idx][attr_idx]
+    }
     /// Given an extent (a set of objects), induce its intent (the common attributes of those objects).
     pub fn induce_r(&self, extent: &BitVec) -> BitVec {
         let mut intent = BitVec::repeat(true, self.attributes.len());
@@ -46,6 +50,7 @@ impl<A, B> FormalContext<A, B> {
         }
         intent
     }
+    /// Given an intent (a set of attributes), induce its extent (the set of objects having those attributes).
     pub fn induce_l(&self, intent: &BitVec) -> BitVec {
         let mut extent = BitVec::repeat(true, self.objects.len());
         for attr in intent.iter_ones() {
@@ -94,6 +99,15 @@ impl<A: Clone> FormalContext<A, A> {
 }
 
 impl<A: Eq, B: Eq> FormalContext<A, B> {
+    pub fn get_relation(&self, obj: &A, attr: &B) -> bool {
+        let Some(obj_idx) = self.objects.iter().position(|o| o == obj) else {
+            panic!("Object not found in context");
+        };
+        let Some(attr_idx) = self.attributes.iter().position(|a| a == attr) else {
+            panic!("Attribute not found in context");
+        };
+        self.relation[obj_idx][attr_idx]
+    }
     pub fn modify_relation(&mut self, obj: &A, attr: &B, value: bool) {
         let obj_idx = self
             .objects
