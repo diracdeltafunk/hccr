@@ -1,52 +1,37 @@
 use crate::fca::FormalConcept;
 use crate::fca::FormalContext;
-use bitvec::prelude::*;
-use std::sync::Arc;
-const RECURSION_LEVEL: usize = 10;
+use rayon::iter::walk_tree;
+use rayon::prelude::*;
 
-fn parallel_generate_from(concept: &FormalConcept, y: usize, l: usize) {
-    if l == RECURSION_LEVEL {
-        // put (concept, y) in queue
-        return;
-    }
-    // assert!(y < RECURSION_LEVEL);
-    // YIELD concept
-    let num_objs = concept.context.objects.len();
-    let num_attrs = concept.context.attributes.len();
-    if y >= num_attrs || concept.intent.all() {
-        return;
-    }
-    // assert!(!concept.intent[y]);
-    for j in y..num_attrs {
-        if !concept.intent[j] {
-            let mut one_hot = BitVec::repeat(false, num_objs);
-            one_hot.set(j, true);
-            let c = concept.extent.clone() & concept.context.induce_l(&one_hot);
-            let d = concept.context.induce_r(&c);
-            if concept.intent[0..j] == d[0..j] {
-                // YIELD parallel_generate_from(
-                //     &FormalConcept {
-                //         context: concept.context.clone(),
-                //         extent: c,
-                //         intent: d,
-                //     },
-                //     j + 1,
-                //     l + 1
-                // );
+impl<A: Clone + Send + Sync, B: Clone + Send + Sync> FormalConcept<A, B> {
+    fn cbo_children(&self, y: usize) -> Vec<(Self, usize)> {
+        let mut result = vec![];
+        for j in self.intent.iter_zeros().filter(|&j| j >= y) {
+            let c = self.extent.clone() & self.context.get_attribute_extent(j);
+            let d = self.context.induce_r(&c);
+            if self.intent[0..j] == d[0..j] {
+                result.push((
+                    Self {
+                        context: self.context.clone(),
+                        extent: c,
+                        intent: d,
+                    },
+                    j + 1,
+                ));
             }
         }
-    }
-    if l == 1 {
-        // Do normal generate_from
+        result
     }
 }
 
-pub fn all_concepts(context: FormalContext) -> Vec<FormalConcept> {
-    let init_concept = FormalConcept {
-        extent: BitVec::repeat(true, context.objects.len()),
-        intent: context.induce_r(&BitVec::repeat(true, context.objects.len())),
-        context: Arc::new(context),
-    };
-    parallel_generate_from(&init_concept, 0, 1);
-    todo!()
+impl<A: Clone + Send + Sync, B: Clone + Send + Sync> FormalContext<A, B> {
+    pub fn all_concepts_par_iter(&self) -> impl ParallelIterator<Item = FormalConcept<A, B>> {
+        walk_tree((self.max_concept(), 0), |(x, y)| x.cbo_children(*y)).map(|(c, _)| c)
+    }
+    pub fn all_concepts(&self) -> Vec<FormalConcept<A, B>> {
+        self.all_concepts_par_iter().collect()
+    }
+    pub fn num_concepts(&self) -> usize {
+        self.all_concepts_par_iter().count()
+    }
 }

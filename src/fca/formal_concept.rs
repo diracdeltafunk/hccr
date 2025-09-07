@@ -11,6 +11,22 @@ pub struct FormalConcept<A = String, B = String> {
     pub intent: BitVec, // A subset of attributes
 }
 
+impl<A: std::fmt::Debug, B: std::fmt::Debug> std::fmt::Display for FormalConcept<A, B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let extent: Vec<_> = self
+            .extent
+            .iter_ones()
+            .map(|i| &self.context.objects[i])
+            .collect();
+        let intent: Vec<_> = self
+            .intent
+            .iter_ones()
+            .map(|j| &self.context.attributes[j])
+            .collect();
+        write!(f, "Extent: {:?}, Intent: {:?}", extent, intent)
+    }
+}
+
 impl<A, B> FormalConcept<A, B> {
     pub fn validate(&self) -> bool {
         self.extent == self.context.induce_l(&self.intent)

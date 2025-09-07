@@ -14,3 +14,4 @@ path = "src/bin/main.rs"
 
 [dependencies]
 bitvec = "1.0.1"
+rayon = "1.11.0"
