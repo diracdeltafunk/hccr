@@ -142,7 +142,7 @@ impl<A: Clone, B: Clone> FormalContext<A, B> {
             context: std::sync::Arc::new(self.clone()),
             extent: BitVec::repeat(true, self.objects.len()),
             intent: self
-                .relation_transposed
+                .relation
                 .iter()
                 .fold(BitVec::repeat(true, self.attributes.len()), |a, b| a & b),
         }
