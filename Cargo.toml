@@ -8,11 +8,5 @@ authors = ["Ben Spitz <diracdeltafunk@users.noreply.github.com>"]
 name = "hccr"
 path = "src/lib.rs"
 
-[[bin]]
-name = "hccrdemo"
-path = "src/bin/main.rs"
-
 [dependencies]
-bitvec = "1.0.1"
 fcars = {git = "https://github.com/diracdeltafunk/fcars.git", features = ["random"]}
-plotly = {version = "0.13.5", features = ["static_export_default"]}
