@@ -370,7 +370,26 @@ impl<B: IsPoset> CongPoset<B> {
                 equivalence_relation.insert((a, b), HashSet::from([(a, b)]));
             }
         }
-        CongPoset {
+        Self {
+            underlying_poset: poset,
+            equivalence_relation,
+            preceq,
+        }
+    }
+    pub fn from_poset(
+        poset: B,
+        equivalence_relation: HashMap<(usize, usize), HashSet<(usize, usize)>>,
+    ) -> Self {
+        let n = poset.num_elements();
+        let mut preceq = vec![vec![false; n]; n];
+        for a in 0..n {
+            for b in 0..n {
+                preceq[a][b] = equivalence_relation.get(&(a, a)).map_or(false, |class| {
+                    class.iter().any(|&(a_prime, _)| poset.leq(a_prime, b))
+                });
+            }
+        }
+        Self {
             underlying_poset: poset,
             equivalence_relation,
             preceq,
