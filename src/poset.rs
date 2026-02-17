@@ -1,0 +1,538 @@
+use bitvec::prelude::*;
+use fcars::{FormalConcept, FormalContext};
+use rayon::prelude::*;
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+
+// The entries in `elements` are NOT required to be distinct, they are only names!
+// So, to refer to elements uniquely, we always use an index into `elements`.
+// relation[i][j] is true iff i <= j
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Poset<A> {
+    pub elements: Vec<A>,
+    pub relation: Vec<BitVec>,
+}
+
+pub struct PosetHom<A, B> {
+    pub domain: Rc<Poset<A>>,
+    pub codomain: Rc<Poset<B>>,
+    pub mapping: Vec<usize>,
+}
+
+pub struct TikZInfo {
+    pub labels: Vec<String>,
+    pub coordinates: Vec<(f64, f64)>,
+    pub scale: f64,
+    pub edge_styles: HashMap<Edge, Vec<String>>,
+}
+
+pub type Edge = (usize, usize);
+
+pub type EdgeSet = HashSet<Edge>;
+
+pub type TransferSystem = FormalConcept<Edge, Edge>;
+
+pub type TransferContext = FormalContext<Edge, Edge>;
+
+impl<A: Clone + Send + Sync + PartialEq, B: Clone + Send + Sync + PartialEq>
+    Poset<FormalConcept<A, B>>
+{
+    pub fn from_context(cxt: FormalContext<A, B>) -> Self {
+        Poset::from_vec(cxt.all_concepts())
+    }
+}
+
+impl<A: ToString> Poset<A> {
+    pub fn default_style(&self) -> TikZInfo {
+        let n = self.elements.len();
+        let labels = self.elements.iter().map(|e| e.to_string()).collect();
+        // Simple layering algorithm: put elements in layers according to their distance from the bottom element
+        let cover_relations = self.cover_relations();
+        let mut layer: Vec<usize> = vec![0; n];
+        loop {
+            let mut changed = false;
+            for &(i, j) in &cover_relations {
+                if layer[j] <= layer[i] {
+                    layer[j] = layer[i] + 1;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let max_layer = layer.iter().max().copied().unwrap_or(0);
+        let mut layers: Vec<Vec<usize>> = vec![Vec::new(); max_layer + 1];
+        for (i, &l) in layer.iter().enumerate() {
+            layers[l].push(i);
+        }
+        let mut coordinates = vec![(0.0, 0.0); n];
+        for (l, layer) in layers.iter().enumerate() {
+            let m = layer.len();
+            for (i, &idx) in layer.iter().enumerate() {
+                let x = (i as f64) - (m as f64) / 2.0 + 0.5;
+                let y = l as f64;
+                coordinates[idx] = (x, y);
+            }
+        }
+        TikZInfo {
+            labels,
+            coordinates,
+            scale: 1.0,
+            edge_styles: HashMap::new(),
+        }
+    }
+    pub fn transfer_style(&self, ts: TransferSystem) -> TikZInfo {
+        let mut tikz = self.default_style();
+        for &(i, j) in ts.context.objects.iter() {
+            tikz.edge_styles
+                .entry((i, j))
+                .or_default()
+                .push("gray".to_string());
+        }
+        for &(i, j) in ts.extent_names_iter() {
+            tikz.edge_styles
+                .entry((i, j))
+                .and_modify(|v| *v = vec!["orange".to_string()]);
+        }
+        tikz
+    }
+}
+
+impl<A: PartialOrd + Send + Sync> Poset<A> {
+    /// Given a vector of elements, constructs the poset defined by the ordering <= on those elements.
+    pub fn from_vec(elements: Vec<A>) -> Self {
+        Self {
+            relation: elements
+                .par_iter()
+                .map(|a| elements.iter().map(|b| a <= b).collect())
+                .collect(),
+            elements,
+        }
+    }
+}
+
+impl<A: Send + Sync> Poset<A> {
+    /// Given a vector of elements and a binary predicate, constructs the poset defined by that predicate.
+    pub fn from_vec_by<F: Send + Sync + Fn(&A, &A) -> bool>(elements: Vec<A>, pred: F) -> Self {
+        Self {
+            relation: elements
+                .par_iter()
+                .map(|a| elements.iter().map(|b| pred(a, b)).collect())
+                .collect(),
+            elements,
+        }
+    }
+    pub fn transfer_poset_composition_closed(&self) -> Poset<TransferSystem> {
+        let context = self.transfer_context();
+        let concepts = context.all_concepts();
+        Poset::from_vec_by(concepts, |t1, t2| {
+            if !(t1 <= t2) {
+                return false;
+            }
+            let mut r1: EdgeSet = t1.extent_names_iter().copied().collect();
+            for n in 0..self.elements.len() {
+                r1.insert((n, n));
+            }
+            let r2: EdgeSet = t2.extent_names_iter().copied().collect();
+            // No need to add identity edges since we only need the left-lifting class of r2
+            let l2 = self.llc(r2);
+            let comp = self.compose(r1, l2.collect());
+            self.composition_closed(comp)
+        })
+    }
+}
+
+impl<A> Poset<A> {
+    #[inline]
+    pub fn leq(&self, i: usize, j: usize) -> bool {
+        self.relation[i][j]
+    }
+    pub fn validate(&self) -> bool {
+        // Check reflexivity
+        for i in 0..self.elements.len() {
+            if !self.leq(i, i) {
+                return false;
+            }
+        }
+        // Check antisymmetry
+        for (i, j) in self.proper_relations_iter() {
+            if self.leq(j, i) {
+                return false;
+            }
+        }
+        // Check transitivity
+        for (i, j) in self.proper_relations_iter() {
+            for k in self.relation[j].iter_ones() {
+                if !self.leq(i, k) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+    pub fn bot(&self) -> Option<usize> {
+        self.relation
+            .iter()
+            .position(|row| row.count_ones() == self.elements.len())
+    }
+    pub fn top(&self) -> Option<usize> {
+        self.relation
+            .iter()
+            .fold(BitVec::repeat(true, self.elements.len()), |r1, r2| r1 & r2)
+            .first_one()
+    }
+    pub fn meet(&self, i: usize, j: usize) -> Option<usize> {
+        let mut lower_bounds = BitVec::repeat(false, self.elements.len());
+        for k in 0..self.elements.len() {
+            if self.leq(k, i) && self.leq(k, j) {
+                lower_bounds.set(k, true);
+            }
+        }
+        for l in lower_bounds.clone().iter_ones() {
+            lower_bounds &= &self.relation[l];
+        }
+        // By antisymmetry, there is now at most one 1 in lower_bounds, which will be the meet
+        lower_bounds.first_one()
+    }
+    pub fn join(&self, i: usize, j: usize) -> Option<usize> {
+        let mut upper_bounds: BitVec<usize, Lsb0> = BitVec::repeat(false, self.elements.len());
+        for k in 0..self.elements.len() {
+            if self.leq(i, k) && self.leq(j, k) {
+                upper_bounds.set(k, true);
+            }
+        }
+        self.relation.iter().position(|u| *u == upper_bounds)
+    }
+    pub fn is_lattice(&self) -> bool {
+        if self.elements.is_empty() {
+            return false;
+        }
+        for i in 0..self.elements.len() {
+            for j in (i + 1)..self.elements.len() {
+                if self.meet(i, j).is_none() {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+    pub fn is_total_order(&self) -> bool {
+        for i in 0..self.elements.len() {
+            for j in (i + 1)..self.elements.len() {
+                if !self.leq(i, j) && !self.leq(j, i) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+    pub fn is_fusion_of_total_orders(&self) -> bool {
+        if let Some(bot) = self.bot() {
+            for i in 0..self.elements.len() {
+                for j in (i + 1)..self.elements.len() {
+                    if let Some(m) = self.meet(i, j) {
+                        if !(m == i || m == j || m == bot) {
+                            return false;
+                        }
+                    } else {
+                        return false;
+                    }
+                }
+            }
+        } else {
+            return false;
+        }
+        true
+    }
+    /// Produces the poset generated by the given edges. Edges are given as pairs (usize, usize)
+    pub fn from_edges(elements: Vec<A>, edges: impl IntoIterator<Item = Edge>) -> Self {
+        let n = elements.len();
+        let mut relation = vec![BitVec::repeat(false, n); n];
+        for (a, b) in edges {
+            assert!(a < n && b < n, "Edge indices out of bounds.");
+            relation[a].set(b, true);
+        }
+        // Compute transitive closure using Floyd-Warshall
+        for k in 0..n {
+            for i in 0..n {
+                for j in 0..n {
+                    if relation[i][k] && relation[k][j] {
+                        relation[i].set(j, true);
+                    }
+                }
+            }
+        }
+        // Check antisymmetry
+        for i in 0..n {
+            for j in 0..n {
+                if relation[i][j] && relation[j][i] {
+                    assert_eq!(i, j, "Relation must be antisymmetric.");
+                }
+            }
+        }
+        // Add reflexivity
+        for i in 0..n {
+            relation[i].set(i, true);
+        }
+        Poset { elements, relation }
+    }
+    pub fn all_relations_iter(&self) -> impl Iterator<Item = Edge> {
+        self.relation
+            .iter()
+            .enumerate()
+            .flat_map(|(i, row)| row.iter_ones().map(move |j| (i, j)))
+    }
+    pub fn proper_relations_iter(&self) -> impl Iterator<Item = Edge> {
+        self.all_relations_iter()
+            .into_iter()
+            .filter(|(i, j)| i != j)
+    }
+    /// Returns all proper edges (a,b) which are NOT the composite of two proper edges
+    pub fn cover_relations(&self) -> EdgeSet {
+        let mut result: HashSet<_> = self.proper_relations_iter().collect();
+        for (i, j) in self.proper_relations_iter() {
+            for k in self.relation[j].iter_ones() {
+                if j != k {
+                    result.retain(|&(x, y)| !(x == i && y == k));
+                }
+            }
+        }
+        result
+    }
+    pub fn transfer_context(&self) -> TransferContext {
+        let irr: Vec<_> = self.proper_relations_iter().collect();
+        let matrix = irr
+            .iter()
+            .map(|&(a, b)| {
+                irr.iter()
+                    .map(|&(c, d)| self.leq(d, a) || !self.leq(d, b) || !self.leq(c, a))
+                    .collect()
+            })
+            .collect();
+        FormalContext::new(irr.clone(), irr, matrix)
+    }
+    pub fn transfer_poset(&self) -> Poset<TransferSystem> {
+        Poset::from_context(self.transfer_context())
+    }
+    pub fn llc(&self, arrows: EdgeSet) -> impl Iterator<Item = Edge> {
+        (0..self.elements.len())
+            .map(|i| (i, i))
+            .chain(self.proper_relations_iter().filter(move |edge1| {
+                arrows.iter().all(|&edge2| {
+                    !self.leq(edge1.0, edge2.0)
+                        || !self.leq(edge1.1, edge2.1)
+                        || self.leq(edge1.1, edge2.0)
+                })
+            }))
+    }
+    pub fn rlc(&self, arrows: EdgeSet) -> impl Iterator<Item = Edge> {
+        (0..self.elements.len())
+            .map(|i| (i, i))
+            .chain(self.proper_relations_iter().filter(move |edge2| {
+                arrows.iter().all(|&edge1| {
+                    !self.leq(edge1.0, edge2.0)
+                        || !self.leq(edge1.1, edge2.1)
+                        || self.leq(edge1.1, edge2.0)
+                })
+            }))
+    }
+    // Computes class1 \circ class2
+    pub fn compose(&self, class1: EdgeSet, class2: EdgeSet) -> EdgeSet {
+        let mut result = EdgeSet::new();
+        for &(k, l) in class1.iter() {
+            for &(i, j) in class2.iter() {
+                if j == k {
+                    result.insert((i, l));
+                }
+            }
+        }
+        result
+    }
+    pub fn composition_closed(&self, class: EdgeSet) -> bool {
+        for &(k, l) in class.iter() {
+            for &(i, j) in class.iter() {
+                if j == k && !class.contains(&(i, l)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+    // A.k.a horizontal join: combine two posets by first taking their disjoint union, then identifying their bottoms and tops
+    pub fn fusion(a: Self, b: Self) -> (Self, Vec<usize>, Vec<usize>) {
+        let n = a.elements.len();
+        let m = b.elements.len();
+        let a_top = a.top().expect("First argument has no top element.");
+        let a_bot = a.bot().expect("First argument has no bottom element.");
+        let b_bot = b.bot().expect("Second argument has no bottom element.");
+        let b_top = b.top().expect("Second argument has no top element.");
+        if a_top == a_bot || b_top == b_bot {
+            panic!("Cannot fuse with a trivial poset.");
+        }
+        let mut elements = Vec::with_capacity(n + m);
+        let mut relation = vec![BitVec::repeat(false, n + m); n + m];
+        elements.extend(a.elements.into_iter());
+        elements.extend(b.elements.into_iter());
+        for i in 0..n {
+            for j in 0..n {
+                if a.relation[i][j] {
+                    relation[i].set(j, true);
+                }
+            }
+        }
+        for i in 0..m {
+            for j in 0..m {
+                if b.relation[i][j] {
+                    relation[n + i].set(n + j, true);
+                }
+            }
+        }
+        // Identify tops
+        // All elements from b become leq a_top
+        for i in n..n + m {
+            relation[i].set(a_top, true);
+        }
+        // Identify bottoms
+        // All elements from b become geq a_bot
+        for i in n..n + m {
+            relation[a_bot].set(i, true);
+        }
+        // Remove b_top and b_bot from the poset
+        // Remove the elements!
+        elements.remove(n + b_top);
+        elements.remove(if b_top < b_bot {
+            n + b_bot - 1
+        } else {
+            n + b_bot
+        });
+        // First remove their rows
+        relation.remove(n + b_top);
+        relation.remove(if b_top < b_bot {
+            n + b_bot - 1
+        } else {
+            n + b_bot
+        });
+        // Then remove their columns
+        for row in relation.iter_mut() {
+            row.remove(n + b_top);
+            row.remove(if b_top < b_bot {
+                n + b_bot - 1
+            } else {
+                n + b_bot
+            });
+        }
+        let mut hom_2_mapping = vec![];
+        let mut hom_2_counter = n;
+        for i in 0..m {
+            if i == b_top {
+                hom_2_mapping.push(a_top);
+            } else if i == b_bot {
+                hom_2_mapping.push(a_bot);
+            } else {
+                hom_2_mapping.push(hom_2_counter);
+                hom_2_counter += 1;
+            }
+        }
+        (Self { elements, relation }, (0..n).collect(), hom_2_mapping)
+    }
+}
+
+impl<A: Clone, B: Clone> Poset<(A, B)> {
+    pub fn direct_product(a: Poset<A>, b: Poset<B>) -> Self {
+        let n = a.elements.len();
+        let m = b.elements.len();
+        let mut elements = Vec::with_capacity(n * m);
+        let mut relation = vec![BitVec::repeat(false, n * m); n * m];
+        for i in 0..n {
+            for j in 0..m {
+                elements.push((a.elements[i].clone(), b.elements[j].clone()));
+            }
+        }
+        for i1 in 0..n {
+            for j1 in 0..m {
+                for i2 in 0..n {
+                    for j2 in 0..m {
+                        if a.leq(i1, i2) && b.leq(j1, j2) {
+                            relation[i1 * m + j1].set(i2 * m + j2, true);
+                        }
+                    }
+                }
+            }
+        }
+        Self { elements, relation }
+    }
+}
+
+impl<A, B> PosetHom<A, B> {
+    pub fn validate(&self) -> bool {
+        for (i, j) in self.domain.proper_relations_iter() {
+            if !self.codomain.leq(self.mapping[i], self.mapping[j]) {
+                println!("Not a homomorphism! ({i},{j})");
+                return false;
+            }
+        }
+        true
+    }
+}
+
+pub fn induced_pullback_transfer_systems<A, B>(
+    f: PosetHom<A, B>,
+) -> PosetHom<TransferSystem, TransferSystem> {
+    let domain = Rc::new(f.domain.transfer_poset());
+    let codomain = Rc::new(f.codomain.transfer_poset());
+    let mapping = codomain
+        .elements
+        .iter()
+        .map(|t2| {
+            let domain_cxt = &domain.elements[0].context;
+            let mut extent = t2.extent_names_iter();
+            let mut pulled_back_extent_list = vec![];
+            for &edge in domain_cxt.objects.iter() {
+                if extent.any(|&x| (f.mapping[edge.0], f.mapping[edge.1]) == x) {
+                    pulled_back_extent_list.push(edge);
+                }
+            }
+            let pulled_back_extent = domain_cxt.extent_from_objects(pulled_back_extent_list);
+            domain
+                .elements
+                .iter()
+                .position(|x| x.data.extent == pulled_back_extent)
+                .unwrap()
+        })
+        .collect();
+    PosetHom {
+        domain,
+        codomain,
+        mapping,
+    }
+}
+
+pub fn induced_pushforward_transfer_systems<A, B>(
+    f: PosetHom<A, B>,
+) -> PosetHom<TransferSystem, TransferSystem> {
+    let domain = Rc::new(f.domain.transfer_poset());
+    let codomain = Rc::new(f.codomain.transfer_poset());
+    let mapping = domain
+        .elements
+        .iter()
+        .map(|t1| {
+            let codomain_cxt = &codomain.elements[0].context;
+            let mapped_extent = codomain_cxt.extent_from_objects(
+                t1.extent_names_iter()
+                    .map(|&(i, j)| (f.mapping[i], f.mapping[j])),
+            );
+            let generated_intent = codomain_cxt.induce_r(&mapped_extent);
+            codomain
+                .elements
+                .iter()
+                .position(|x| x.data.intent == generated_intent)
+                .unwrap()
+        })
+        .collect();
+    PosetHom {
+        domain,
+        codomain,
+        mapping,
+    }
+}
