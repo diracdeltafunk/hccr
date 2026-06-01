@@ -2,4 +2,6 @@
 
 pub mod poset;
 
-pub mod tikz;
+pub mod transfer_lattice;
+
+// pub mod tikz;

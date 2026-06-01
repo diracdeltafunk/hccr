@@ -1,8 +1,7 @@
 use bitvec::prelude::*;
-use fcars::{FormalConcept, FormalContext};
+use fcars::{FormalContext, RawFormalConcept};
 use rayon::prelude::*;
-use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use std::collections::HashSet;
 
 // The entries in `elements` are NOT required to be distinct, they are only names!
 // So, to refer to elements uniquely, we always use an index into `elements`.
@@ -13,102 +12,19 @@ pub struct Poset<A> {
     pub relation: Vec<BitVec>,
 }
 
-pub struct PosetHom<A, B> {
-    pub domain: Rc<Poset<A>>,
-    pub codomain: Rc<Poset<B>>,
-    pub mapping: Vec<usize>,
-}
-
-pub struct TikZInfo {
-    pub labels: Vec<String>,
-    pub coordinates: Vec<(f64, f64)>,
-    pub scale: f64,
-    pub edge_styles: HashMap<Edge, Vec<String>>,
-}
-
 pub type Edge = (usize, usize);
 
 pub type EdgeSet = HashSet<Edge>;
 
-pub type TransferSystem = FormalConcept<Edge, Edge>;
+// pub struct PosetHom<A, B> {
+//     pub domain: Rc<Poset<A>>,
+//     pub codomain: Rc<Poset<B>>,
+//     pub mapping: Vec<usize>,
+// }
 
-pub type TransferContext = FormalContext<Edge, Edge>;
-
-impl<A: Clone + Send + Sync + PartialEq, B: Clone + Send + Sync + PartialEq>
-    Poset<FormalConcept<A, B>>
-{
-    pub fn from_context(cxt: FormalContext<A, B>) -> Self {
-        Poset::from_vec(cxt.all_concepts())
-    }
-}
-
-impl<A: ToString> Poset<A> {
-    pub fn default_style(&self) -> TikZInfo {
-        let n = self.elements.len();
-        let labels = self.elements.iter().map(|e| e.to_string()).collect();
-        // Simple layering algorithm: put elements in layers according to their distance from the bottom element
-        let cover_relations = self.cover_relations();
-        let mut layer: Vec<usize> = vec![0; n];
-        loop {
-            let mut changed = false;
-            for &(i, j) in &cover_relations {
-                if layer[j] <= layer[i] {
-                    layer[j] = layer[i] + 1;
-                    changed = true;
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
-        let max_layer = layer.iter().max().copied().unwrap_or(0);
-        let mut layers: Vec<Vec<usize>> = vec![Vec::new(); max_layer + 1];
-        for (i, &l) in layer.iter().enumerate() {
-            layers[l].push(i);
-        }
-        let mut coordinates = vec![(0.0, 0.0); n];
-        for (l, layer) in layers.iter().enumerate() {
-            let m = layer.len();
-            for (i, &idx) in layer.iter().enumerate() {
-                let x = (i as f64) - (m as f64) / 2.0 + 0.5;
-                let y = l as f64;
-                coordinates[idx] = (x, y);
-            }
-        }
-        TikZInfo {
-            labels,
-            coordinates,
-            scale: 1.0,
-            edge_styles: HashMap::new(),
-        }
-    }
-    pub fn transfer_style(&self, ts: TransferSystem) -> TikZInfo {
-        let mut tikz = self.default_style();
-        for &(i, j) in ts.context.objects.iter() {
-            tikz.edge_styles
-                .entry((i, j))
-                .or_default()
-                .push("gray".to_string());
-        }
-        for &(i, j) in ts.extent_names_iter() {
-            tikz.edge_styles
-                .entry((i, j))
-                .and_modify(|v| *v = vec!["orange".to_string()]);
-        }
-        tikz
-    }
-}
-
-impl<A: PartialOrd + Send + Sync> Poset<A> {
-    /// Given a vector of elements, constructs the poset defined by the ordering <= on those elements.
-    pub fn from_vec(elements: Vec<A>) -> Self {
-        Self {
-            relation: elements
-                .par_iter()
-                .map(|a| elements.iter().map(|b| a <= b).collect())
-                .collect(),
-            elements,
-        }
+impl Poset<RawFormalConcept> {
+    pub fn from_context<A: Sync, B: Sync>(cxt: FormalContext<A, B>) -> Self {
+        Poset::from_vec(cxt.all_concepts_raw())
     }
 }
 
@@ -123,28 +39,17 @@ impl<A: Send + Sync> Poset<A> {
             elements,
         }
     }
-    pub fn transfer_poset_composition_closed(&self) -> Poset<TransferSystem> {
-        let context = self.transfer_context();
-        let concepts = context.all_concepts();
-        Poset::from_vec_by(concepts, |t1, t2| {
-            if !(t1 <= t2) {
-                return false;
-            }
-            let mut r1: EdgeSet = t1.extent_names_iter().copied().collect();
-            for n in 0..self.elements.len() {
-                r1.insert((n, n));
-            }
-            let r2: EdgeSet = t2.extent_names_iter().copied().collect();
-            // No need to add identity edges since we only need the left-lifting class of r2
-            let l2 = self.llc(r2);
-            let comp = self.compose(r1, l2.collect());
-            self.composition_closed(comp)
-        })
+}
+
+impl<A: PartialOrd + Send + Sync> Poset<A> {
+    /// Given a vector of elements, constructs the poset defined by the ordering <= on those elements.
+    pub fn from_vec(elements: Vec<A>) -> Self {
+        Poset::from_vec_by(elements, |a, b| a <= b)
     }
 }
 
 impl<A> Poset<A> {
-    #[inline]
+    // #[inline]
     pub fn leq(&self, i: usize, j: usize) -> bool {
         self.relation[i][j]
     }
@@ -300,21 +205,6 @@ impl<A> Poset<A> {
         }
         result
     }
-    pub fn transfer_context(&self) -> TransferContext {
-        let irr: Vec<_> = self.proper_relations_iter().collect();
-        let matrix = irr
-            .iter()
-            .map(|&(a, b)| {
-                irr.iter()
-                    .map(|&(c, d)| self.leq(d, a) || !self.leq(d, b) || !self.leq(c, a))
-                    .collect()
-            })
-            .collect();
-        FormalContext::new(irr.clone(), irr, matrix)
-    }
-    pub fn transfer_poset(&self) -> Poset<TransferSystem> {
-        Poset::from_context(self.transfer_context())
-    }
     pub fn llc(&self, arrows: EdgeSet) -> impl Iterator<Item = Edge> {
         (0..self.elements.len())
             .map(|i| (i, i))
@@ -464,75 +354,75 @@ impl<A: Clone, B: Clone> Poset<(A, B)> {
     }
 }
 
-impl<A, B> PosetHom<A, B> {
-    pub fn validate(&self) -> bool {
-        for (i, j) in self.domain.proper_relations_iter() {
-            if !self.codomain.leq(self.mapping[i], self.mapping[j]) {
-                println!("Not a homomorphism! ({i},{j})");
-                return false;
-            }
-        }
-        true
-    }
-}
+// impl<A, B> PosetHom<A, B> {
+//     pub fn validate(&self) -> bool {
+//         for (i, j) in self.domain.proper_relations_iter() {
+//             if !self.codomain.leq(self.mapping[i], self.mapping[j]) {
+//                 println!("Not a homomorphism! ({i},{j})");
+//                 return false;
+//             }
+//         }
+//         true
+//     }
+// }
 
-pub fn induced_pullback_transfer_systems<A, B>(
-    f: PosetHom<A, B>,
-) -> PosetHom<TransferSystem, TransferSystem> {
-    let domain = Rc::new(f.domain.transfer_poset());
-    let codomain = Rc::new(f.codomain.transfer_poset());
-    let mapping = codomain
-        .elements
-        .iter()
-        .map(|t2| {
-            let domain_cxt = &domain.elements[0].context;
-            let mut extent = t2.extent_names_iter();
-            let mut pulled_back_extent_list = vec![];
-            for &edge in domain_cxt.objects.iter() {
-                if extent.any(|&x| (f.mapping[edge.0], f.mapping[edge.1]) == x) {
-                    pulled_back_extent_list.push(edge);
-                }
-            }
-            let pulled_back_extent = domain_cxt.extent_from_objects(pulled_back_extent_list);
-            domain
-                .elements
-                .iter()
-                .position(|x| x.data.extent == pulled_back_extent)
-                .unwrap()
-        })
-        .collect();
-    PosetHom {
-        domain,
-        codomain,
-        mapping,
-    }
-}
+// pub fn induced_pullback_transfer_systems<A, B>(
+//     f: PosetHom<A, B>,
+// ) -> PosetHom<TransferSystem, TransferSystem> {
+//     let domain = Rc::new(f.domain.transfer_poset());
+//     let codomain = Rc::new(f.codomain.transfer_poset());
+//     let mapping = codomain
+//         .elements
+//         .iter()
+//         .map(|t2| {
+//             let domain_cxt = &domain.elements[0].context;
+//             let mut extent = t2.extent_names_iter();
+//             let mut pulled_back_extent_list = vec![];
+//             for &edge in domain_cxt.objects.iter() {
+//                 if extent.any(|&x| (f.mapping[edge.0], f.mapping[edge.1]) == x) {
+//                     pulled_back_extent_list.push(edge);
+//                 }
+//             }
+//             let pulled_back_extent = domain_cxt.extent_from_objects(pulled_back_extent_list);
+//             domain
+//                 .elements
+//                 .iter()
+//                 .position(|x| x.data.extent == pulled_back_extent)
+//                 .unwrap()
+//         })
+//         .collect();
+//     PosetHom {
+//         domain,
+//         codomain,
+//         mapping,
+//     }
+// }
 
-pub fn induced_pushforward_transfer_systems<A, B>(
-    f: PosetHom<A, B>,
-) -> PosetHom<TransferSystem, TransferSystem> {
-    let domain = Rc::new(f.domain.transfer_poset());
-    let codomain = Rc::new(f.codomain.transfer_poset());
-    let mapping = domain
-        .elements
-        .iter()
-        .map(|t1| {
-            let codomain_cxt = &codomain.elements[0].context;
-            let mapped_extent = codomain_cxt.extent_from_objects(
-                t1.extent_names_iter()
-                    .map(|&(i, j)| (f.mapping[i], f.mapping[j])),
-            );
-            let generated_intent = codomain_cxt.induce_r(&mapped_extent);
-            codomain
-                .elements
-                .iter()
-                .position(|x| x.data.intent == generated_intent)
-                .unwrap()
-        })
-        .collect();
-    PosetHom {
-        domain,
-        codomain,
-        mapping,
-    }
-}
+// pub fn induced_pushforward_transfer_systems<A, B>(
+//     f: PosetHom<A, B>,
+// ) -> PosetHom<TransferSystem, TransferSystem> {
+//     let domain = Rc::new(f.domain.transfer_poset());
+//     let codomain = Rc::new(f.codomain.transfer_poset());
+//     let mapping = domain
+//         .elements
+//         .iter()
+//         .map(|t1| {
+//             let codomain_cxt = &codomain.elements[0].context;
+//             let mapped_extent = codomain_cxt.extent_from_objects(
+//                 t1.extent_names_iter()
+//                     .map(|&(i, j)| (f.mapping[i], f.mapping[j])),
+//             );
+//             let generated_intent = codomain_cxt.induce_r(&mapped_extent);
+//             codomain
+//                 .elements
+//                 .iter()
+//                 .position(|x| x.data.intent == generated_intent)
+//                 .unwrap()
+//         })
+//         .collect();
+//     PosetHom {
+//         domain,
+//         codomain,
+//         mapping,
+//     }
+// }
