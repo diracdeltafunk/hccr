@@ -11,6 +11,24 @@ pub struct TransferPoset<A> {
     pub transfer_poset: Poset<TransferSystem>,
 }
 
+impl<A: Send + Sync> TransferPoset<A> {
+    pub fn on(poset: Poset<A>) -> Self {
+        let transfer_context = poset.transfer_context();
+        let transfer_poset = Poset::from_vec(transfer_context.all_concepts_raw());
+        Self {
+            underlying_poset: poset,
+            transfer_context,
+            transfer_poset,
+        }
+    }
+}
+
+impl Poset<RawFormalConcept> {
+    pub fn from_context<A: Sync, B: Sync>(cxt: FormalContext<A, B>) -> Self {
+        Poset::from_vec(cxt.all_concepts_raw())
+    }
+}
+
 impl<A: Send + Sync> Poset<A> {
     pub fn transfer_poset_composition_closed(&self) -> Poset<TransferSystem> {
         let context = self.transfer_context();

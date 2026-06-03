@@ -10,5 +10,5 @@ path = "src/lib.rs"
 
 [dependencies]
 bitvec = "1.0.1"
-fcars = {path = "../fcars", features = ["random"]}
+fcars = {git = "https://github.com/diracdeltafunk/fcars.git", features=["random"]}
 rayon = "1.11.0"

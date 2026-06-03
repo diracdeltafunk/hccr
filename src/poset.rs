@@ -22,12 +22,6 @@ pub type EdgeSet = HashSet<Edge>;
 //     pub mapping: Vec<usize>,
 // }
 
-impl Poset<RawFormalConcept> {
-    pub fn from_context<A: Sync, B: Sync>(cxt: FormalContext<A, B>) -> Self {
-        Poset::from_vec(cxt.all_concepts_raw())
-    }
-}
-
 impl<A: Send + Sync> Poset<A> {
     /// Given a vector of elements and a binary predicate, constructs the poset defined by that predicate.
     pub fn from_vec_by<F: Send + Sync + Fn(&A, &A) -> bool>(elements: Vec<A>, pred: F) -> Self {
