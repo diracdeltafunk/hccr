@@ -1,5 +1,4 @@
 use bitvec::prelude::*;
-use fcars::{FormalContext, RawFormalConcept};
 use rayon::prelude::*;
 use std::collections::HashSet;
 
