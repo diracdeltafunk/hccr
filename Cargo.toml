@@ -11,4 +11,3 @@ path = "src/lib.rs"
 [dependencies]
 bitvec = "1.0.1"
 fcars = {version = "0.2.1", features=["random"]}
-rayon = "1.11.0"

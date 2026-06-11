@@ -111,7 +111,7 @@ fn lattice_fusion_identifies_bottom_and_top_with_embeddings() {
     let right = Arc::new(chain(3));
 
     let fusion =
-        Lattice::<Either<usize, usize>>::pushout_top_bottom(Arc::clone(&left), Arc::clone(&right))
+        Lattice::<Either<usize, usize>>::horizontal_join(Arc::clone(&left), Arc::clone(&right))
             .unwrap();
 
     assert_eq!(fusion.lattice.len(), 4);

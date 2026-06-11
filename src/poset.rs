@@ -1,6 +1,5 @@
 use crate::morphism::{MapError, PosetMap};
 use bitvec::prelude::*;
-use rayon::prelude::*;
 use std::collections::HashSet;
 use std::fmt;
 use std::sync::Arc;
@@ -167,21 +166,21 @@ pub struct PosetProduct<A, B> {
     pub right_projection: PosetMap<(A, B), B>,
 }
 
-impl<A: Send + Sync> Poset<A> {
+impl<A> Poset<A> {
     /// Constructs the poset defined by `pred`.
     pub fn from_vec_by<F>(elements: Vec<A>, pred: F) -> Result<Self, PosetError>
     where
-        F: Send + Sync + Fn(&A, &A) -> bool,
+        F: Fn(&A, &A) -> bool,
     {
         let relation = elements
-            .par_iter()
+            .iter()
             .map(|a| elements.iter().map(|b| pred(a, b)).collect())
             .collect();
         Self::from_relation(elements, relation)
     }
 }
 
-impl<A: PartialOrd + Send + Sync> Poset<A> {
+impl<A: PartialOrd> Poset<A> {
     /// Constructs the poset defined by Rust's `PartialOrd` relation.
     pub fn from_vec(elements: Vec<A>) -> Result<Self, PosetError> {
         Poset::from_vec_by(elements, |a, b| a <= b)

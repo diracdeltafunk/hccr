@@ -108,8 +108,8 @@ impl<A> TryFrom<Poset<A>> for Lattice<A> {
 }
 
 impl<A: Clone, B: Clone> Lattice<Either<A, B>> {
-    /// Fuses two nontrivial bounded lattices by identifying their bottoms and tops.
-    pub fn pushout_top_bottom(
+    /// Fuses two nontrivial lattices by identifying their bottoms and tops.
+    pub fn horizontal_join(
         left: Arc<Lattice<A>>,
         right: Arc<Lattice<B>>,
     ) -> Result<LatticeFusion<A, B>, PosetError> {
