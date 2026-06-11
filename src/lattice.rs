@@ -1,5 +1,5 @@
 use crate::morphism::LatticeMap;
-use crate::poset::{Edge, Either, ElementId, Poset, PosetError};
+use crate::poset::{Either, ElementId, Poset, PosetError};
 use bitvec::prelude::*;
 use std::convert::TryFrom;
 use std::fmt;
@@ -97,12 +97,12 @@ impl<A> Lattice<A> {
         self.poset
     }
 
-    pub fn relabel<B, F>(&self, f: F) -> Lattice<B>
+    pub fn relabelled<B, F>(&self, f: F) -> Lattice<B>
     where
         F: FnMut(&A) -> B,
     {
         Lattice {
-            poset: self.poset.relabel(f),
+            poset: self.poset.relabelled(f),
             meet: self.meet.clone(),
             join: self.join.clone(),
             bottom: self.bottom,
@@ -248,10 +248,4 @@ pub fn horizontal_join<A: Clone, B: Clone>(
         left: left_map,
         right: right_map,
     })
-}
-
-impl<A> From<&Lattice<A>> for Vec<Edge> {
-    fn from(lattice: &Lattice<A>) -> Self {
-        lattice.as_poset().proper_relations_iter().collect()
-    }
 }

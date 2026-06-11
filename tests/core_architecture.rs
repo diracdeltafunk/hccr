@@ -1,8 +1,10 @@
 use hccr::lattice::{Lattice, LatticeError, horizontal_join};
-use hccr::morphism::{LatticeMap, MapError, PosetMap};
+use hccr::morphism::{LatticeMap, LatticeMapError, PosetMap, PosetMapError};
 use hccr::poset::{Edge, Either, Poset, PosetError};
-use hccr::tikz::{PosetTikzOptions, TikzLabel, ToTikz, poset_to_tikz_with};
-use hccr::transfer_lattice::TransferSystems;
+use hccr::tikz::{
+    PosetTikzOptions, TikzLabel, ToTikz, poset_to_tikz_with, transfer_system_lattice_to_tikz,
+};
+use hccr::transfer_lattice::{TransferSystem, TransferSystems};
 use std::sync::Arc;
 
 fn chain(n: usize) -> Lattice<usize> {
@@ -67,14 +69,14 @@ fn products_and_disjoint_unions_return_valid_maps() {
 #[test]
 fn relabel_preserves_order_and_allows_duplicate_labels() {
     let poset = Poset::from_edges(vec![0, 1, 2], [Edge::new(0, 1), Edge::new(1, 2)]).unwrap();
-    let relabeled = poset.relabel(|id| if *id == 1 { "middle" } else { "end" });
+    let relabeled = poset.relabelled(|id| if *id == 1 { "middle" } else { "end" });
 
     assert_eq!(relabeled.elements(), &["end", "middle", "end"]);
     assert!(relabeled.leq(0, 2));
     assert_eq!(relabeled.cover_relations(), poset.cover_relations());
 
     let lattice = chain(3);
-    let relabeled_lattice = lattice.relabel(|id| format!("x{id}"));
+    let relabeled_lattice = lattice.relabelled(|id| format!("x{id}"));
     assert_eq!(relabeled_lattice.elements(), &["x0", "x1", "x2"]);
     assert_eq!(relabeled_lattice.meet_id(1, 2), 1);
     assert_eq!(relabeled_lattice.join_id(0, 1), 1);
@@ -123,13 +125,16 @@ fn morphisms_validate_monotonicity_and_lattice_preservation() {
         Arc::clone(&chain_poset),
         vec![1, 0],
     );
-    assert!(matches!(bad_poset_map, Err(MapError::NotMonotone { .. })));
+    assert!(matches!(
+        bad_poset_map,
+        Err(PosetMapError::NotMonotone { .. })
+    ));
 
     let diamond = Arc::new(diamond());
     let bad_lattice_map = LatticeMap::new(diamond, chain, vec![0, 1, 1, 1]);
     assert!(matches!(
         bad_lattice_map,
-        Err(MapError::DoesNotPreserveMeet { .. })
+        Err(LatticeMapError::DoesNotPreserveMeet { .. })
     ));
 }
 
@@ -147,7 +152,7 @@ fn lattice_fusion_identifies_bottom_and_top_with_embeddings() {
     assert_eq!(fusion.lattice.join_id(1, 3), 2);
     assert!(fusion.lattice.is_fusion_of_total_orders());
 
-    let collapsed = fusion.lattice.relabel(|side| match side {
+    let collapsed = fusion.lattice.relabelled(|side| match side {
         Either::Left(label) | Either::Right(label) => *label,
     });
     assert_eq!(collapsed.elements(), &[0, 1, 2, 1]);
@@ -161,12 +166,68 @@ fn transfer_systems_are_domain_types_with_containment_lattices() {
     let systems = TransferSystems::on(Arc::clone(&lattice)).unwrap();
 
     assert_eq!(systems.proper_edges(), &[Edge::new(0, 1)]);
-    assert_eq!(systems.systems().len(), 2);
-    assert_eq!(systems.containment_lattice().size(), 2);
+    assert_eq!(systems.len(), 2);
+    assert_eq!(systems.containment_lattice().unwrap().size(), 2);
+
+    let full_system = systems
+        .iter()
+        .find(|system| system.contains_edge(Edge::new(0, 1)))
+        .unwrap();
+    assert_eq!(
+        full_system.selected_proper_edges().collect::<Vec<_>>(),
+        [Edge::new(0, 1)]
+    );
+    let owned = full_system.to_owned();
+    assert!(Arc::ptr_eq(owned.universe(), systems.universe()));
+    assert!(owned.contains_edge(Edge::new(0, 0)));
+    assert!(owned.contains_edge(Edge::new(0, 1)));
 
     let identity = LatticeMap::new(Arc::clone(&lattice), Arc::clone(&lattice), vec![0, 1]).unwrap();
     let pullback = systems.pullback(&identity, &systems).unwrap();
     assert_eq!(pullback.map(), &[0, 1]);
+}
+
+fn transfer_system_subset<A>(left: &TransferSystem<A>, right: &TransferSystem<A>) -> bool {
+    left.raw().arrows().len() == right.raw().arrows().len()
+        && left
+            .raw()
+            .arrows()
+            .iter_ones()
+            .all(|edge| right.raw().contains_proper_edge_id(edge))
+}
+
+fn assert_composition_closed_order_is_sane<A>(lattice: Lattice<A>) {
+    let systems = TransferSystems::on(Arc::new(lattice)).unwrap();
+    let order = systems.composition_closed_order().unwrap();
+
+    assert_eq!(order.size(), systems.len());
+    assert!(order.validate().is_ok());
+    for (left_id, left) in order.elements().iter().enumerate() {
+        for (right_id, right) in order.elements().iter().enumerate() {
+            if order.leq(left_id, right_id) {
+                assert!(transfer_system_subset(left, right));
+            }
+        }
+    }
+}
+
+#[test]
+fn composition_closed_order_uses_factorization_description() {
+    let chain_order = TransferSystems::on(Arc::new(chain(2)))
+        .unwrap()
+        .composition_closed_order()
+        .unwrap();
+    assert_eq!(chain_order.cover_relations().len(), 1);
+
+    assert_composition_closed_order_is_sane(chain(3));
+    assert_composition_closed_order_is_sane(diamond());
+
+    let fused = horizontal_join(Arc::new(chain(3)), Arc::new(chain(3)))
+        .unwrap()
+        .lattice
+        .as_ref()
+        .clone();
+    assert_composition_closed_order_is_sane(fused);
 }
 
 #[test]
@@ -178,7 +239,8 @@ fn tikz_rendering_has_structured_hasse_and_transfer_outputs() {
     assert!(tikz.contains("\\node[circle, draw, inner sep=1.5pt] (p0)"));
 
     let systems = TransferSystems::on(Arc::new(lattice)).unwrap();
-    let transfer_tikz = systems.to_tikz().render();
+    let transfer_tikz =
+        transfer_system_lattice_to_tikz(&systems.containment_lattice().unwrap()).render();
     assert!(transfer_tikz.contains("\\tikz[scale=.35"));
     assert!(transfer_tikz.contains("draw=blue"));
 }

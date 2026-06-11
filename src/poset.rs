@@ -1,4 +1,4 @@
-use crate::morphism::{MapError, PosetMap};
+use crate::morphism::{PosetMap, PosetMapError};
 use bitvec::prelude::*;
 use std::collections::HashSet;
 use std::fmt;
@@ -173,7 +173,7 @@ impl<A> Poset<A> {
         Ok(Self { elements, relation })
     }
 
-    pub fn relabel<B, F>(&self, f: F) -> Poset<B>
+    pub fn relabelled<B, F>(&self, f: F) -> Poset<B>
     where
         F: FnMut(&A) -> B,
     {
@@ -249,10 +249,6 @@ impl<A> Poset<A> {
                 acc & row
             })
             .first_one()
-    }
-
-    pub fn bot(&self) -> Option<ElementId> {
-        self.bottom()
     }
 
     pub fn meet(&self, left: ElementId, right: ElementId) -> Option<ElementId> {
@@ -381,7 +377,7 @@ impl<A: Clone, B: Clone> Poset<Either<A, B>> {
     pub fn disjoint_union(
         left: Arc<Poset<A>>,
         right: Arc<Poset<B>>,
-    ) -> Result<PosetCoproduct<A, B>, MapError> {
+    ) -> Result<PosetCoproduct<A, B>, PosetMapError> {
         let n = left.size();
         let m = right.size();
         let mut elements = Vec::with_capacity(n + m);
@@ -411,7 +407,7 @@ impl<A: Clone, B: Clone> Poset<(A, B)> {
     pub fn product(
         left: Arc<Poset<A>>,
         right: Arc<Poset<B>>,
-    ) -> Result<PosetProduct<A, B>, MapError> {
+    ) -> Result<PosetProduct<A, B>, PosetMapError> {
         let n = left.size();
         let m = right.size();
         let mut elements = Vec::with_capacity(n * m);

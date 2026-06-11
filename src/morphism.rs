@@ -4,7 +4,7 @@ use std::fmt;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MapError {
+pub enum PosetMapError {
     WrongLength {
         expected: usize,
         actual: usize,
@@ -20,6 +20,40 @@ pub enum MapError {
         lower_image: ElementId,
         upper_image: ElementId,
     },
+}
+
+impl fmt::Display for PosetMapError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PosetMapError::WrongLength { expected, actual } => {
+                write!(f, "map has length {actual}, expected {expected}")
+            }
+            PosetMapError::ImageOutOfBounds {
+                element,
+                image,
+                codomain_len,
+            } => write!(
+                f,
+                "image of {element} is {image}, out of bounds for codomain with {codomain_len} elements"
+            ),
+            PosetMapError::NotMonotone {
+                lower,
+                upper,
+                lower_image,
+                upper_image,
+            } => write!(
+                f,
+                "map is not monotone: {lower} <= {upper}, but {lower_image} is not <= {upper_image}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PosetMapError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LatticeMapError {
+    Poset(PosetMapError),
     DoesNotPreserveMeet {
         left: ElementId,
         right: ElementId,
@@ -38,46 +72,33 @@ pub enum MapError {
     },
 }
 
-impl fmt::Display for MapError {
+impl fmt::Display for LatticeMapError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            MapError::WrongLength { expected, actual } => {
-                write!(f, "map has length {actual}, expected {expected}")
-            }
-            MapError::ImageOutOfBounds {
-                element,
-                image,
-                codomain_len,
-            } => write!(
-                f,
-                "image of {element} is {image}, out of bounds for codomain with {codomain_len} elements"
-            ),
-            MapError::NotMonotone {
-                lower,
-                upper,
-                lower_image,
-                upper_image,
-            } => write!(
-                f,
-                "map is not monotone: {lower} <= {upper}, but {lower_image} is not <= {upper_image}"
-            ),
-            MapError::DoesNotPreserveMeet { left, right } => {
+            LatticeMapError::Poset(error) => write!(f, "{error}"),
+            LatticeMapError::DoesNotPreserveMeet { left, right } => {
                 write!(f, "map does not preserve meet of {left} and {right}")
             }
-            MapError::DoesNotPreserveJoin { left, right } => {
+            LatticeMapError::DoesNotPreserveJoin { left, right } => {
                 write!(f, "map does not preserve join of {left} and {right}")
             }
-            MapError::DoesNotPreserveBottom { expected, actual } => {
+            LatticeMapError::DoesNotPreserveBottom { expected, actual } => {
                 write!(f, "map sends bottom to {actual}, expected {expected}")
             }
-            MapError::DoesNotPreserveTop { expected, actual } => {
+            LatticeMapError::DoesNotPreserveTop { expected, actual } => {
                 write!(f, "map sends top to {actual}, expected {expected}")
             }
         }
     }
 }
 
-impl std::error::Error for MapError {}
+impl std::error::Error for LatticeMapError {}
+
+impl From<PosetMapError> for LatticeMapError {
+    fn from(error: PosetMapError) -> Self {
+        Self::Poset(error)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct PosetMap<A, B> {
@@ -91,34 +112,8 @@ impl<A, B> PosetMap<A, B> {
         domain: Arc<Poset<A>>,
         codomain: Arc<Poset<B>>,
         map: Vec<ElementId>,
-    ) -> Result<Self, MapError> {
-        if map.len() != domain.size() {
-            return Err(MapError::WrongLength {
-                expected: domain.size(),
-                actual: map.len(),
-            });
-        }
-        for (element, &image) in map.iter().enumerate() {
-            if image >= codomain.size() {
-                return Err(MapError::ImageOutOfBounds {
-                    element,
-                    image,
-                    codomain_len: codomain.size(),
-                });
-            }
-        }
-        for edge in domain.all_relations_iter() {
-            let lower_image = map[edge.from];
-            let upper_image = map[edge.to];
-            if !codomain.leq(lower_image, upper_image) {
-                return Err(MapError::NotMonotone {
-                    lower: edge.from,
-                    upper: edge.to,
-                    lower_image,
-                    upper_image,
-                });
-            }
-        }
+    ) -> Result<Self, PosetMapError> {
+        validate_poset_map(domain.as_ref(), codomain.as_ref(), &map)?;
         Ok(Self {
             domain,
             codomain,
@@ -155,38 +150,12 @@ impl<A, B> LatticeMap<A, B> {
         domain: Arc<Lattice<A>>,
         codomain: Arc<Lattice<B>>,
         map: Vec<ElementId>,
-    ) -> Result<Self, MapError> {
-        if map.len() != domain.size() {
-            return Err(MapError::WrongLength {
-                expected: domain.size(),
-                actual: map.len(),
-            });
-        }
-        for (element, &image) in map.iter().enumerate() {
-            if image >= codomain.size() {
-                return Err(MapError::ImageOutOfBounds {
-                    element,
-                    image,
-                    codomain_len: codomain.size(),
-                });
-            }
-        }
-        for edge in domain.as_poset().all_relations_iter() {
-            let lower_image = map[edge.from];
-            let upper_image = map[edge.to];
-            if !codomain.leq(lower_image, upper_image) {
-                return Err(MapError::NotMonotone {
-                    lower: edge.from,
-                    upper: edge.to,
-                    lower_image,
-                    upper_image,
-                });
-            }
-        }
+    ) -> Result<Self, LatticeMapError> {
+        validate_poset_map(domain.as_poset(), codomain.as_poset(), &map)?;
 
         let mapped_bottom = map[domain.bottom()];
         if mapped_bottom != codomain.bottom() {
-            return Err(MapError::DoesNotPreserveBottom {
+            return Err(LatticeMapError::DoesNotPreserveBottom {
                 expected: codomain.bottom(),
                 actual: mapped_bottom,
             });
@@ -194,7 +163,7 @@ impl<A, B> LatticeMap<A, B> {
 
         let mapped_top = map[domain.top()];
         if mapped_top != codomain.top() {
-            return Err(MapError::DoesNotPreserveTop {
+            return Err(LatticeMapError::DoesNotPreserveTop {
                 expected: codomain.top(),
                 actual: mapped_top,
             });
@@ -205,13 +174,13 @@ impl<A, B> LatticeMap<A, B> {
                 let meet_image = map[domain.meet_id(i, j)];
                 let image_meet = codomain.meet_id(map[i], map[j]);
                 if meet_image != image_meet {
-                    return Err(MapError::DoesNotPreserveMeet { left: i, right: j });
+                    return Err(LatticeMapError::DoesNotPreserveMeet { left: i, right: j });
                 }
 
                 let join_image = map[domain.join_id(i, j)];
                 let image_join = codomain.join_id(map[i], map[j]);
                 if join_image != image_join {
-                    return Err(MapError::DoesNotPreserveJoin { left: i, right: j });
+                    return Err(LatticeMapError::DoesNotPreserveJoin { left: i, right: j });
                 }
             }
         }
@@ -239,7 +208,7 @@ impl<A, B> LatticeMap<A, B> {
         self.map[element]
     }
 
-    pub fn as_poset_map(&self) -> Result<PosetMap<A, B>, MapError>
+    pub fn as_poset_map(&self) -> Result<PosetMap<A, B>, PosetMapError>
     where
         A: Clone,
         B: Clone,
@@ -250,4 +219,39 @@ impl<A, B> LatticeMap<A, B> {
             self.map.clone(),
         )
     }
+}
+
+fn validate_poset_map<A, B>(
+    domain: &Poset<A>,
+    codomain: &Poset<B>,
+    map: &[ElementId],
+) -> Result<(), PosetMapError> {
+    if map.len() != domain.size() {
+        return Err(PosetMapError::WrongLength {
+            expected: domain.size(),
+            actual: map.len(),
+        });
+    }
+    for (element, &image) in map.iter().enumerate() {
+        if image >= codomain.size() {
+            return Err(PosetMapError::ImageOutOfBounds {
+                element,
+                image,
+                codomain_len: codomain.size(),
+            });
+        }
+    }
+    for edge in domain.all_relations_iter() {
+        let lower_image = map[edge.from];
+        let upper_image = map[edge.to];
+        if !codomain.leq(lower_image, upper_image) {
+            return Err(PosetMapError::NotMonotone {
+                lower: edge.from,
+                upper: edge.to,
+                lower_image,
+                upper_image,
+            });
+        }
+    }
+    Ok(())
 }

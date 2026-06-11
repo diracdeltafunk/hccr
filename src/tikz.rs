@@ -1,7 +1,7 @@
 use crate::lattice::Lattice;
 use crate::poset::{Edge, ElementId, Poset};
-use crate::transfer_lattice::TransferSystems;
-use std::collections::{BTreeMap, HashMap};
+use crate::transfer_lattice::{TransferLattice, TransferPoset, TransferSystem};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
 pub trait ToTikz {
@@ -45,25 +45,20 @@ pub struct TikzStyle {
     pub options: TikzOptions,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum TikzLabel {
-    Escaped(String),
-    Raw(String),
-}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TikzLabel(String);
 
 impl TikzLabel {
     pub fn escaped(label: impl AsRef<str>) -> Self {
-        Self::Escaped(escape_tikz(label.as_ref()))
+        Self(escape_tikz(label.as_ref()))
     }
 
     pub fn raw(label: impl Into<String>) -> Self {
-        Self::Raw(label.into())
+        Self(label.into())
     }
 
     fn render(&self) -> &str {
-        match self {
-            TikzLabel::Escaped(label) | TikzLabel::Raw(label) => label,
-        }
+        &self.0
     }
 }
 
@@ -281,45 +276,40 @@ impl<A: fmt::Display> ToTikz for Lattice<A> {
     }
 }
 
-impl<A> ToTikz for TransferSystems<A> {
-    fn to_tikz(&self) -> TikzPicture {
-        let containment = self.containment_lattice();
-        transfer_system_order_to_tikz(self, containment.as_poset())
-    }
+pub fn transfer_system_lattice_to_tikz<A>(lattice: &TransferLattice<A>) -> TikzPicture {
+    transfer_system_order_to_tikz(lattice.as_poset())
 }
 
-pub fn transfer_system_order_to_tikz<A>(
-    systems: &TransferSystems<A>,
-    order: &Poset<usize>,
-) -> TikzPicture {
+pub fn transfer_system_order_to_tikz<A>(order: &TransferPoset<A>) -> TikzPicture {
     let options = PosetTikzOptions {
         node_options: TikzOptions::new(["draw", "inner sep=2pt"]),
         x_spacing: 3.4,
         y_spacing: 2.6,
         ..PosetTikzOptions::default()
     };
-    poset_to_tikz_with(order, &options, |_node_id, system_id| {
-        TikzLabel::raw(small_transfer_system_picture(systems, *system_id))
+    poset_to_tikz_with(order, &options, |_node_id, system| {
+        TikzLabel::raw(small_transfer_system_picture(system))
     })
 }
 
 pub fn escape_tikz(input: &str) -> String {
-    input
-        .chars()
-        .flat_map(|ch| match ch {
-            '\\' => "\\textbackslash{}".chars().collect::<Vec<_>>(),
-            '{' => "\\{".chars().collect(),
-            '}' => "\\}".chars().collect(),
-            '$' => "\\$".chars().collect(),
-            '&' => "\\&".chars().collect(),
-            '%' => "\\%".chars().collect(),
-            '#' => "\\#".chars().collect(),
-            '_' => "\\_".chars().collect(),
-            '^' => "\\^{}".chars().collect(),
-            '~' => "\\~{}".chars().collect(),
-            _ => vec![ch],
-        })
-        .collect()
+    let mut escaped = String::new();
+    for ch in input.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\textbackslash{}"),
+            '{' => escaped.push_str("\\{"),
+            '}' => escaped.push_str("\\}"),
+            '$' => escaped.push_str("\\$"),
+            '&' => escaped.push_str("\\&"),
+            '%' => escaped.push_str("\\%"),
+            '#' => escaped.push_str("\\#"),
+            '_' => escaped.push_str("\\_"),
+            '^' => escaped.push_str("\\^{}"),
+            '~' => escaped.push_str("\\~{}"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 fn ranked_layout<A>(
@@ -355,11 +345,7 @@ fn ranked_layout<A>(
     coords
 }
 
-fn rank_of(
-    id: ElementId,
-    covers: &std::collections::HashSet<Edge>,
-    memo: &mut HashMap<ElementId, usize>,
-) -> usize {
+fn rank_of(id: ElementId, covers: &HashSet<Edge>, memo: &mut HashMap<ElementId, usize>) -> usize {
     if let Some(&rank) = memo.get(&id) {
         return rank;
     }
@@ -434,10 +420,8 @@ fn preferred_overlapping_edge(
 }
 
 fn edge_length_squared(from: (f64, f64), to: (f64, f64)) -> f64 {
-    dot(
-        (to.0 - from.0, to.1 - from.1),
-        (to.0 - from.0, to.1 - from.1),
-    )
+    let segment = (to.0 - from.0, to.1 - from.1);
+    dot(segment, segment)
 }
 
 fn point_strictly_on_segment(
@@ -502,20 +486,13 @@ fn node_name(id: ElementId) -> String {
     format!("p{id}")
 }
 
-fn small_transfer_system_picture<A>(systems: &TransferSystems<A>, id: ElementId) -> String {
-    let Some(system) = systems.system(id) else {
-        return String::new();
-    };
-    let coords = ranked_layout(systems.lattice().as_poset(), 1.0, 0.9);
+fn small_transfer_system_picture<A>(system: &TransferSystem<A>) -> String {
+    let coords = ranked_layout(system.lattice().as_poset(), 1.0, 0.9);
     let mut out = String::from("\\tikz[scale=.35, baseline=-.5ex]{");
-    for edge in systems.lattice().as_poset().proper_relations_iter() {
+    for edge in system.lattice().as_poset().proper_relations_iter() {
         let from = coords[&edge.from];
         let to = coords[&edge.to];
-        let highlighted = systems
-            .proper_edges()
-            .iter()
-            .position(|candidate| *candidate == edge)
-            .is_some_and(|edge_id| system.contains_proper_edge_id(edge_id));
+        let highlighted = system.contains_edge(edge);
         let style = if highlighted {
             "line width=.75pt, draw=blue"
         } else {
@@ -526,7 +503,7 @@ fn small_transfer_system_picture<A>(systems: &TransferSystems<A>, id: ElementId)
             from.0, from.1, to.0, to.1
         ));
     }
-    for id in 0..systems.lattice().size() {
+    for id in 0..system.lattice().size() {
         let at = coords[&id];
         out.push_str(&format!(
             "\\filldraw[fill=white, draw=black] ({:.3},{:.3}) circle (.055);",
