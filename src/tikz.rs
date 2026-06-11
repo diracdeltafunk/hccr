@@ -224,7 +224,7 @@ where
 {
     let mut coords = ranked_layout(poset, options.x_spacing, options.y_spacing);
     for (&id, &coordinate) in &options.coordinate_overrides {
-        if id < poset.len() {
+        if id < poset.size() {
             coords.insert(id, coordinate);
         }
     }
@@ -329,7 +329,7 @@ fn ranked_layout<A>(
 ) -> HashMap<ElementId, (f64, f64)> {
     let covers = poset.cover_relations();
     let mut memo = HashMap::new();
-    for id in 0..poset.len() {
+    for id in 0..poset.size() {
         rank_of(id, &covers, &mut memo);
     }
 
@@ -526,7 +526,7 @@ fn small_transfer_system_picture<A>(systems: &TransferSystems<A>, id: ElementId)
             from.0, from.1, to.0, to.1
         ));
     }
-    for id in 0..systems.lattice().len() {
+    for id in 0..systems.lattice().size() {
         let at = coords[&id];
         out.push_str(&format!(
             "\\filldraw[fill=white, draw=black] ({:.3},{:.3}) circle (.055);",

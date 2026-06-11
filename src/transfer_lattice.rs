@@ -1,4 +1,4 @@
-use crate::lattice::Lattice;
+use crate::lattice::{Lattice, LatticeError};
 use crate::morphism::{LatticeMap, MapError};
 use crate::poset::{Edge, EdgeSet, ElementId, Poset, PosetError};
 use bitvec::prelude::*;
@@ -28,6 +28,7 @@ pub struct TransferSystems<A> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransferError {
     Poset(PosetError),
+    Lattice(LatticeError),
     Map(MapError),
     PulledBackSystemNotFound,
 }
@@ -36,6 +37,7 @@ impl fmt::Display for TransferError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TransferError::Poset(error) => write!(f, "{error}"),
+            TransferError::Lattice(error) => write!(f, "{error}"),
             TransferError::Map(error) => write!(f, "{error}"),
             TransferError::PulledBackSystemNotFound => {
                 write!(f, "pulled-back transfer system was not found")
@@ -49,6 +51,12 @@ impl std::error::Error for TransferError {}
 impl From<PosetError> for TransferError {
     fn from(error: PosetError) -> Self {
         Self::Poset(error)
+    }
+}
+
+impl From<LatticeError> for TransferError {
+    fn from(error: LatticeError) -> Self {
+        Self::Lattice(error)
     }
 }
 
@@ -159,7 +167,7 @@ impl<A> TransferSystems<A> {
     pub fn edge_set(&self, system: &TransferSystem, include_identities: bool) -> EdgeSet {
         let mut result = EdgeSet::new();
         if include_identities {
-            for id in 0..self.lattice.len() {
+            for id in 0..self.lattice.size() {
                 result.insert(Edge::new(id, id));
             }
         }
@@ -222,7 +230,7 @@ pub fn transfer_context<A>(poset: &Poset<A>, proper_edges: &[Edge]) -> TransferC
 
 fn containment_lattice(
     systems: &[TransferSystem],
-) -> Result<Lattice<TransferSystemId>, PosetError> {
+) -> Result<Lattice<TransferSystemId>, LatticeError> {
     let poset = poset_on_system_ids(systems.len(), |left, right| {
         bitvec_subset(systems[left].arrows(), systems[right].arrows())
     })?;

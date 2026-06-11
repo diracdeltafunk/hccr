@@ -1,4 +1,4 @@
-use hccr::lattice::Lattice;
+use hccr::lattice::{Lattice, LatticeError, horizontal_join};
 use hccr::morphism::{LatticeMap, MapError, PosetMap};
 use hccr::poset::{Edge, Either, Poset, PosetError};
 use hccr::tikz::{PosetTikzOptions, TikzLabel, ToTikz, poset_to_tikz_with};
@@ -54,20 +54,36 @@ fn products_and_disjoint_unions_return_valid_maps() {
 
     let coproduct =
         Poset::<Either<&str, &str>>::disjoint_union(Arc::clone(&left), Arc::clone(&right)).unwrap();
-    assert_eq!(coproduct.poset.len(), 4);
+    assert_eq!(coproduct.poset.size(), 4);
     assert_eq!(coproduct.left.map(), &[0, 1]);
     assert_eq!(coproduct.right.map(), &[2, 3]);
 
     let product = Poset::<(&str, &str)>::product(left, right).unwrap();
-    assert_eq!(product.poset.len(), 4);
+    assert_eq!(product.poset.size(), 4);
     assert_eq!(product.left_projection.map(), &[0, 0, 1, 1]);
     assert_eq!(product.right_projection.map(), &[0, 1, 0, 1]);
 }
 
 #[test]
+fn relabel_preserves_order_and_allows_duplicate_labels() {
+    let poset = Poset::from_edges(vec![0, 1, 2], [Edge::new(0, 1), Edge::new(1, 2)]).unwrap();
+    let relabeled = poset.relabel(|id| if *id == 1 { "middle" } else { "end" });
+
+    assert_eq!(relabeled.elements(), &["end", "middle", "end"]);
+    assert!(relabeled.leq(0, 2));
+    assert_eq!(relabeled.cover_relations(), poset.cover_relations());
+
+    let lattice = chain(3);
+    let relabeled_lattice = lattice.relabel(|id| format!("x{id}"));
+    assert_eq!(relabeled_lattice.elements(), &["x0", "x1", "x2"]);
+    assert_eq!(relabeled_lattice.meet_id(1, 2), 1);
+    assert_eq!(relabeled_lattice.join_id(0, 1), 1);
+}
+
+#[test]
 fn lattice_validation_checks_meets_and_joins() {
     let empty = Lattice::new(Poset::<usize>::from_relation(vec![], vec![]).unwrap());
-    assert!(matches!(empty, Err(PosetError::EmptyLattice)));
+    assert!(matches!(empty, Err(LatticeError::Empty)));
 
     let vee = Poset::from_edges(vec![0, 1, 2], [Edge::new(0, 1), Edge::new(0, 2)]).unwrap();
     assert!(vee.meet(1, 2).is_some());
@@ -75,7 +91,7 @@ fn lattice_validation_checks_meets_and_joins() {
     assert!(!vee.is_lattice());
     assert!(matches!(
         Lattice::new(vee),
-        Err(PosetError::NotALattice { .. })
+        Err(LatticeError::NotALattice { .. })
     ));
 
     let lattice = diamond();
@@ -83,6 +99,18 @@ fn lattice_validation_checks_meets_and_joins() {
     assert_eq!(lattice.join_id(1, 2), 3);
     assert_eq!(lattice.bottom(), 0);
     assert_eq!(lattice.top(), 3);
+    assert!(lattice.is_fusion_of_total_orders());
+    assert!(chain(4).is_fusion_of_total_orders());
+
+    let grid = Lattice::new(
+        Poset::from_vec_by(
+            vec![(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)],
+            |left, right| left.0 <= right.0 && left.1 <= right.1,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(!grid.is_fusion_of_total_orders());
 }
 
 #[test]
@@ -110,15 +138,21 @@ fn lattice_fusion_identifies_bottom_and_top_with_embeddings() {
     let left = Arc::new(chain(3));
     let right = Arc::new(chain(3));
 
-    let fusion =
-        Lattice::<Either<usize, usize>>::horizontal_join(Arc::clone(&left), Arc::clone(&right))
-            .unwrap();
+    let fusion = horizontal_join(Arc::clone(&left), Arc::clone(&right)).unwrap();
 
-    assert_eq!(fusion.lattice.len(), 4);
+    assert_eq!(fusion.lattice.size(), 4);
     assert_eq!(fusion.left.map(), &[0, 1, 2]);
     assert_eq!(fusion.right.map(), &[0, 3, 2]);
     assert_eq!(fusion.lattice.meet_id(1, 3), 0);
     assert_eq!(fusion.lattice.join_id(1, 3), 2);
+    assert!(fusion.lattice.is_fusion_of_total_orders());
+
+    let collapsed = fusion.lattice.relabel(|side| match side {
+        Either::Left(label) | Either::Right(label) => *label,
+    });
+    assert_eq!(collapsed.elements(), &[0, 1, 2, 1]);
+    assert_eq!(collapsed.meet_id(1, 3), 0);
+    assert_eq!(collapsed.join_id(1, 3), 2);
 }
 
 #[test]
@@ -128,7 +162,7 @@ fn transfer_systems_are_domain_types_with_containment_lattices() {
 
     assert_eq!(systems.proper_edges(), &[Edge::new(0, 1)]);
     assert_eq!(systems.systems().len(), 2);
-    assert_eq!(systems.containment_lattice().len(), 2);
+    assert_eq!(systems.containment_lattice().size(), 2);
 
     let identity = LatticeMap::new(Arc::clone(&lattice), Arc::clone(&lattice), vec![0, 1]).unwrap();
     let pullback = systems.pullback(&identity, &systems).unwrap();

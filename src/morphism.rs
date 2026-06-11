@@ -92,18 +92,18 @@ impl<A, B> PosetMap<A, B> {
         codomain: Arc<Poset<B>>,
         map: Vec<ElementId>,
     ) -> Result<Self, MapError> {
-        if map.len() != domain.len() {
+        if map.len() != domain.size() {
             return Err(MapError::WrongLength {
-                expected: domain.len(),
+                expected: domain.size(),
                 actual: map.len(),
             });
         }
         for (element, &image) in map.iter().enumerate() {
-            if image >= codomain.len() {
+            if image >= codomain.size() {
                 return Err(MapError::ImageOutOfBounds {
                     element,
                     image,
-                    codomain_len: codomain.len(),
+                    codomain_len: codomain.size(),
                 });
             }
         }
@@ -156,18 +156,18 @@ impl<A, B> LatticeMap<A, B> {
         codomain: Arc<Lattice<B>>,
         map: Vec<ElementId>,
     ) -> Result<Self, MapError> {
-        if map.len() != domain.len() {
+        if map.len() != domain.size() {
             return Err(MapError::WrongLength {
-                expected: domain.len(),
+                expected: domain.size(),
                 actual: map.len(),
             });
         }
         for (element, &image) in map.iter().enumerate() {
-            if image >= codomain.len() {
+            if image >= codomain.size() {
                 return Err(MapError::ImageOutOfBounds {
                     element,
                     image,
-                    codomain_len: codomain.len(),
+                    codomain_len: codomain.size(),
                 });
             }
         }
@@ -200,8 +200,8 @@ impl<A, B> LatticeMap<A, B> {
             });
         }
 
-        for i in 0..domain.len() {
-            for j in 0..domain.len() {
+        for i in 0..domain.size() {
+            for j in 0..domain.size() {
                 let meet_image = map[domain.meet_id(i, j)];
                 let image_meet = codomain.meet_id(map[i], map[j]);
                 if meet_image != image_meet {
