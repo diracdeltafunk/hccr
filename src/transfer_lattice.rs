@@ -1,66 +1,244 @@
-use crate::poset::*;
-use fcars::{FormalContext, RawFormalConcept};
+use crate::lattice::Lattice;
+use crate::morphism::{LatticeMap, MapError};
+use crate::poset::{Edge, EdgeSet, ElementId, Poset, PosetError};
+use bitvec::prelude::*;
+use fcars::FormalContext;
+use std::fmt;
+use std::sync::Arc;
 
-pub type TransferSystem = RawFormalConcept;
+pub type TransferSystemId = usize;
 
 pub type TransferContext = FormalContext<Edge, Edge>;
 
-pub struct TransferPoset<A> {
-    pub underlying_poset: Poset<A>,
-    pub transfer_context: TransferContext,
-    pub transfer_poset: Poset<TransferSystem>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferSystem {
+    /// Proper arrows in the transfer system. Identity arrows are implicit.
+    pub arrows: BitVec,
 }
 
-impl<A: Send + Sync> TransferPoset<A> {
-    pub fn on(poset: Poset<A>) -> Self {
-        let transfer_context = poset.transfer_context();
-        let transfer_poset = Poset::from_vec(transfer_context.all_concepts_raw());
-        Self {
-            underlying_poset: poset,
-            transfer_context,
-            transfer_poset,
+#[derive(Debug, Clone)]
+pub struct TransferSystems<A> {
+    lattice: Arc<Lattice<A>>,
+    proper_edges: Vec<Edge>,
+    context: TransferContext,
+    systems: Vec<TransferSystem>,
+    containment_lattice: Arc<Lattice<TransferSystemId>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransferError {
+    Poset(PosetError),
+    Map(MapError),
+    PulledBackSystemNotFound,
+}
+
+impl fmt::Display for TransferError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TransferError::Poset(error) => write!(f, "{error}"),
+            TransferError::Map(error) => write!(f, "{error}"),
+            TransferError::PulledBackSystemNotFound => {
+                write!(f, "pulled-back transfer system was not found")
+            }
         }
     }
 }
 
-impl Poset<RawFormalConcept> {
-    pub fn from_context<A: Sync, B: Sync>(cxt: FormalContext<A, B>) -> Self {
-        Poset::from_vec(cxt.all_concepts_raw())
+impl std::error::Error for TransferError {}
+
+impl From<PosetError> for TransferError {
+    fn from(error: PosetError) -> Self {
+        Self::Poset(error)
     }
 }
 
-impl<A: Send + Sync> Poset<A> {
-    pub fn transfer_poset_composition_closed(&self) -> Poset<TransferSystem> {
-        let context = self.transfer_context();
-        let concepts = context.all_concepts_raw();
-        Poset::from_vec_by(concepts, |t1, t2| {
-            if !(t1 <= t2) {
-                return false;
-            }
-            let mut r1: EdgeSet = t1.extent.iter_ones().map(|i| context.objects[i]).collect();
-            for n in 0..self.elements.len() {
-                r1.insert((n, n));
-            }
-            let r2: EdgeSet = t2.extent.iter_ones().map(|i| context.objects[i]).collect();
-            // No need to add identity edges since we only need the left-lifting class of r2
-            let l2 = self.llc(r2);
-            let comp = self.compose(r1, l2.collect());
-            self.composition_closed(comp)
+impl From<MapError> for TransferError {
+    fn from(error: MapError) -> Self {
+        Self::Map(error)
+    }
+}
+
+impl TransferSystem {
+    pub fn empty(num_proper_edges: usize) -> Self {
+        Self {
+            arrows: BitVec::repeat(false, num_proper_edges),
+        }
+    }
+
+    pub fn arrows(&self) -> &BitVec {
+        &self.arrows
+    }
+
+    pub fn contains_proper_edge_id(&self, edge: usize) -> bool {
+        self.arrows[edge]
+    }
+}
+
+impl<A> TransferSystems<A> {
+    pub fn on(lattice: Arc<Lattice<A>>) -> Result<Self, TransferError> {
+        let proper_edges: Vec<_> = lattice.as_poset().proper_relations_iter().collect();
+        let context = transfer_context(lattice.as_poset(), &proper_edges);
+        let systems = context
+            .all_concepts_raw()
+            .into_iter()
+            .map(|concept| TransferSystem {
+                arrows: concept.extent,
+            })
+            .collect::<Vec<_>>();
+        let containment_lattice = Arc::new(containment_lattice(&systems)?);
+
+        Ok(Self {
+            lattice,
+            proper_edges,
+            context,
+            systems,
+            containment_lattice,
         })
     }
-    pub fn transfer_context(&self) -> TransferContext {
-        let irr: Vec<_> = self.proper_relations_iter().collect();
-        let matrix = irr
+
+    pub fn lattice(&self) -> &Arc<Lattice<A>> {
+        &self.lattice
+    }
+
+    pub fn context(&self) -> &TransferContext {
+        &self.context
+    }
+
+    pub fn proper_edges(&self) -> &[Edge] {
+        &self.proper_edges
+    }
+
+    pub fn systems(&self) -> &[TransferSystem] {
+        &self.systems
+    }
+
+    pub fn system(&self, id: TransferSystemId) -> Option<&TransferSystem> {
+        self.systems.get(id)
+    }
+
+    pub fn containment_lattice(&self) -> Arc<Lattice<TransferSystemId>> {
+        Arc::clone(&self.containment_lattice)
+    }
+
+    pub fn ordered_by<F>(&self, predicate: F) -> Result<Poset<TransferSystemId>, PosetError>
+    where
+        F: Fn(&TransferSystem, &TransferSystem) -> bool,
+    {
+        poset_on_system_ids(self.systems.len(), |left, right| {
+            predicate(&self.systems[left], &self.systems[right])
+        })
+    }
+
+    pub fn pullback<B>(
+        &self,
+        f: &LatticeMap<A, B>,
+        target: &TransferSystems<B>,
+    ) -> Result<LatticeMap<TransferSystemId, TransferSystemId>, TransferError> {
+        let mut map = Vec::with_capacity(target.systems.len());
+        for target_system in &target.systems {
+            let mut pulled_back = BitVec::repeat(false, self.proper_edges.len());
+            for (edge_id, edge) in self.proper_edges.iter().copied().enumerate() {
+                if target.contains_mapped_edge(target_system, f.apply(edge.from), f.apply(edge.to))
+                {
+                    pulled_back.set(edge_id, true);
+                }
+            }
+            let Some(system_id) = self.find_system_by_arrows(&pulled_back) else {
+                return Err(TransferError::PulledBackSystemNotFound);
+            };
+            map.push(system_id);
+        }
+
+        Ok(LatticeMap::new(
+            target.containment_lattice(),
+            self.containment_lattice(),
+            map,
+        )?)
+    }
+
+    pub fn edge_set(&self, system: &TransferSystem, include_identities: bool) -> EdgeSet {
+        let mut result = EdgeSet::new();
+        if include_identities {
+            for id in 0..self.lattice.len() {
+                result.insert(Edge::new(id, id));
+            }
+        }
+        for edge_id in system.arrows.iter_ones() {
+            result.insert(self.proper_edges[edge_id]);
+        }
+        result
+    }
+
+    pub fn composition_closed_order(&self) -> Result<Poset<TransferSystemId>, PosetError> {
+        self.ordered_by(|left, right| {
+            if !bitvec_subset(left.arrows(), right.arrows()) {
+                return false;
+            }
+            let r1 = self.edge_set(left, true);
+            let r2 = self.edge_set(right, false);
+            let l2 = self.lattice.as_poset().llc(&r2);
+            let composite = self.lattice.as_poset().compose(&r1, &l2);
+            self.lattice.as_poset().composition_closed(&composite)
+        })
+    }
+
+    fn contains_mapped_edge(
+        &self,
+        system: &TransferSystem,
+        from: ElementId,
+        to: ElementId,
+    ) -> bool {
+        from == to
+            || self
+                .proper_edges
+                .iter()
+                .position(|edge| edge.from == from && edge.to == to)
+                .is_some_and(|edge_id| system.contains_proper_edge_id(edge_id))
+    }
+
+    fn find_system_by_arrows(&self, arrows: &BitVec) -> Option<TransferSystemId> {
+        self.systems
             .iter()
-            .map(|&(a, b)| {
-                irr.iter()
-                    .map(|&(c, d)| self.leq(d, a) || !self.leq(d, b) || !self.leq(c, a))
-                    .collect()
-            })
-            .collect();
-        FormalContext::new(irr.clone(), irr, matrix)
+            .position(|system| system.arrows() == arrows)
     }
-    pub fn transfer_poset(&self) -> Poset<TransferSystem> {
-        Poset::from_context(self.transfer_context())
-    }
+}
+
+pub fn transfer_context<A>(poset: &Poset<A>, proper_edges: &[Edge]) -> TransferContext {
+    let matrix = proper_edges
+        .iter()
+        .map(|edge1| {
+            proper_edges
+                .iter()
+                .map(|edge2| {
+                    poset.leq(edge2.to, edge1.from)
+                        || !poset.leq(edge2.to, edge1.to)
+                        || !poset.leq(edge2.from, edge1.from)
+                })
+                .collect()
+        })
+        .collect();
+    FormalContext::new(proper_edges.to_vec(), proper_edges.to_vec(), matrix)
+}
+
+fn containment_lattice(
+    systems: &[TransferSystem],
+) -> Result<Lattice<TransferSystemId>, PosetError> {
+    let poset = poset_on_system_ids(systems.len(), |left, right| {
+        bitvec_subset(systems[left].arrows(), systems[right].arrows())
+    })?;
+    Lattice::new(poset)
+}
+
+fn poset_on_system_ids<F>(len: usize, predicate: F) -> Result<Poset<TransferSystemId>, PosetError>
+where
+    F: Fn(usize, usize) -> bool,
+{
+    let relation = (0..len)
+        .map(|left| (0..len).map(|right| predicate(left, right)).collect())
+        .collect();
+    Poset::from_relation((0..len).collect(), relation)
+}
+
+fn bitvec_subset(left: &BitVec, right: &BitVec) -> bool {
+    left.len() == right.len() && left.iter_ones().all(|i| right[i])
 }

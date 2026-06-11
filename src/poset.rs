@@ -1,421 +1,538 @@
+use crate::morphism::{MapError, PosetMap};
 use bitvec::prelude::*;
 use rayon::prelude::*;
 use std::collections::HashSet;
+use std::fmt;
+use std::sync::Arc;
 
-// The entries in `elements` are NOT required to be distinct, they are only names!
-// So, to refer to elements uniquely, we always use an index into `elements`.
-// relation[i][j] is true iff i <= j
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Poset<A> {
-    pub elements: Vec<A>,
-    pub relation: Vec<BitVec>,
+/// The stable index of an element in a finite poset.
+///
+/// Element labels are not required to be unique, so public APIs identify
+/// elements by index.
+pub type ElementId = usize;
+
+/// An ordered relation `from <= to` between elements of a poset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Edge {
+    pub from: ElementId,
+    pub to: ElementId,
 }
 
-pub type Edge = (usize, usize);
+impl Edge {
+    pub fn new(from: ElementId, to: ElementId) -> Self {
+        Self { from, to }
+    }
+
+    pub fn is_identity(self) -> bool {
+        self.from == self.to
+    }
+}
+
+impl From<(ElementId, ElementId)> for Edge {
+    fn from((from, to): (ElementId, ElementId)) -> Self {
+        Self { from, to }
+    }
+}
+
+impl From<Edge> for (ElementId, ElementId) {
+    fn from(edge: Edge) -> Self {
+        (edge.from, edge.to)
+    }
+}
 
 pub type EdgeSet = HashSet<Edge>;
 
-// pub struct PosetHom<A, B> {
-//     pub domain: Rc<Poset<A>>,
-//     pub codomain: Rc<Poset<B>>,
-//     pub mapping: Vec<usize>,
-// }
+/// Labels for elements of a disjoint union.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Either<A, B> {
+    Left(A),
+    Right(B),
+}
 
-impl<A: Send + Sync> Poset<A> {
-    /// Given a vector of elements and a binary predicate, constructs the poset defined by that predicate.
-    pub fn from_vec_by<F: Send + Sync + Fn(&A, &A) -> bool>(elements: Vec<A>, pred: F) -> Self {
-        Self {
-            relation: elements
-                .par_iter()
-                .map(|a| elements.iter().map(|b| pred(a, b)).collect())
-                .collect(),
-            elements,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PosetError {
+    RelationHeight {
+        expected: usize,
+        actual: usize,
+    },
+    RelationWidth {
+        row: usize,
+        expected: usize,
+        actual: usize,
+    },
+    MissingReflexiveEdge {
+        element: ElementId,
+    },
+    NotAntisymmetric {
+        left: ElementId,
+        right: ElementId,
+    },
+    NotTransitive {
+        lower: ElementId,
+        middle: ElementId,
+        upper: ElementId,
+    },
+    EdgeOutOfBounds {
+        edge: Edge,
+        len: usize,
+    },
+    NotALattice {
+        left: ElementId,
+        right: ElementId,
+    },
+    EmptyLattice,
+    TrivialFusionInput,
+    MissingTop,
+    MissingBottom,
+}
+
+impl fmt::Display for PosetError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PosetError::RelationHeight { expected, actual } => {
+                write!(f, "relation has {actual} rows, expected {expected}")
+            }
+            PosetError::RelationWidth {
+                row,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "relation row {row} has width {actual}, expected {expected}"
+            ),
+            PosetError::MissingReflexiveEdge { element } => {
+                write!(
+                    f,
+                    "relation is missing reflexive edge {element} <= {element}"
+                )
+            }
+            PosetError::NotAntisymmetric { left, right } => {
+                write!(
+                    f,
+                    "relation contains both {left} <= {right} and {right} <= {left}"
+                )
+            }
+            PosetError::NotTransitive {
+                lower,
+                middle,
+                upper,
+            } => write!(
+                f,
+                "relation contains {lower} <= {middle} and {middle} <= {upper}, but not {lower} <= {upper}"
+            ),
+            PosetError::EdgeOutOfBounds { edge, len } => write!(
+                f,
+                "edge {} <= {} is out of bounds for a poset with {len} elements",
+                edge.from, edge.to
+            ),
+            PosetError::NotALattice { left, right } => {
+                write!(
+                    f,
+                    "elements {left} and {right} do not have both meet and join"
+                )
+            }
+            PosetError::EmptyLattice => write!(f, "a finite lattice must be nonempty"),
+            PosetError::TrivialFusionInput => {
+                write!(f, "cannot fuse a one-element bounded poset")
+            }
+            PosetError::MissingTop => write!(f, "poset has no top element"),
+            PosetError::MissingBottom => write!(f, "poset has no bottom element"),
         }
     }
 }
 
+impl std::error::Error for PosetError {}
+
+/// A finite poset stored as a dense reachability matrix.
+///
+/// `relation[i][j]` is true if and only if `i <= j`. Element labels are not
+/// required to be unique.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Poset<A> {
+    elements: Vec<A>,
+    relation: Vec<BitVec>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PosetCoproduct<A, B> {
+    pub poset: Arc<Poset<Either<A, B>>>,
+    pub left: PosetMap<A, Either<A, B>>,
+    pub right: PosetMap<B, Either<A, B>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PosetProduct<A, B> {
+    pub poset: Arc<Poset<(A, B)>>,
+    pub left_projection: PosetMap<(A, B), A>,
+    pub right_projection: PosetMap<(A, B), B>,
+}
+
+impl<A: Send + Sync> Poset<A> {
+    /// Constructs the poset defined by `pred`.
+    pub fn from_vec_by<F>(elements: Vec<A>, pred: F) -> Result<Self, PosetError>
+    where
+        F: Send + Sync + Fn(&A, &A) -> bool,
+    {
+        let relation = elements
+            .par_iter()
+            .map(|a| elements.iter().map(|b| pred(a, b)).collect())
+            .collect();
+        Self::from_relation(elements, relation)
+    }
+}
+
 impl<A: PartialOrd + Send + Sync> Poset<A> {
-    /// Given a vector of elements, constructs the poset defined by the ordering <= on those elements.
-    pub fn from_vec(elements: Vec<A>) -> Self {
+    /// Constructs the poset defined by Rust's `PartialOrd` relation.
+    pub fn from_vec(elements: Vec<A>) -> Result<Self, PosetError> {
         Poset::from_vec_by(elements, |a, b| a <= b)
     }
 }
 
 impl<A> Poset<A> {
-    // #[inline]
-    pub fn leq(&self, i: usize, j: usize) -> bool {
-        self.relation[i][j]
+    pub fn from_relation(elements: Vec<A>, relation: Vec<BitVec>) -> Result<Self, PosetError> {
+        validate_relation(elements.len(), &relation)?;
+        Ok(Self { elements, relation })
     }
-    pub fn validate(&self) -> bool {
-        // Check reflexivity
-        for i in 0..self.elements.len() {
-            if !self.leq(i, i) {
-                return false;
-            }
+
+    /// Produces the poset generated by the given edges.
+    ///
+    /// Reflexive edges are added automatically and the transitive closure is
+    /// computed before antisymmetry is checked.
+    pub fn from_edges(
+        elements: Vec<A>,
+        edges: impl IntoIterator<Item = Edge>,
+    ) -> Result<Self, PosetError> {
+        let n = elements.len();
+        let mut relation = vec![BitVec::repeat(false, n); n];
+        for (i, row) in relation.iter_mut().enumerate() {
+            row.set(i, true);
         }
-        // Check antisymmetry
-        for (i, j) in self.proper_relations_iter() {
-            if self.leq(j, i) {
-                return false;
+        for edge in edges {
+            if edge.from >= n || edge.to >= n {
+                return Err(PosetError::EdgeOutOfBounds { edge, len: n });
             }
+            relation[edge.from].set(edge.to, true);
         }
-        // Check transitivity
-        for (i, j) in self.proper_relations_iter() {
-            for k in self.relation[j].iter_ones() {
-                if !self.leq(i, k) {
-                    return false;
-                }
-            }
-        }
-        true
+        transitive_closure(&mut relation);
+        Self::from_relation(elements, relation)
     }
-    pub fn bot(&self) -> Option<usize> {
+
+    pub(crate) fn from_validated(elements: Vec<A>, relation: Vec<BitVec>) -> Self {
+        debug_assert!(validate_relation(elements.len(), &relation).is_ok());
+        Self { elements, relation }
+    }
+
+    pub fn len(&self) -> usize {
+        self.elements.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.elements.is_empty()
+    }
+
+    pub fn elements(&self) -> &[A] {
+        &self.elements
+    }
+
+    pub fn element(&self, id: ElementId) -> Option<&A> {
+        self.elements.get(id)
+    }
+
+    pub fn relation_matrix(&self) -> &[BitVec] {
+        &self.relation
+    }
+
+    pub fn leq(&self, left: ElementId, right: ElementId) -> bool {
+        self.relation[left][right]
+    }
+
+    pub fn validate(&self) -> Result<(), PosetError> {
+        validate_relation(self.elements.len(), &self.relation)
+    }
+
+    pub fn bottom(&self) -> Option<ElementId> {
         self.relation
             .iter()
             .position(|row| row.count_ones() == self.elements.len())
     }
-    pub fn top(&self) -> Option<usize> {
+
+    pub fn top(&self) -> Option<ElementId> {
         self.relation
             .iter()
-            .fold(BitVec::repeat(true, self.elements.len()), |r1, r2| r1 & r2)
+            .fold(BitVec::repeat(true, self.elements.len()), |acc, row| {
+                acc & row
+            })
             .first_one()
     }
-    pub fn meet(&self, i: usize, j: usize) -> Option<usize> {
-        let mut lower_bounds = BitVec::repeat(false, self.elements.len());
-        for k in 0..self.elements.len() {
-            if self.leq(k, i) && self.leq(k, j) {
-                lower_bounds.set(k, true);
-            }
-        }
-        for l in lower_bounds.clone().iter_ones() {
-            lower_bounds &= &self.relation[l];
-        }
-        // By antisymmetry, there is now at most one 1 in lower_bounds, which will be the meet
-        lower_bounds.first_one()
+
+    pub fn bot(&self) -> Option<ElementId> {
+        self.bottom()
     }
-    pub fn join(&self, i: usize, j: usize) -> Option<usize> {
-        let mut upper_bounds: BitVec<usize, Lsb0> = BitVec::repeat(false, self.elements.len());
-        for k in 0..self.elements.len() {
-            if self.leq(i, k) && self.leq(j, k) {
-                upper_bounds.set(k, true);
-            }
+
+    pub fn meet(&self, left: ElementId, right: ElementId) -> Option<ElementId> {
+        if left >= self.len() || right >= self.len() {
+            return None;
         }
-        self.relation.iter().position(|u| *u == upper_bounds)
+        (0..self.len()).find(|&candidate| {
+            self.leq(candidate, left)
+                && self.leq(candidate, right)
+                && (0..self.len()).all(|lower| {
+                    !(self.leq(lower, left) && self.leq(lower, right)) || self.leq(lower, candidate)
+                })
+        })
     }
+
+    pub fn join(&self, left: ElementId, right: ElementId) -> Option<ElementId> {
+        if left >= self.len() || right >= self.len() {
+            return None;
+        }
+        (0..self.len()).find(|&candidate| {
+            self.leq(left, candidate)
+                && self.leq(right, candidate)
+                && (0..self.len()).all(|upper| {
+                    !(self.leq(left, upper) && self.leq(right, upper)) || self.leq(candidate, upper)
+                })
+        })
+    }
+
     pub fn is_lattice(&self) -> bool {
-        if self.elements.is_empty() {
-            return false;
-        }
-        for i in 0..self.elements.len() {
-            for j in (i + 1)..self.elements.len() {
-                if self.meet(i, j).is_none() {
-                    return false;
-                }
-            }
-        }
-        true
+        !self.is_empty()
+            && (0..self.len()).all(|i| {
+                (0..self.len()).all(|j| self.meet(i, j).is_some() && self.join(i, j).is_some())
+            })
     }
+
     pub fn is_total_order(&self) -> bool {
-        for i in 0..self.elements.len() {
-            for j in (i + 1)..self.elements.len() {
-                if !self.leq(i, j) && !self.leq(j, i) {
-                    return false;
-                }
-            }
-        }
-        true
+        (0..self.len()).all(|i| (i + 1..self.len()).all(|j| self.leq(i, j) || self.leq(j, i)))
     }
+
     pub fn is_fusion_of_total_orders(&self) -> bool {
-        if let Some(bot) = self.bot() {
-            for i in 0..self.elements.len() {
-                for j in (i + 1)..self.elements.len() {
-                    if let Some(m) = self.meet(i, j) {
-                        if !(m == i || m == j || m == bot) {
-                            return false;
-                        }
-                    } else {
-                        return false;
-                    }
-                }
-            }
-        } else {
+        let Some(bottom) = self.bottom() else {
             return false;
-        }
-        true
+        };
+        (0..self.len()).all(|i| {
+            (i + 1..self.len()).all(|j| {
+                self.meet(i, j)
+                    .is_some_and(|m| m == i || m == j || m == bottom)
+            })
+        })
     }
-    /// Produces the poset generated by the given edges. Edges are given as pairs (usize, usize)
-    pub fn from_edges(elements: Vec<A>, edges: impl IntoIterator<Item = Edge>) -> Self {
-        let n = elements.len();
-        let mut relation = vec![BitVec::repeat(false, n); n];
-        for (a, b) in edges {
-            assert!(a < n && b < n, "Edge indices out of bounds.");
-            relation[a].set(b, true);
-        }
-        // Compute transitive closure using Floyd-Warshall
-        for k in 0..n {
-            for i in 0..n {
-                for j in 0..n {
-                    if relation[i][k] && relation[k][j] {
-                        relation[i].set(j, true);
-                    }
-                }
-            }
-        }
-        // Check antisymmetry
-        for i in 0..n {
-            for j in 0..n {
-                if relation[i][j] && relation[j][i] {
-                    assert_eq!(i, j, "Relation must be antisymmetric.");
-                }
-            }
-        }
-        // Add reflexivity
-        for i in 0..n {
-            relation[i].set(i, true);
-        }
-        Poset { elements, relation }
-    }
-    pub fn all_relations_iter(&self) -> impl Iterator<Item = Edge> {
+
+    pub fn all_relations_iter(&self) -> impl Iterator<Item = Edge> + '_ {
         self.relation
             .iter()
             .enumerate()
-            .flat_map(|(i, row)| row.iter_ones().map(move |j| (i, j)))
+            .flat_map(|(from, row)| row.iter_ones().map(move |to| Edge { from, to }))
     }
-    pub fn proper_relations_iter(&self) -> impl Iterator<Item = Edge> {
-        self.all_relations_iter()
-            .into_iter()
-            .filter(|(i, j)| i != j)
+
+    pub fn proper_relations_iter(&self) -> impl Iterator<Item = Edge> + '_ {
+        self.all_relations_iter().filter(|edge| !edge.is_identity())
     }
-    /// Returns all proper edges (a,b) which are NOT the composite of two proper edges
+
+    /// Returns the cover relations in the Hasse diagram.
     pub fn cover_relations(&self) -> EdgeSet {
-        let mut result: HashSet<_> = self.proper_relations_iter().collect();
-        for (i, j) in self.proper_relations_iter() {
-            for k in self.relation[j].iter_ones() {
-                if j != k {
-                    result.retain(|&(x, y)| !(x == i && y == k));
-                }
-            }
-        }
-        result
-    }
-    pub fn llc(&self, arrows: EdgeSet) -> impl Iterator<Item = Edge> {
-        (0..self.elements.len())
-            .map(|i| (i, i))
-            .chain(self.proper_relations_iter().filter(move |edge1| {
-                arrows.iter().all(|&edge2| {
-                    !self.leq(edge1.0, edge2.0)
-                        || !self.leq(edge1.1, edge2.1)
-                        || self.leq(edge1.1, edge2.0)
+        self.proper_relations_iter()
+            .filter(|edge| {
+                !(0..self.len()).any(|middle| {
+                    middle != edge.from
+                        && middle != edge.to
+                        && self.leq(edge.from, middle)
+                        && self.leq(middle, edge.to)
                 })
-            }))
+            })
+            .collect()
     }
-    pub fn rlc(&self, arrows: EdgeSet) -> impl Iterator<Item = Edge> {
-        (0..self.elements.len())
-            .map(|i| (i, i))
-            .chain(self.proper_relations_iter().filter(move |edge2| {
-                arrows.iter().all(|&edge1| {
-                    !self.leq(edge1.0, edge2.0)
-                        || !self.leq(edge1.1, edge2.1)
-                        || self.leq(edge1.1, edge2.0)
-                })
-            }))
+
+    pub fn minimal_elements(&self) -> Vec<ElementId> {
+        (0..self.len())
+            .filter(|&id| (0..self.len()).all(|other| other == id || !self.leq(other, id)))
+            .collect()
     }
-    // Computes class1 \circ class2
-    pub fn compose(&self, class1: EdgeSet, class2: EdgeSet) -> EdgeSet {
+
+    pub fn maximal_elements(&self) -> Vec<ElementId> {
+        (0..self.len())
+            .filter(|&id| (0..self.len()).all(|other| other == id || !self.leq(id, other)))
+            .collect()
+    }
+
+    pub fn llc(&self, arrows: &EdgeSet) -> EdgeSet {
+        self.all_relations_iter()
+            .filter(|edge1| {
+                edge1.is_identity()
+                    || arrows.iter().all(|edge2| {
+                        !self.leq(edge1.from, edge2.from)
+                            || !self.leq(edge1.to, edge2.to)
+                            || self.leq(edge1.to, edge2.from)
+                    })
+            })
+            .collect()
+    }
+
+    pub fn rlc(&self, arrows: &EdgeSet) -> EdgeSet {
+        self.all_relations_iter()
+            .filter(|edge2| {
+                edge2.is_identity()
+                    || arrows.iter().all(|edge1| {
+                        !self.leq(edge1.from, edge2.from)
+                            || !self.leq(edge1.to, edge2.to)
+                            || self.leq(edge1.to, edge2.from)
+                    })
+            })
+            .collect()
+    }
+
+    /// Computes `class1` composed with `class2`.
+    pub fn compose(&self, class1: &EdgeSet, class2: &EdgeSet) -> EdgeSet {
         let mut result = EdgeSet::new();
-        for &(k, l) in class1.iter() {
-            for &(i, j) in class2.iter() {
-                if j == k {
-                    result.insert((i, l));
+        for edge1 in class1 {
+            for edge2 in class2 {
+                if edge2.to == edge1.from {
+                    result.insert(Edge::new(edge2.from, edge1.to));
                 }
             }
         }
         result
     }
-    pub fn composition_closed(&self, class: EdgeSet) -> bool {
-        for &(k, l) in class.iter() {
-            for &(i, j) in class.iter() {
-                if j == k && !class.contains(&(i, l)) {
-                    return false;
-                }
-            }
-        }
-        return true;
+
+    pub fn composition_closed(&self, class: &EdgeSet) -> bool {
+        class.iter().all(|edge1| {
+            class.iter().all(|edge2| {
+                edge2.to != edge1.from || class.contains(&Edge::new(edge2.from, edge1.to))
+            })
+        })
     }
-    // A.k.a horizontal join: combine two posets by first taking their disjoint union, then identifying their bottoms and tops
-    pub fn fusion(a: Self, b: Self) -> (Self, Vec<usize>, Vec<usize>) {
-        let n = a.elements.len();
-        let m = b.elements.len();
-        let a_top = a.top().expect("First argument has no top element.");
-        let a_bot = a.bot().expect("First argument has no bottom element.");
-        let b_bot = b.bot().expect("Second argument has no bottom element.");
-        let b_top = b.top().expect("Second argument has no top element.");
-        if a_top == a_bot || b_top == b_bot {
-            panic!("Cannot fuse with a trivial poset.");
-        }
+}
+
+impl<A: Clone, B: Clone> Poset<Either<A, B>> {
+    pub fn disjoint_union(
+        left: Arc<Poset<A>>,
+        right: Arc<Poset<B>>,
+    ) -> Result<PosetCoproduct<A, B>, MapError> {
+        let n = left.len();
+        let m = right.len();
         let mut elements = Vec::with_capacity(n + m);
+        elements.extend(left.elements().iter().cloned().map(Either::Left));
+        elements.extend(right.elements().iter().cloned().map(Either::Right));
+
         let mut relation = vec![BitVec::repeat(false, n + m); n + m];
-        elements.extend(a.elements.into_iter());
-        elements.extend(b.elements.into_iter());
-        for i in 0..n {
-            for j in 0..n {
-                if a.relation[i][j] {
-                    relation[i].set(j, true);
-                }
-            }
+        for edge in left.all_relations_iter() {
+            relation[edge.from].set(edge.to, true);
         }
-        for i in 0..m {
-            for j in 0..m {
-                if b.relation[i][j] {
-                    relation[n + i].set(n + j, true);
-                }
-            }
+        for edge in right.all_relations_iter() {
+            relation[n + edge.from].set(n + edge.to, true);
         }
-        // Identify tops
-        // All elements from b become leq a_top
-        for i in n..n + m {
-            relation[i].set(a_top, true);
-        }
-        // Identify bottoms
-        // All elements from b become geq a_bot
-        for i in n..n + m {
-            relation[a_bot].set(i, true);
-        }
-        // Remove b_top and b_bot from the poset
-        // Remove the elements!
-        elements.remove(n + b_top);
-        elements.remove(if b_top < b_bot {
-            n + b_bot - 1
-        } else {
-            n + b_bot
-        });
-        // First remove their rows
-        relation.remove(n + b_top);
-        relation.remove(if b_top < b_bot {
-            n + b_bot - 1
-        } else {
-            n + b_bot
-        });
-        // Then remove their columns
-        for row in relation.iter_mut() {
-            row.remove(n + b_top);
-            row.remove(if b_top < b_bot {
-                n + b_bot - 1
-            } else {
-                n + b_bot
-            });
-        }
-        let mut hom_2_mapping = vec![];
-        let mut hom_2_counter = n;
-        for i in 0..m {
-            if i == b_top {
-                hom_2_mapping.push(a_top);
-            } else if i == b_bot {
-                hom_2_mapping.push(a_bot);
-            } else {
-                hom_2_mapping.push(hom_2_counter);
-                hom_2_counter += 1;
-            }
-        }
-        (Self { elements, relation }, (0..n).collect(), hom_2_mapping)
+
+        let poset = Arc::new(Poset::from_validated(elements, relation));
+        let left_map = PosetMap::new(left, Arc::clone(&poset), (0..n).collect())?;
+        let right_map = PosetMap::new(right, Arc::clone(&poset), (n..n + m).collect())?;
+        Ok(PosetCoproduct {
+            poset,
+            left: left_map,
+            right: right_map,
+        })
     }
 }
 
 impl<A: Clone, B: Clone> Poset<(A, B)> {
-    pub fn direct_product(a: Poset<A>, b: Poset<B>) -> Self {
-        let n = a.elements.len();
-        let m = b.elements.len();
+    pub fn product(
+        left: Arc<Poset<A>>,
+        right: Arc<Poset<B>>,
+    ) -> Result<PosetProduct<A, B>, MapError> {
+        let n = left.len();
+        let m = right.len();
         let mut elements = Vec::with_capacity(n * m);
-        let mut relation = vec![BitVec::repeat(false, n * m); n * m];
-        for i in 0..n {
-            for j in 0..m {
-                elements.push((a.elements[i].clone(), b.elements[j].clone()));
+        for a in left.elements() {
+            for b in right.elements() {
+                elements.push((a.clone(), b.clone()));
             }
         }
+
+        let mut relation = vec![BitVec::repeat(false, n * m); n * m];
         for i1 in 0..n {
             for j1 in 0..m {
                 for i2 in 0..n {
                     for j2 in 0..m {
-                        if a.leq(i1, i2) && b.leq(j1, j2) {
+                        if left.leq(i1, i2) && right.leq(j1, j2) {
                             relation[i1 * m + j1].set(i2 * m + j2, true);
                         }
                     }
                 }
             }
         }
-        Self { elements, relation }
+
+        let poset = Arc::new(Poset::from_validated(elements, relation));
+        let left_projection = PosetMap::new(
+            Arc::clone(&poset),
+            left,
+            (0..n).flat_map(|i| std::iter::repeat_n(i, m)).collect(),
+        )?;
+        let right_projection = PosetMap::new(
+            Arc::clone(&poset),
+            right,
+            (0..n).flat_map(|_| 0..m).collect(),
+        )?;
+        Ok(PosetProduct {
+            poset,
+            left_projection,
+            right_projection,
+        })
     }
 }
 
-// impl<A, B> PosetHom<A, B> {
-//     pub fn validate(&self) -> bool {
-//         for (i, j) in self.domain.proper_relations_iter() {
-//             if !self.codomain.leq(self.mapping[i], self.mapping[j]) {
-//                 println!("Not a homomorphism! ({i},{j})");
-//                 return false;
-//             }
-//         }
-//         true
-//     }
-// }
+pub(crate) fn validate_relation(len: usize, relation: &[BitVec]) -> Result<(), PosetError> {
+    if relation.len() != len {
+        return Err(PosetError::RelationHeight {
+            expected: len,
+            actual: relation.len(),
+        });
+    }
+    for (row, bits) in relation.iter().enumerate() {
+        if bits.len() != len {
+            return Err(PosetError::RelationWidth {
+                row,
+                expected: len,
+                actual: bits.len(),
+            });
+        }
+    }
+    for (i, row) in relation.iter().enumerate() {
+        if !row[i] {
+            return Err(PosetError::MissingReflexiveEdge { element: i });
+        }
+    }
+    for (i, row) in relation.iter().enumerate() {
+        for (j, other_row) in relation.iter().enumerate().skip(i + 1) {
+            if row[j] && other_row[i] {
+                return Err(PosetError::NotAntisymmetric { left: i, right: j });
+            }
+        }
+    }
+    for i in 0..len {
+        for j in 0..len {
+            if relation[i][j] {
+                for k in relation[j].iter_ones() {
+                    if !relation[i][k] {
+                        return Err(PosetError::NotTransitive {
+                            lower: i,
+                            middle: j,
+                            upper: k,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
 
-// pub fn induced_pullback_transfer_systems<A, B>(
-//     f: PosetHom<A, B>,
-// ) -> PosetHom<TransferSystem, TransferSystem> {
-//     let domain = Rc::new(f.domain.transfer_poset());
-//     let codomain = Rc::new(f.codomain.transfer_poset());
-//     let mapping = codomain
-//         .elements
-//         .iter()
-//         .map(|t2| {
-//             let domain_cxt = &domain.elements[0].context;
-//             let mut extent = t2.extent_names_iter();
-//             let mut pulled_back_extent_list = vec![];
-//             for &edge in domain_cxt.objects.iter() {
-//                 if extent.any(|&x| (f.mapping[edge.0], f.mapping[edge.1]) == x) {
-//                     pulled_back_extent_list.push(edge);
-//                 }
-//             }
-//             let pulled_back_extent = domain_cxt.extent_from_objects(pulled_back_extent_list);
-//             domain
-//                 .elements
-//                 .iter()
-//                 .position(|x| x.data.extent == pulled_back_extent)
-//                 .unwrap()
-//         })
-//         .collect();
-//     PosetHom {
-//         domain,
-//         codomain,
-//         mapping,
-//     }
-// }
-
-// pub fn induced_pushforward_transfer_systems<A, B>(
-//     f: PosetHom<A, B>,
-// ) -> PosetHom<TransferSystem, TransferSystem> {
-//     let domain = Rc::new(f.domain.transfer_poset());
-//     let codomain = Rc::new(f.codomain.transfer_poset());
-//     let mapping = domain
-//         .elements
-//         .iter()
-//         .map(|t1| {
-//             let codomain_cxt = &codomain.elements[0].context;
-//             let mapped_extent = codomain_cxt.extent_from_objects(
-//                 t1.extent_names_iter()
-//                     .map(|&(i, j)| (f.mapping[i], f.mapping[j])),
-//             );
-//             let generated_intent = codomain_cxt.induce_r(&mapped_extent);
-//             codomain
-//                 .elements
-//                 .iter()
-//                 .position(|x| x.data.intent == generated_intent)
-//                 .unwrap()
-//         })
-//         .collect();
-//     PosetHom {
-//         domain,
-//         codomain,
-//         mapping,
-//     }
-// }
+pub(crate) fn transitive_closure(relation: &mut [BitVec]) {
+    let n = relation.len();
+    for k in 0..n {
+        for i in 0..n {
+            if relation[i][k] {
+                let row_k = relation[k].clone();
+                relation[i] |= row_k;
+            }
+        }
+    }
+}

@@ -2,6 +2,10 @@
 
 pub mod poset;
 
-pub mod transfer_lattice;
+pub mod lattice;
 
-// pub mod tikz;
+pub mod morphism;
+
+pub mod tikz;
+
+pub mod transfer_lattice;
