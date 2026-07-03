@@ -10,4 +10,9 @@ path = "src/lib.rs"
 
 [dependencies]
 bitvec = "1.0.1"
-fcars = {version = "0.2.1", features=["random"]}
+fcars = { version = "0.2.1", features = ["random"] }
+either = "1.16.0"
+gap-sys = { version = "0.2.4", optional = true }
+
+[features]
+groups = ["dep:gap-sys"]
