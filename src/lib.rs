@@ -9,3 +9,6 @@ pub mod morphism;
 pub mod tikz;
 
 pub mod transfer_lattice;
+
+#[cfg(feature = "groups")]
+pub mod g_lattice;
