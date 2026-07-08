@@ -1,5 +1,6 @@
 use crate::morphism::{PosetMap, PosetMapError};
 use bitvec::prelude::*;
+use either::Either;
 use std::collections::HashSet;
 use std::fmt;
 use std::sync::Arc;
@@ -40,13 +41,6 @@ impl From<Edge> for (ElementId, ElementId) {
 }
 
 pub type EdgeSet = HashSet<Edge>;
-
-/// Labels for elements of a disjoint union.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Either<A, B> {
-    Left(A),
-    Right(B),
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PosetError {
@@ -212,6 +206,7 @@ impl<A> Poset<A> {
         self.elements.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.elements.is_empty()
     }
@@ -232,10 +227,6 @@ impl<A> Poset<A> {
         self.relation[left][right]
     }
 
-    pub fn validate(&self) -> Result<(), PosetError> {
-        validate_relation(self.elements.len(), &self.relation)
-    }
-
     pub fn bottom(&self) -> Option<ElementId> {
         self.relation
             .iter()
@@ -243,12 +234,7 @@ impl<A> Poset<A> {
     }
 
     pub fn top(&self) -> Option<ElementId> {
-        self.relation
-            .iter()
-            .fold(BitVec::repeat(true, self.elements.len()), |acc, row| {
-                acc & row
-            })
-            .first_one()
+        (0..self.size()).find(|&j| self.relation.iter().all(|row| row[j]))
     }
 
     pub fn meet(&self, left: ElementId, right: ElementId) -> Option<ElementId> {
@@ -277,6 +263,7 @@ impl<A> Poset<A> {
         })
     }
 
+    #[must_use]
     pub fn is_lattice(&self) -> bool {
         !self.is_empty()
             && (0..self.size()).all(|i| {
@@ -284,18 +271,19 @@ impl<A> Poset<A> {
             })
     }
 
+    #[must_use]
     pub fn is_total_order(&self) -> bool {
         (0..self.size()).all(|i| (i + 1..self.size()).all(|j| self.leq(i, j) || self.leq(j, i)))
     }
 
-    pub fn all_relations_iter(&self) -> impl Iterator<Item = Edge> + '_ {
+    pub fn all_relations_iter(&self) -> impl Iterator<Item = Edge> {
         self.relation
             .iter()
             .enumerate()
             .flat_map(|(from, row)| row.iter_ones().map(move |to| Edge { from, to }))
     }
 
-    pub fn proper_relations_iter(&self) -> impl Iterator<Item = Edge> + '_ {
+    pub fn proper_relations_iter(&self) -> impl Iterator<Item = Edge> {
         self.all_relations_iter().filter(|edge| !edge.is_identity())
     }
 
@@ -350,27 +338,28 @@ impl<A> Poset<A> {
             })
             .collect()
     }
+}
 
-    /// Computes `class1` composed with `class2`.
-    pub fn compose(&self, class1: &EdgeSet, class2: &EdgeSet) -> EdgeSet {
-        let mut result = EdgeSet::new();
-        for edge1 in class1 {
-            for edge2 in class2 {
-                if edge2.to == edge1.from {
-                    result.insert(Edge::new(edge2.from, edge1.to));
-                }
+/// Computes `class1` composed with `class2`.
+pub fn compose(class1: &EdgeSet, class2: &EdgeSet) -> EdgeSet {
+    let mut result = EdgeSet::new();
+    for edge1 in class1 {
+        for edge2 in class2 {
+            if edge2.to == edge1.from {
+                result.insert(Edge::new(edge2.from, edge1.to));
             }
         }
-        result
     }
+    result
+}
 
-    pub fn composition_closed(&self, class: &EdgeSet) -> bool {
-        class.iter().all(|edge1| {
-            class.iter().all(|edge2| {
-                edge2.to != edge1.from || class.contains(&Edge::new(edge2.from, edge1.to))
-            })
-        })
-    }
+#[must_use]
+pub fn composition_closed(class: &EdgeSet) -> bool {
+    class.iter().all(|edge1| {
+        class
+            .iter()
+            .all(|edge2| edge2.to != edge1.from || class.contains(&Edge::new(edge2.from, edge1.to)))
+    })
 }
 
 impl<A: Clone, B: Clone> Poset<Either<A, B>> {

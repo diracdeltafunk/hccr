@@ -1,6 +1,7 @@
 use crate::morphism::LatticeMap;
-use crate::poset::{Either, ElementId, Poset, PosetError};
+use crate::poset::{ElementId, Poset, PosetError};
 use bitvec::prelude::*;
+use either::Either;
 use std::convert::TryFrom;
 use std::fmt;
 use std::sync::Arc;
@@ -114,10 +115,12 @@ impl<A> Lattice<A> {
         self.poset.size()
     }
 
+    #[must_use]
     pub fn is_trivial(&self) -> bool {
         self.bottom == self.top
     }
 
+    #[must_use]
     pub fn is_fusion_of_total_orders(&self) -> bool {
         (0..self.size()).all(|i| {
             (i + 1..self.size()).all(|j| {
@@ -164,19 +167,50 @@ impl<A> TryFrom<Poset<A>> for Lattice<A> {
             return Err(LatticeError::Empty);
         }
 
-        let mut meet = vec![vec![0; poset.size()]; poset.size()];
-        let mut join = vec![vec![0; poset.size()]; poset.size()];
+        let n = poset.size();
+        let relation = poset.relation_matrix();
 
-        for i in 0..poset.size() {
-            for j in 0..poset.size() {
-                let Some(m) = poset.meet(i, j) else {
-                    return Err(LatticeError::NotALattice { left: i, right: j });
-                };
-                let Some(k) = poset.join(i, j) else {
+        // col[j] has bit i set iff i ≤ j (the transpose of the relation matrix).
+        // This lets us find all lower bounds of a pair (i, j) with a single
+        // bitwise AND of two column bitmasks, rather than an O(n) scan per
+        // candidate.
+        let col: Vec<BitVec> = (0..n)
+            .map(|j| (0..n).map(|i| relation[i][j]).collect())
+            .collect();
+
+        let mut meet = vec![vec![0usize; n]; n];
+        let mut join = vec![vec![0usize; n]; n];
+
+        // Only compute the upper triangle; meet and join are symmetric.
+        for i in 0..n {
+            meet[i][i] = i;
+            join[i][i] = i;
+            for j in (i + 1)..n {
+                // Lower bounds of (i, j): elements below both i and j.
+                let lower_bounds = col[i].clone() & col[j].clone();
+                // Meet = the greatest lower bound: the element m ∈ lower_bounds
+                // such that every other lower bound k satisfies k ≤ m.
+                let Some(m) = lower_bounds
+                    .iter_ones()
+                    .find(|&m| lower_bounds.iter_ones().all(|k| relation[k][m]))
+                else {
                     return Err(LatticeError::NotALattice { left: i, right: j });
                 };
                 meet[i][j] = m;
+                meet[j][i] = m;
+
+                // Upper bounds of (i, j): elements above both i and j.
+                let upper_bounds = relation[i].clone() & relation[j].clone();
+                // Join = the least upper bound: the element k ∈ upper_bounds
+                // such that every other upper bound u satisfies k ≤ u.
+                let Some(k) = upper_bounds
+                    .iter_ones()
+                    .find(|&k| upper_bounds.iter_ones().all(|u| relation[k][u]))
+                else {
+                    return Err(LatticeError::NotALattice { left: i, right: j });
+                };
                 join[i][j] = k;
+                join[j][i] = k;
             }
         }
 
@@ -227,9 +261,6 @@ pub fn horizontal_join<A: Clone, B: Clone>(
     }
     for edge in right.as_poset().all_relations_iter() {
         relation[right_map[edge.from]].set(right_map[edge.to], true);
-    }
-    for (i, row) in relation.iter_mut().enumerate() {
-        row.set(i, true);
     }
 
     let poset = Poset::from_relation(elements, relation)?;

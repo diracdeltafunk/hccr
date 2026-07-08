@@ -16,3 +16,6 @@ gap-sys = { version = "0.2.4", optional = true }
 
 [features]
 groups = ["dep:gap-sys"]
+
+[patch.crates-io]
+gap-sys = { path = "../gap-sys" }

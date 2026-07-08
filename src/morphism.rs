@@ -133,8 +133,21 @@ impl<A, B> PosetMap<A, B> {
         &self.map
     }
 
-    pub fn apply(&self, element: ElementId) -> ElementId {
-        self.map[element]
+    pub fn apply(&self, element: ElementId) -> Option<ElementId> {
+        self.map.get(element).copied()
+    }
+
+    pub(crate) fn from_validated(
+        domain: Arc<Poset<A>>,
+        codomain: Arc<Poset<B>>,
+        map: Vec<ElementId>,
+    ) -> Self {
+        debug_assert!(validate_poset_map(domain.as_ref(), codomain.as_ref(), &map).is_ok());
+        Self {
+            domain,
+            codomain,
+            map,
+        }
     }
 }
 
@@ -204,16 +217,16 @@ impl<A, B> LatticeMap<A, B> {
         &self.map
     }
 
-    pub fn apply(&self, element: ElementId) -> ElementId {
-        self.map[element]
+    pub fn apply(&self, element: ElementId) -> Option<ElementId> {
+        self.map.get(element).copied()
     }
 
-    pub fn as_poset_map(&self) -> Result<PosetMap<A, B>, PosetMapError>
+    pub fn as_poset_map(&self) -> PosetMap<A, B>
     where
         A: Clone,
         B: Clone,
     {
-        PosetMap::new(
+        PosetMap::from_validated(
             Arc::new(self.domain.as_poset().clone()),
             Arc::new(self.codomain.as_poset().clone()),
             self.map.clone(),
@@ -241,7 +254,7 @@ fn validate_poset_map<A, B>(
             });
         }
     }
-    for edge in domain.all_relations_iter() {
+    for edge in domain.proper_relations_iter() {
         let lower_image = map[edge.from];
         let upper_image = map[edge.to];
         if !codomain.leq(lower_image, upper_image) {
