@@ -22,10 +22,18 @@ pub struct LatticeFusion<A, B> {
     pub right: LatticeMap<B, Either<A, B>>,
 }
 
+#[derive(Debug, Clone)]
+pub struct LatticeProduct<A, B> {
+    pub lattice: Arc<Lattice<(A, B)>>,
+    pub left_projection: LatticeMap<(A, B), A>,
+    pub right_projection: LatticeMap<(A, B), B>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LatticeError {
     Poset(PosetError),
     Empty,
+    BooleanRankTooLarge { rank: usize },
     MissingBottom,
     MissingTop,
     NotALattice { left: ElementId, right: ElementId },
@@ -36,6 +44,10 @@ impl fmt::Display for LatticeError {
         match self {
             LatticeError::Poset(error) => write!(f, "{error}"),
             LatticeError::Empty => write!(f, "a finite lattice must be nonempty"),
+            LatticeError::BooleanRankTooLarge { rank } => write!(
+                f,
+                "cannot encode Boolean lattice of rank {rank} as usize bitmasks"
+            ),
             LatticeError::MissingBottom => write!(f, "poset has no bottom element"),
             LatticeError::MissingTop => write!(f, "poset has no top element"),
             LatticeError::NotALattice { left, right } => write!(
@@ -156,6 +168,60 @@ impl<A> Lattice<A> {
 
     pub fn top(&self) -> ElementId {
         self.top
+    }
+}
+
+impl Lattice<usize> {
+    /// Constructs the chain `[top] = {0, ..., top}` with its usual total order.
+    pub fn chain(top: usize) -> Result<Self, LatticeError> {
+        Lattice::new(Poset::chain(top)?)
+    }
+
+    /// Constructs the Boolean lattice of subsets of `{0, ..., rank - 1}`.
+    ///
+    /// Elements are encoded as bitmasks ordered by subset inclusion.
+    pub fn boolean(rank: usize) -> Result<Self, LatticeError> {
+        if rank >= usize::BITS as usize {
+            return Err(LatticeError::BooleanRankTooLarge { rank });
+        }
+
+        let size = 1usize << rank;
+        Lattice::new(Poset::from_vec_by((0..size).collect(), |left, right| {
+            left & !right == 0
+        })?)
+    }
+}
+
+impl<A: Clone, B: Clone> Lattice<(A, B)> {
+    /// Constructs the direct product of two lattices and its canonical projections.
+    pub fn product(
+        left: Arc<Lattice<A>>,
+        right: Arc<Lattice<B>>,
+    ) -> Result<LatticeProduct<A, B>, LatticeError> {
+        let product = crate::poset::product(
+            Arc::new(left.as_poset().clone()),
+            Arc::new(right.as_poset().clone()),
+        )
+        .expect("product projections should be poset maps");
+        let lattice = Arc::new(Lattice::new(product.poset.as_ref().clone())?);
+        let left_projection = LatticeMap::new(
+            Arc::clone(&lattice),
+            left,
+            product.left_projection.map().to_vec(),
+        )
+        .expect("left product projection should be a lattice map");
+        let right_projection = LatticeMap::new(
+            Arc::clone(&lattice),
+            right,
+            product.right_projection.map().to_vec(),
+        )
+        .expect("right product projection should be a lattice map");
+
+        Ok(LatticeProduct {
+            lattice,
+            left_projection,
+            right_projection,
+        })
     }
 }
 

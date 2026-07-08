@@ -161,6 +161,13 @@ impl<A: PartialOrd> Poset<A> {
     }
 }
 
+impl Poset<usize> {
+    /// Constructs the chain `[top] = {0, ..., top}` with its usual total order.
+    pub fn chain(top: usize) -> Result<Self, PosetError> {
+        Poset::from_vec((0..=top).collect())
+    }
+}
+
 impl<A> Poset<A> {
     pub fn from_relation(elements: Vec<A>, relation: Vec<BitVec>) -> Result<Self, PosetError> {
         validate_relation(elements.len(), &relation)?;
@@ -360,6 +367,22 @@ pub fn composition_closed(class: &EdgeSet) -> bool {
             .iter()
             .all(|edge2| edge2.to != edge1.from || class.contains(&Edge::new(edge2.from, edge1.to)))
     })
+}
+
+/// Constructs the disjoint union of two posets and its canonical inclusions.
+pub fn disjoint_union<A: Clone, B: Clone>(
+    left: Arc<Poset<A>>,
+    right: Arc<Poset<B>>,
+) -> Result<PosetCoproduct<A, B>, PosetMapError> {
+    Poset::<Either<A, B>>::disjoint_union(left, right)
+}
+
+/// Constructs the direct product of two posets and its canonical projections.
+pub fn product<A: Clone, B: Clone>(
+    left: Arc<Poset<A>>,
+    right: Arc<Poset<B>>,
+) -> Result<PosetProduct<A, B>, PosetMapError> {
+    Poset::<(A, B)>::product(left, right)
 }
 
 impl<A: Clone, B: Clone> Poset<Either<A, B>> {

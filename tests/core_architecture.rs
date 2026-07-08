@@ -1,5 +1,5 @@
 use hccr::lattice::Lattice;
-use hccr::poset::{Edge, Poset};
+use hccr::poset::{self, Edge, Poset};
 use hccr::tikz::{transfer_system_lattice_to_tikz, transfer_system_order_to_tikz};
 use std::sync::Arc;
 
@@ -106,6 +106,29 @@ fn non_lattice_poset_is_rejected() {
     )
     .unwrap();
     assert!(Lattice::new(poset).is_err());
+}
+
+#[test]
+fn poset_product_and_disjoint_union_constructors_work() {
+    let left = Arc::new(Poset::chain(1).unwrap());
+    let right = Arc::new(Poset::chain(2).unwrap());
+
+    let product = poset::product(Arc::clone(&left), Arc::clone(&right)).unwrap();
+    assert_eq!(product.poset.size(), 6);
+    assert!(product.poset.leq(0, 5));
+    assert!(product.poset.leq(1, 4));
+    assert!(!product.poset.leq(2, 3));
+    assert_eq!(product.left_projection.map(), &[0, 0, 0, 1, 1, 1]);
+    assert_eq!(product.right_projection.map(), &[0, 1, 2, 0, 1, 2]);
+
+    let coproduct = poset::disjoint_union(Arc::clone(&left), Arc::clone(&right)).unwrap();
+    assert_eq!(coproduct.poset.size(), 5);
+    assert!(coproduct.poset.leq(0, 1));
+    assert!(coproduct.poset.leq(2, 4));
+    assert!(!coproduct.poset.leq(0, 2));
+    assert!(!coproduct.poset.leq(2, 0));
+    assert_eq!(coproduct.left.map(), &[0, 1]);
+    assert_eq!(coproduct.right.map(), &[2, 3, 4]);
 }
 
 #[test]
