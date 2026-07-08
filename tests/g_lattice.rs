@@ -1,8 +1,7 @@
 #![cfg(feature = "groups")]
 
 use hccr::g_lattice::{
-    GLattice, GLatticeError, GapSession, GapSubgroup, RelationOrbit, RelationTransporter,
-    SubgroupGLattice,
+    GLattice, GLatticeError, GapSubgroup, RelationOrbit, RelationTransporter, SubgroupGLattice,
 };
 use hccr::lattice::Lattice;
 use hccr::poset::{Edge, Poset};
@@ -11,21 +10,18 @@ use std::sync::Arc;
 
 #[test]
 fn g_lattice_constructors_precompute_relation_orbits() -> Result<(), Box<dyn Error>> {
-    let session = GapSession::try_new()?;
     let diamond = diamond_lattice();
-    let group = session.eval("Group((1,2));")?;
+    let group = gap_eval("Group((1,2));")?;
 
     let from_generators = GLattice::from_generator_images(
-        &session,
         Arc::clone(&diamond),
         group.as_element(),
         vec![vec![0, 2, 1, 3]],
     )?;
 
     let homomorphism =
-        session.eval("GroupHomomorphismByImages(Group((1,2)), Group((2,3)), [(1,2)], [(2,3)]);")?;
+        gap_eval("GroupHomomorphismByImages(Group((1,2)), Group((2,3)), [(1,2)], [(2,3)]);")?;
     let from_gap = GLattice::from_gap_homomorphism(
-        &session,
         Arc::clone(&diamond),
         group.as_element(),
         homomorphism.as_element(),
@@ -63,32 +59,30 @@ fn g_lattice_constructors_precompute_relation_orbits() -> Result<(), Box<dyn Err
     let fixed = from_generators
         .relation_orbit(Edge::new(0, 0))
         .expect("fixed identity relation should have an orbit");
-    assert_eq!(order(&session, fixed.stabilizer())?, 2);
+    assert_eq!(order(fixed.stabilizer())?, 2);
 
     let swapped = from_generators
         .relation_orbit(Edge::new(0, 1))
         .expect("swapped relation should have an orbit");
     assert_eq!(swapped.canonical_representative(), Edge::new(0, 1));
     assert_eq!(swapped.relation_ids(), &[1, 2]);
-    assert_eq!(order(&session, swapped.stabilizer())?, 1);
+    assert_eq!(order(swapped.stabilizer())?, 1);
 
     for orbit in from_generators.relation_orbits() {
         for transporter in orbit.transporters() {
-            assert_transporter(&session, &from_generators, orbit, transporter)?;
+            assert_transporter(&from_generators, orbit, transporter)?;
         }
     }
 
-    check_subgroup_lattice_constructor_uses_conjugation_action(&session)?;
-    assert_rejections(&session, group.as_element())?;
+    check_subgroup_lattice_constructor_uses_conjugation_action()?;
+    assert_rejections(group.as_element())?;
 
     Ok(())
 }
 
-fn check_subgroup_lattice_constructor_uses_conjugation_action(
-    session: &GapSession,
-) -> Result<(), Box<dyn Error>> {
-    let group = session.eval("SymmetricGroup(3);")?;
-    let subgroup_lattice = SubgroupGLattice::new(session, group.as_element())?;
+fn check_subgroup_lattice_constructor_uses_conjugation_action() -> Result<(), Box<dyn Error>> {
+    let group = gap_eval("SymmetricGroup(3);")?;
+    let subgroup_lattice = SubgroupGLattice::new(group.as_element())?;
     let g_lattice = subgroup_lattice.g_lattice();
 
     assert_eq!(subgroup_lattice.subgroups().len(), 6);
@@ -125,67 +119,52 @@ fn check_subgroup_lattice_constructor_uses_conjugation_action(
         c2_identity_orbit.relations(),
         &[Edge::new(1, 1), Edge::new(2, 2), Edge::new(3, 3)]
     );
-    assert_eq!(order(session, c2_identity_orbit.stabilizer())?, 2);
+    assert_eq!(order(c2_identity_orbit.stabilizer())?, 2);
 
     let c3_identity_orbit = g_lattice
         .relation_orbit(Edge::new(4, 4))
         .expect("normal C3 identity relation should have an orbit");
     assert_eq!(c3_identity_orbit.relations(), &[Edge::new(4, 4)]);
-    assert_eq!(order(session, c3_identity_orbit.stabilizer())?, 6);
+    assert_eq!(order(c3_identity_orbit.stabilizer())?, 6);
 
-    let via_associated = GLattice::from_subgroup_lattice(session, group.as_element())?;
+    let via_associated = GLattice::from_subgroup_lattice(group.as_element())?;
     assert_eq!(via_associated.g_lattice().lattice().size(), 6);
 
     Ok(())
 }
 
-fn assert_rejections(
-    session: &GapSession,
-    group: &gap_sys::GapElement,
-) -> Result<(), Box<dyn Error>> {
+fn assert_rejections(group: &gap_sys::GapElement) -> Result<(), Box<dyn Error>> {
     let diamond = diamond_lattice();
 
-    let err =
-        GLattice::from_generator_images(session, Arc::clone(&diamond), group, vec![vec![0, 1, 2]])
-            .unwrap_err();
+    let err = GLattice::from_generator_images(Arc::clone(&diamond), group, vec![vec![0, 1, 2]])
+        .unwrap_err();
     assert!(matches!(err, GLatticeError::WrongPermutationLength { .. }));
 
-    let err = GLattice::from_generator_images(
-        session,
-        Arc::clone(&diamond),
-        group,
-        vec![vec![0, 1, 1, 3]],
-    )
-    .unwrap_err();
+    let err = GLattice::from_generator_images(Arc::clone(&diamond), group, vec![vec![0, 1, 1, 3]])
+        .unwrap_err();
     assert!(matches!(
         err,
         GLatticeError::DuplicatePermutationImage { .. }
     ));
 
-    let err = GLattice::from_generator_images(
-        session,
-        Arc::clone(&diamond),
-        group,
-        vec![vec![1, 0, 2, 3]],
-    )
-    .unwrap_err();
+    let err = GLattice::from_generator_images(Arc::clone(&diamond), group, vec![vec![1, 0, 2, 3]])
+        .unwrap_err();
     assert!(matches!(err, GLatticeError::NotALatticeAutomorphism { .. }));
 
-    let err =
-        GLattice::from_generator_images(session, m3_lattice(), group, vec![vec![0, 2, 3, 1, 4]])
-            .unwrap_err();
+    let err = GLattice::from_generator_images(m3_lattice(), group, vec![vec![0, 2, 3, 1, 4]])
+        .unwrap_err();
     assert!(matches!(err, GLatticeError::HomomorphismByImagesFailed));
 
     Ok(())
 }
 
 fn assert_transporter<A>(
-    session: &GapSession,
     g_lattice: &GLattice<A>,
     orbit: &RelationOrbit,
     transporter: &RelationTransporter,
 ) -> Result<(), Box<dyn Error>> {
-    let image = session.call_global(
+    let gap = gap_sys::global()?;
+    let image = gap.call_global_rooted(
         "Image",
         &[
             g_lattice.relation_action_homomorphism(),
@@ -193,7 +172,7 @@ fn assert_transporter<A>(
         ],
     )?;
     let permutation =
-        session.permutation_images_zero_based(image.as_element(), g_lattice.relations().len())?;
+        gap.permutation_images_zero_based(image.as_element(), g_lattice.relations().len())?;
     assert_eq!(
         permutation[orbit.canonical_relation_id()],
         transporter.relation_id()
@@ -201,9 +180,15 @@ fn assert_transporter<A>(
     Ok(())
 }
 
-fn order(session: &GapSession, element: &gap_sys::GapElement) -> Result<usize, GLatticeError> {
-    let order = session.call_global("Order", &[element])?;
-    session.integer_usize(order.as_element())
+fn order(element: &gap_sys::GapElement) -> Result<usize, Box<dyn Error>> {
+    let gap = gap_sys::global()?;
+    let order = gap.call_global_rooted("Order", &[element])?;
+    Ok(gap.integer_usize(order.as_element())?)
+}
+
+fn gap_eval(cmd: &str) -> Result<gap_sys::GapObj, Box<dyn Error>> {
+    let gap = gap_sys::global()?;
+    Ok(gap.eval_rooted(cmd)?)
 }
 
 fn orbit_ids<A>(g_lattice: &GLattice<A>) -> Vec<Vec<usize>> {
