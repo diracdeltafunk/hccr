@@ -1,7 +1,8 @@
 #![cfg(feature = "groups")]
 
 use hccr::g_lattice::{
-    GLattice, GLatticeError, GapSubgroup, RelationOrbit, RelationTransporter, SubgroupGLattice,
+    GLattice, GLatticeError, GapSubgroup, RelationOrbit, RelationOrbitLabel, RelationTransporter,
+    SubgroupGLattice,
 };
 use hccr::lattice::Lattice;
 use hccr::poset::{Edge, Poset};
@@ -68,6 +69,9 @@ fn g_lattice_constructors_precompute_relation_orbits() -> Result<(), Box<dyn Err
     assert_eq!(swapped.relation_ids(), &[1, 2]);
     assert_eq!(order(swapped.stabilizer())?, 1);
 
+    assert_transfer_context_quotients_by_non_identity_relation_orbits(&from_generators);
+    assert_transfer_system_containment_lattice_uses_orbit_inclusion(&from_generators)?;
+
     for orbit in from_generators.relation_orbits() {
         for transporter in orbit.transporters() {
             assert_transporter(&from_generators, orbit, transporter)?;
@@ -76,6 +80,93 @@ fn g_lattice_constructors_precompute_relation_orbits() -> Result<(), Box<dyn Err
 
     check_subgroup_lattice_constructor_uses_conjugation_action()?;
     assert_rejections(group.as_element())?;
+
+    Ok(())
+}
+
+fn assert_transfer_context_quotients_by_non_identity_relation_orbits(
+    g_lattice: &GLattice<&'static str>,
+) {
+    let context = g_lattice.transfer_context();
+    let expected_labels = vec![
+        RelationOrbitLabel::new(1, 1, Edge::new(0, 1)),
+        RelationOrbitLabel::new(2, 3, Edge::new(0, 3)),
+        RelationOrbitLabel::new(4, 5, Edge::new(1, 3)),
+    ];
+    assert_eq!(context.objects, expected_labels);
+    assert_eq!(context.attributes, expected_labels);
+    assert_eq!(
+        g_lattice.non_identity_relation_orbit_labels(),
+        expected_labels
+    );
+
+    let lower_middle = expected_labels[0];
+    let bottom_top = expected_labels[1];
+    let middle_top = expected_labels[2];
+
+    assert!(!context.get_relation(&lower_middle, &lower_middle));
+    assert!(context.get_relation(&lower_middle, &bottom_top));
+    assert!(context.get_relation(&lower_middle, &middle_top));
+
+    assert!(!context.get_relation(&bottom_top, &lower_middle));
+    assert!(!context.get_relation(&bottom_top, &bottom_top));
+    assert!(context.get_relation(&bottom_top, &middle_top));
+
+    assert!(!context.get_relation(&middle_top, &lower_middle));
+    assert!(!context.get_relation(&middle_top, &bottom_top));
+    assert!(!context.get_relation(&middle_top, &middle_top));
+}
+
+fn assert_transfer_system_containment_lattice_uses_orbit_inclusion(
+    g_lattice: &GLattice<&'static str>,
+) -> Result<(), Box<dyn Error>> {
+    let expected_labels = g_lattice.non_identity_relation_orbit_labels();
+    let universe = g_lattice.transfer_universe();
+    assert!(Arc::ptr_eq(universe.lattice(), g_lattice.lattice()));
+    assert_eq!(universe.relation_orbit_labels(), expected_labels);
+
+    let containment = g_lattice.transfer_systems_containment()?;
+    assert!(Arc::ptr_eq(
+        containment.universe().lattice(),
+        g_lattice.lattice()
+    ));
+    assert_eq!(containment.size(), 4);
+    assert_eq!(containment.as_poset().cover_relations().len(), 3);
+    assert_eq!(containment.to_system_lattice().size(), containment.size());
+
+    let from_universe = universe.containment_lattice()?;
+    assert_eq!(from_universe.size(), containment.size());
+    assert_eq!(universe.transfer_systems().len(), containment.size());
+
+    let bottom = containment
+        .system(containment.bottom())
+        .expect("bottom G-transfer system should exist");
+    assert!(bottom.raw().orbit_arrows().not_any());
+    assert!(bottom.relation_orbit_labels().is_empty());
+    assert!(bottom.relations(false).is_empty());
+    assert_eq!(bottom.relations(true).len(), g_lattice.lattice().size());
+
+    let top = containment
+        .system(containment.top())
+        .expect("top G-transfer system should exist");
+    assert_eq!(top.relation_orbit_labels(), expected_labels);
+    assert_eq!(top.relations(false).len(), 5);
+    for relation in [
+        Edge::new(0, 1),
+        Edge::new(0, 2),
+        Edge::new(0, 3),
+        Edge::new(1, 3),
+        Edge::new(2, 3),
+    ] {
+        assert!(top.relations(false).contains(&relation));
+    }
+
+    let mut orbit_counts = containment
+        .systems()
+        .map(|system| system.raw().orbit_arrows().count_ones())
+        .collect::<Vec<_>>();
+    orbit_counts.sort_unstable();
+    assert_eq!(orbit_counts, vec![0, 1, 2, 3]);
 
     Ok(())
 }

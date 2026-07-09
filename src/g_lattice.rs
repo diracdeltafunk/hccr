@@ -1,11 +1,21 @@
 use crate::lattice::{Lattice, LatticeError};
 use crate::morphism::LatticeMapError;
-use crate::poset::{Edge, ElementId, Poset, PosetError};
+use crate::poset::{Edge, EdgeSet, ElementId, Poset, PosetError};
+use crate::transfer_lattice::bitvec_subset;
 use bitvec::prelude::*;
+use fcars::FormalContext;
 use gap_sys::{Gap, GapElement, GapObj, GlobalGapGuard};
 use std::collections::VecDeque;
 use std::fmt;
 use std::sync::Arc;
+
+pub type GTransferContext = FormalContext<RelationOrbitLabel, RelationOrbitLabel>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawGTransferSystem {
+    /// Bitmask of the non-identity relation orbits in the transfer system.
+    orbit_arrows: BitVec,
+}
 
 pub struct GLattice<A> {
     lattice: Arc<Lattice<A>>,
@@ -38,6 +48,13 @@ pub struct RelationTransporter {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RelationOrbitLabel {
+    orbit_id: usize,
+    canonical_relation_id: usize,
+    canonical_representative: Edge,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct GapSubgroup {
     conjugacy_class: usize,
     class_element: usize,
@@ -49,6 +66,28 @@ pub struct SubgroupGLattice {
     conjugacy_classes: GapObj,
     subgroup_list: GapObj,
     subgroups: Vec<GapObj>,
+}
+
+/// Shared ambient data that gives raw G-transfer-system bitsets their meaning.
+#[derive(Debug)]
+pub struct GTransferUniverse<A> {
+    underlying_lattice: Arc<Lattice<A>>,
+    context: GTransferContext,
+    relation_orbits: Vec<Vec<Edge>>,
+}
+
+/// An owned transfer system on a G-lattice together with its ambient data.
+#[derive(Debug)]
+pub struct GTransferSystem<A> {
+    raw: RawGTransferSystem,
+    universe: Arc<GTransferUniverse<A>>,
+}
+
+/// A lattice of transfer systems on a fixed G-lattice, ordered by containment.
+#[derive(Debug, Clone)]
+pub struct GTransferLattice<A> {
+    universe: Arc<GTransferUniverse<A>>,
+    lattice: Lattice<RawGTransferSystem>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -264,6 +303,56 @@ impl From<LatticeError> for GLatticeError {
     }
 }
 
+impl PartialOrd for RawGTransferSystem {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        if self.orbit_arrows == other.orbit_arrows {
+            Some(std::cmp::Ordering::Equal)
+        } else if bitvec_subset(&self.orbit_arrows, &other.orbit_arrows) {
+            Some(std::cmp::Ordering::Less)
+        } else if bitvec_subset(&other.orbit_arrows, &self.orbit_arrows) {
+            Some(std::cmp::Ordering::Greater)
+        } else {
+            None
+        }
+    }
+}
+
+impl RawGTransferSystem {
+    fn new(orbit_arrows: BitVec) -> Self {
+        Self { orbit_arrows }
+    }
+
+    pub fn orbit_arrows(&self) -> &BitVec {
+        &self.orbit_arrows
+    }
+}
+
+impl RelationOrbitLabel {
+    pub fn new(
+        orbit_id: usize,
+        canonical_relation_id: usize,
+        canonical_representative: Edge,
+    ) -> Self {
+        Self {
+            orbit_id,
+            canonical_relation_id,
+            canonical_representative,
+        }
+    }
+
+    pub fn orbit_id(&self) -> usize {
+        self.orbit_id
+    }
+
+    pub fn canonical_relation_id(&self) -> usize {
+        self.canonical_relation_id
+    }
+
+    pub fn canonical_representative(&self) -> Edge {
+        self.canonical_representative
+    }
+}
+
 impl GapSubgroup {
     pub fn new(conjugacy_class: usize, class_element: usize) -> Self {
         Self {
@@ -471,6 +560,54 @@ impl<A> GLattice<A> {
             .and_then(|relation_id| self.relation_orbit_by_id(relation_id))
     }
 
+    pub fn non_identity_relation_orbit_labels(&self) -> Vec<RelationOrbitLabel> {
+        self.relation_orbits
+            .iter()
+            .enumerate()
+            .filter(|(_, orbit)| !orbit.canonical_representative().is_identity())
+            .map(|(orbit_id, orbit)| {
+                RelationOrbitLabel::new(
+                    orbit_id,
+                    orbit.canonical_relation_id(),
+                    orbit.canonical_representative(),
+                )
+            })
+            .collect()
+    }
+
+    pub fn transfer_context(&self) -> GTransferContext {
+        let labels = self.non_identity_relation_orbit_labels();
+        let matrix = labels
+            .iter()
+            .map(|object| {
+                labels
+                    .iter()
+                    .map(|attribute| {
+                        self.relation_orbits[attribute.orbit_id()]
+                            .relations()
+                            .iter()
+                            .all(|&relation| {
+                                transfer_context_relation(
+                                    self.lattice.as_ref(),
+                                    relation,
+                                    object.canonical_representative(),
+                                )
+                            })
+                    })
+                    .collect()
+            })
+            .collect();
+        FormalContext::new(labels.clone(), labels, matrix)
+    }
+
+    pub fn transfer_universe(&self) -> Arc<GTransferUniverse<A>> {
+        Arc::new(GTransferUniverse::new(self))
+    }
+
+    pub fn transfer_systems_containment(&self) -> Result<GTransferLattice<A>, GLatticeError> {
+        self.transfer_universe().containment_lattice()
+    }
+
     fn from_parts(gap: &mut Gap, parts: GLatticeParts<A>) -> Result<Self, GLatticeError> {
         let relation_to_orbit = relation_to_orbit(
             parts.relations.len(),
@@ -575,6 +712,175 @@ impl SubgroupGLattice {
 
     pub fn subgroup(&self, id: ElementId) -> Option<&GapElement> {
         self.subgroups.get(id).map(GapObj::as_element)
+    }
+}
+
+impl<A> GTransferUniverse<A> {
+    pub fn new(g_lattice: &GLattice<A>) -> Self {
+        let context = g_lattice.transfer_context();
+        let relation_orbits = context
+            .objects
+            .iter()
+            .map(|label| {
+                g_lattice.relation_orbits[label.orbit_id()]
+                    .relations()
+                    .to_vec()
+            })
+            .collect();
+        Self {
+            underlying_lattice: Arc::clone(g_lattice.lattice()),
+            context,
+            relation_orbits,
+        }
+    }
+
+    pub fn lattice(&self) -> &Arc<Lattice<A>> {
+        &self.underlying_lattice
+    }
+
+    pub fn context(&self) -> &GTransferContext {
+        &self.context
+    }
+
+    pub fn relation_orbit_labels(&self) -> &[RelationOrbitLabel] {
+        &self.context.objects
+    }
+
+    pub fn relation_orbit_relations(&self, orbit_label_id: usize) -> Option<&[Edge]> {
+        self.relation_orbits.get(orbit_label_id).map(Vec::as_slice)
+    }
+
+    pub fn transfer_systems(self: &Arc<Self>) -> Vec<GTransferSystem<A>> {
+        all_g_transfer_systems(self)
+            .into_iter()
+            .map(|raw| GTransferSystem::new(raw, Arc::clone(self)))
+            .collect()
+    }
+
+    pub fn containment_lattice(self: &Arc<Self>) -> Result<GTransferLattice<A>, GLatticeError> {
+        Ok(g_containment_lattice(
+            Arc::clone(self),
+            all_g_transfer_systems(self),
+        )?)
+    }
+}
+
+impl<A> GTransferSystem<A> {
+    pub fn new(raw: RawGTransferSystem, universe: Arc<GTransferUniverse<A>>) -> Self {
+        Self { raw, universe }
+    }
+
+    pub fn raw(&self) -> &RawGTransferSystem {
+        &self.raw
+    }
+
+    pub fn universe(&self) -> &Arc<GTransferUniverse<A>> {
+        &self.universe
+    }
+
+    pub fn lattice(&self) -> &Arc<Lattice<A>> {
+        self.universe.lattice()
+    }
+
+    pub fn relation_orbit_labels(&self) -> Vec<RelationOrbitLabel> {
+        self.raw
+            .orbit_arrows()
+            .iter_ones()
+            .map(|orbit_label_id| self.universe.relation_orbit_labels()[orbit_label_id])
+            .collect()
+    }
+
+    pub fn relations(&self, include_identities: bool) -> EdgeSet {
+        let mut result = EdgeSet::new();
+        if include_identities {
+            for id in 0..self.lattice().size() {
+                result.insert(Edge::new(id, id));
+            }
+        }
+
+        for orbit_label_id in self.raw.orbit_arrows().iter_ones() {
+            result.extend(
+                self.universe.relation_orbits[orbit_label_id]
+                    .iter()
+                    .copied(),
+            );
+        }
+        result
+    }
+}
+
+impl<A> Clone for GTransferSystem<A> {
+    fn clone(&self) -> Self {
+        Self {
+            raw: self.raw.clone(),
+            universe: Arc::clone(&self.universe),
+        }
+    }
+}
+
+impl<A> PartialEq for GTransferSystem<A> {
+    fn eq(&self, other: &Self) -> bool {
+        self.raw == other.raw && Arc::ptr_eq(&self.universe, &other.universe)
+    }
+}
+
+impl<A> Eq for GTransferSystem<A> {}
+
+impl<A> GTransferLattice<A> {
+    fn new(universe: Arc<GTransferUniverse<A>>, lattice: Lattice<RawGTransferSystem>) -> Self {
+        Self { universe, lattice }
+    }
+
+    pub fn universe(&self) -> &Arc<GTransferUniverse<A>> {
+        &self.universe
+    }
+
+    pub fn raw_lattice(&self) -> &Lattice<RawGTransferSystem> {
+        &self.lattice
+    }
+
+    pub fn as_poset(&self) -> &Poset<RawGTransferSystem> {
+        self.lattice.as_poset()
+    }
+
+    pub fn size(&self) -> usize {
+        self.lattice.size()
+    }
+
+    pub fn meet_id(&self, left: ElementId, right: ElementId) -> ElementId {
+        self.lattice.meet_id(left, right)
+    }
+
+    pub fn join_id(&self, left: ElementId, right: ElementId) -> ElementId {
+        self.lattice.join_id(left, right)
+    }
+
+    pub fn bottom(&self) -> ElementId {
+        self.lattice.bottom()
+    }
+
+    pub fn top(&self) -> ElementId {
+        self.lattice.top()
+    }
+
+    pub fn system(&self, id: ElementId) -> Option<GTransferSystem<A>> {
+        self.lattice
+            .element(id)
+            .cloned()
+            .map(|raw| GTransferSystem::new(raw, Arc::clone(&self.universe)))
+    }
+
+    pub fn systems(&self) -> impl Iterator<Item = GTransferSystem<A>> + '_ {
+        self.lattice
+            .elements()
+            .iter()
+            .cloned()
+            .map(|raw| GTransferSystem::new(raw, Arc::clone(&self.universe)))
+    }
+
+    pub fn to_system_lattice(&self) -> Lattice<GTransferSystem<A>> {
+        self.lattice
+            .relabelled(|raw| GTransferSystem::new(raw.clone(), Arc::clone(&self.universe)))
     }
 }
 
@@ -827,6 +1133,49 @@ fn relation_generator_permutations(
                 .collect()
         })
         .collect()
+}
+
+fn transfer_context_relation<A>(
+    lattice: &Lattice<A>,
+    attribute_relation: Edge,
+    object_relation: Edge,
+) -> bool {
+    lattice.leq(attribute_relation.to, object_relation.from)
+        || !lattice.leq(attribute_relation.to, object_relation.to)
+        || !lattice.leq(attribute_relation.from, object_relation.from)
+}
+
+fn all_g_transfer_systems<A>(universe: &GTransferUniverse<A>) -> Vec<RawGTransferSystem> {
+    universe
+        .context()
+        .all_concepts_raw()
+        .into_iter()
+        .map(|concept| RawGTransferSystem::new(concept.extent))
+        .collect()
+}
+
+fn g_containment_lattice<A>(
+    universe: Arc<GTransferUniverse<A>>,
+    systems: Vec<RawGTransferSystem>,
+) -> Result<GTransferLattice<A>, LatticeError> {
+    let poset = g_transfer_systems_ordered_by(systems, |left, right| {
+        bitvec_subset(left.orbit_arrows(), right.orbit_arrows())
+    })?;
+    Ok(GTransferLattice::new(universe, Lattice::new(poset)?))
+}
+
+fn g_transfer_systems_ordered_by<F>(
+    systems: Vec<RawGTransferSystem>,
+    predicate: F,
+) -> Result<Poset<RawGTransferSystem>, PosetError>
+where
+    F: Fn(&RawGTransferSystem, &RawGTransferSystem) -> bool,
+{
+    let relation = systems
+        .iter()
+        .map(|left| systems.iter().map(|right| predicate(left, right)).collect())
+        .collect();
+    Poset::from_relation(systems, relation)
 }
 
 fn gap_action_from_generator_permutations(

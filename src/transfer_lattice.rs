@@ -461,7 +461,7 @@ fn composition_closed_order<A>(
 }
 
 ///  Checks if the set of bits in `left` is a subset of the set of bits in `right` (and that they have the same number of bits). To do this we loop over the underlying words of the bit vectors and check that no bit is set in `left` that is not also set in `right`.
-fn bitvec_subset(left: &BitVec, right: &BitVec) -> bool {
+pub(crate) fn bitvec_subset(left: &BitVec, right: &BitVec) -> bool {
     if left.len() != right.len() {
         return false;
     }
