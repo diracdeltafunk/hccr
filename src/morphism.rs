@@ -1,23 +1,42 @@
+//! Order-preserving maps and lattice homomorphisms.
+//!
+//! A map is represented by its values on element ids: the entry `map[i]` is the
+//! image of the element `i`.  Constructors validate the relevant mathematical
+//! axioms before producing a [`crate::morphism::PosetMap`] or [`crate::morphism::LatticeMap`].
+
 use crate::lattice::Lattice;
 use crate::poset::{ElementId, Poset};
 use std::fmt;
 use std::sync::Arc;
 
+/// Errors that can occur while constructing a monotone map of posets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PosetMapError {
+    /// The image vector does not have one entry for each element of the domain.
     WrongLength {
+        /// The required length, equal to the domain size.
         expected: usize,
+        /// The supplied length.
         actual: usize,
     },
+    /// An image is not an element of the codomain.
     ImageOutOfBounds {
+        /// The domain element whose image is invalid.
         element: ElementId,
+        /// The invalid codomain id.
         image: ElementId,
+        /// The number of elements in the codomain.
         codomain_len: usize,
     },
+    /// The map fails to preserve the order relation.
     NotMonotone {
+        /// The lower element in a relation `lower <= upper` of the domain.
         lower: ElementId,
+        /// The upper element in a relation `lower <= upper` of the domain.
         upper: ElementId,
+        /// The image of `lower`.
         lower_image: ElementId,
+        /// The image of `upper`.
         upper_image: ElementId,
     },
 }
@@ -51,23 +70,39 @@ impl fmt::Display for PosetMapError {
 
 impl std::error::Error for PosetMapError {}
 
+/// Errors that can occur while constructing a lattice homomorphism.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LatticeMapError {
+    /// The underlying function is not a monotone map of posets.
     Poset(PosetMapError),
+    /// The map does not preserve a binary meet.
     DoesNotPreserveMeet {
+        /// The first element in the failing meet.
         left: ElementId,
+        /// The second element in the failing meet.
         right: ElementId,
     },
+    /// The map does not preserve a binary join.
     DoesNotPreserveJoin {
+        /// The first element in the failing join.
         left: ElementId,
+        /// The second element in the failing join.
         right: ElementId,
     },
+    /// The bottom element of the domain is not sent to the bottom element of
+    /// the codomain.
     DoesNotPreserveBottom {
+        /// The codomain bottom.
         expected: ElementId,
+        /// The actual image of the domain bottom.
         actual: ElementId,
     },
+    /// The top element of the domain is not sent to the top element of the
+    /// codomain.
     DoesNotPreserveTop {
+        /// The codomain top.
         expected: ElementId,
+        /// The actual image of the domain top.
         actual: ElementId,
     },
 }
@@ -100,6 +135,10 @@ impl From<PosetMapError> for LatticeMapError {
     }
 }
 
+/// A monotone map between finite posets.
+///
+/// The domain and codomain are reference-counted so maps can be returned
+/// together with constructions such as products and coproducts.
 #[derive(Debug, Clone)]
 pub struct PosetMap<A, B> {
     domain: Arc<Poset<A>>,
@@ -108,6 +147,11 @@ pub struct PosetMap<A, B> {
 }
 
 impl<A, B> PosetMap<A, B> {
+    /// Constructs a monotone map from its image vector.
+    ///
+    /// The vector must have length equal to the domain size, each image must be
+    /// an element id in the codomain, and `x <= y` in the domain must imply
+    /// `f(x) <= f(y)` in the codomain.
     pub fn new(
         domain: Arc<Poset<A>>,
         codomain: Arc<Poset<B>>,
@@ -121,18 +165,26 @@ impl<A, B> PosetMap<A, B> {
         })
     }
 
+    /// Returns the domain poset.
     pub fn domain(&self) -> &Arc<Poset<A>> {
         &self.domain
     }
 
+    /// Returns the codomain poset.
     pub fn codomain(&self) -> &Arc<Poset<B>> {
         &self.codomain
     }
 
+    /// Returns the image vector for this map.
+    ///
+    /// The entry at index `i` is the image of element `i` in the domain.
     pub fn map(&self) -> &[ElementId] {
         &self.map
     }
 
+    /// Applies the map to a domain element.
+    ///
+    /// Returns `None` when the supplied element id is outside the domain.
     pub fn apply(&self, element: ElementId) -> Option<ElementId> {
         self.map.get(element).copied()
     }
@@ -151,6 +203,11 @@ impl<A, B> PosetMap<A, B> {
     }
 }
 
+/// A lattice homomorphism between finite lattices.
+///
+/// This is a function preserving bottom, top, binary meets, and binary joins.
+/// In finite lattices such a function is automatically monotone, but the
+/// constructor also checks monotonicity for clearer diagnostics.
 #[derive(Debug, Clone)]
 pub struct LatticeMap<A, B> {
     domain: Arc<Lattice<A>>,
@@ -159,6 +216,10 @@ pub struct LatticeMap<A, B> {
 }
 
 impl<A, B> LatticeMap<A, B> {
+    /// Constructs a lattice homomorphism from its image vector.
+    ///
+    /// The vector must define a monotone map of the underlying posets and must
+    /// preserve bottom, top, all binary meets, and all binary joins.
     pub fn new(
         domain: Arc<Lattice<A>>,
         codomain: Arc<Lattice<B>>,
@@ -205,22 +266,31 @@ impl<A, B> LatticeMap<A, B> {
         })
     }
 
+    /// Returns the domain lattice.
     pub fn domain(&self) -> &Arc<Lattice<A>> {
         &self.domain
     }
 
+    /// Returns the codomain lattice.
     pub fn codomain(&self) -> &Arc<Lattice<B>> {
         &self.codomain
     }
 
+    /// Returns the image vector for this homomorphism.
+    ///
+    /// The entry at index `i` is the image of element `i` in the domain.
     pub fn map(&self) -> &[ElementId] {
         &self.map
     }
 
+    /// Applies the homomorphism to a domain element.
+    ///
+    /// Returns `None` when the supplied element id is outside the domain.
     pub fn apply(&self, element: ElementId) -> Option<ElementId> {
         self.map.get(element).copied()
     }
 
+    /// Forgets the lattice structure and returns the underlying monotone map.
     pub fn as_poset_map(&self) -> PosetMap<A, B>
     where
         A: Clone,

@@ -12,7 +12,7 @@ use std::sync::Arc;
 #[test]
 fn g_lattice_constructors_precompute_relation_orbits() -> Result<(), Box<dyn Error>> {
     let diamond = diamond_lattice();
-    let group = gap_eval("Group((1,2));")?;
+    let group = gap_sys::gap_eval("Group((1,2));")?;
 
     let from_generators = GLattice::from_generator_images(
         Arc::clone(&diamond),
@@ -20,8 +20,9 @@ fn g_lattice_constructors_precompute_relation_orbits() -> Result<(), Box<dyn Err
         vec![vec![0, 2, 1, 3]],
     )?;
 
-    let homomorphism =
-        gap_eval("GroupHomomorphismByImages(Group((1,2)), Group((2,3)), [(1,2)], [(2,3)]);")?;
+    let homomorphism = gap_sys::gap_eval(
+        "GroupHomomorphismByImages(Group((1,2)), Group((2,3)), [(1,2)], [(2,3)]);",
+    )?;
     let from_gap = GLattice::from_gap_homomorphism(
         Arc::clone(&diamond),
         group.as_element(),
@@ -172,7 +173,7 @@ fn assert_transfer_system_containment_lattice_uses_orbit_inclusion(
 }
 
 fn check_subgroup_lattice_constructor_uses_conjugation_action() -> Result<(), Box<dyn Error>> {
-    let group = gap_eval("SymmetricGroup(3);")?;
+    let group = gap_sys::gap_eval("SymmetricGroup(3);")?;
     let subgroup_lattice = SubgroupGLattice::new(group.as_element())?;
     let g_lattice = subgroup_lattice.g_lattice();
 
@@ -275,11 +276,6 @@ fn order(element: &gap_sys::GapElement) -> Result<usize, Box<dyn Error>> {
     let gap = gap_sys::global()?;
     let order = gap.call_global_rooted("Order", &[element])?;
     Ok(gap.integer_usize(order.as_element())?)
-}
-
-fn gap_eval(cmd: &str) -> Result<gap_sys::GapObj, Box<dyn Error>> {
-    let gap = gap_sys::global()?;
-    Ok(gap.eval_rooted(cmd)?)
 }
 
 fn orbit_ids<A>(g_lattice: &GLattice<A>) -> Vec<Vec<usize>> {

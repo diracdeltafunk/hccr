@@ -1,3 +1,16 @@
+//! Transfer systems on finite lattices.
+//!
+//! For a finite lattice `L`, a transfer system is represented here as a
+//! reflexive partial order on the elements of `L` that is contained in the
+//! lattice order and satisfies the usual restriction/factorization closure
+//! condition.  Computationally, the identity relations are implicit and a
+//! transfer system is stored as a bitvector of selected non-identity relations
+//! `x < y`.
+//!
+//! The enumeration uses formal concept analysis: the proper relations of `L`
+//! are used as both objects and attributes in a formal context, and formal
+//! concepts of this context correspond to transfer systems.
+
 use crate::lattice::{Lattice, LatticeError};
 use crate::poset::{Edge, EdgeSet, ElementId, Poset, PosetError};
 use bitvec::prelude::*;
@@ -7,6 +20,11 @@ use std::sync::Arc;
 
 type TransferContext = FormalContext<Edge, Edge>;
 
+/// A transfer system stored as a bitvector of non-identity lattice relations.
+///
+/// The ambient lattice and the ordering of proper relations live in
+/// [`TransferUniverse`].  Identity relations `x <= x` are not stored in the
+/// bitvector; they are mathematically part of every transfer system.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawTransferSystem {
     /// Bitmask of the non-identity arrows in the transfer system.
@@ -28,6 +46,10 @@ impl PartialOrd for RawTransferSystem {
 }
 
 /// Shared ambient data that gives raw transfer-system bitsets their meaning.
+///
+/// A universe fixes the lattice `L`, the deterministic ordering of the proper
+/// relations of `L`, and the formal context whose concepts enumerate transfer
+/// systems.
 #[derive(Debug)]
 pub struct TransferUniverse<A> {
     /// The lattice on which we might have a transfer system.
@@ -37,6 +59,10 @@ pub struct TransferUniverse<A> {
 }
 
 /// An owned transfer system together with its ambient lattice data.
+///
+/// This is the user-facing form of a transfer system: it pairs a raw bitvector
+/// with the universe needed to interpret each bit as a relation in the
+/// underlying lattice.
 #[derive(Debug)]
 pub struct TransferSystem<A> {
     raw: RawTransferSystem,
@@ -44,6 +70,9 @@ pub struct TransferSystem<A> {
 }
 
 /// A poset of transfer systems on a fixed lattice.
+///
+/// This wrapper is used for orders on transfer systems that need not themselves
+/// be lattices, such as the composition-closed order.
 #[derive(Debug, Clone)]
 pub struct TransferPoset<A> {
     universe: Arc<TransferUniverse<A>>,
@@ -51,15 +80,21 @@ pub struct TransferPoset<A> {
 }
 
 /// A lattice of transfer systems on a fixed lattice.
+///
+/// For the containment order, meet is intersection of transfer systems and join
+/// is the transfer-system closure of union.
 #[derive(Debug, Clone)]
 pub struct TransferLattice<A> {
     universe: Arc<TransferUniverse<A>>,
     lattice: Lattice<RawTransferSystem>,
 }
 
+/// Errors that can occur while constructing transfer-system orders.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransferError {
+    /// Construction of an underlying finite poset failed.
     Poset(PosetError),
+    /// Construction of an underlying finite lattice failed.
     Lattice(LatticeError),
 }
 
@@ -87,6 +122,10 @@ impl From<LatticeError> for TransferError {
 }
 
 impl<A> Lattice<A> {
+    /// Builds the shared universe used to enumerate transfer systems on `self`.
+    ///
+    /// The universe records all non-identity relations of the lattice and the
+    /// formal context whose concepts correspond to transfer systems.
     pub fn transfer_universe(self: Arc<Self>) -> Arc<TransferUniverse<A>> {
         Arc::new(TransferUniverse::new(self))
     }
@@ -109,12 +148,20 @@ impl<A> Lattice<A> {
         FormalContext::new(proper_edges.clone(), proper_edges, matrix)
     }
 
+    /// Constructs the lattice of transfer systems ordered by containment.
+    ///
+    /// A transfer system is below another precisely when its set of
+    /// non-identity relations is a subset of the other's.
     pub fn transfer_systems_containment(
         self: Arc<Self>,
     ) -> Result<TransferLattice<A>, TransferError> {
         self.transfer_universe().containment_lattice()
     }
 
+    /// Constructs the composition-closed order on transfer systems.
+    ///
+    /// This order refines containment by the factorization condition used in
+    /// the transfer-system literature.
     pub fn transfer_systems_composition_closed(
         self: Arc<Self>,
     ) -> Result<TransferPoset<A>, TransferError> {
@@ -138,6 +185,10 @@ impl RawTransferSystem {
         Self { arrows }
     }
 
+    /// Returns the bitvector of non-identity relations.
+    ///
+    /// Bit `i` corresponds to `universe.proper_edges()[i]` for any
+    /// [`TransferUniverse`] interpreting this raw transfer system.
     pub fn arrows(&self) -> &BitVec {
         &self.arrows
     }
@@ -166,6 +217,7 @@ impl RawTransferSystem {
 }
 
 impl<A> TransferUniverse<A> {
+    /// Constructs the transfer-system universe for a lattice.
     pub fn new(underlying_lattice: Arc<Lattice<A>>) -> Self {
         let context = underlying_lattice.transfer_context();
         Self {
@@ -174,10 +226,14 @@ impl<A> TransferUniverse<A> {
         }
     }
 
+    /// Returns the underlying lattice.
     pub fn underlying_lattice(&self) -> &Arc<Lattice<A>> {
         &self.underlying_lattice
     }
 
+    /// Returns the underlying lattice.
+    ///
+    /// This is an alias for [`TransferUniverse::underlying_lattice`].
     pub fn lattice(&self) -> &Arc<Lattice<A>> {
         &self.underlying_lattice
     }
@@ -186,10 +242,18 @@ impl<A> TransferUniverse<A> {
         &self.context
     }
 
+    /// Returns the proper lattice relations used as transfer-system generators.
+    ///
+    /// These are the non-identity relations `x < y`, in deterministic
+    /// row-major order inherited from the underlying poset.
     pub fn proper_edges(&self) -> &[Edge] {
         &self.context.objects
     }
 
+    /// Enumerates all transfer systems on the underlying lattice.
+    ///
+    /// Each result shares this universe, so its raw bitvector can be decoded
+    /// using [`TransferUniverse::proper_edges`].
     pub fn transfer_systems(self: &Arc<Self>) -> Vec<TransferSystem<A>> {
         all_transfer_systems(self)
             .into_iter()
@@ -197,6 +261,7 @@ impl<A> TransferUniverse<A> {
             .collect()
     }
 
+    /// Constructs the lattice of transfer systems ordered by containment.
     pub fn containment_lattice(self: &Arc<Self>) -> Result<TransferLattice<A>, TransferError> {
         Ok(containment_lattice(
             Arc::clone(self),
@@ -204,6 +269,7 @@ impl<A> TransferUniverse<A> {
         )?)
     }
 
+    /// Constructs the composition-closed order on transfer systems.
     pub fn composition_closed_order(self: &Arc<Self>) -> Result<TransferPoset<A>, TransferError> {
         Ok(composition_closed_order(
             Arc::clone(self),
@@ -222,22 +288,30 @@ fn all_transfer_systems<A>(universe: &TransferUniverse<A>) -> Vec<RawTransferSys
 }
 
 impl<A> TransferSystem<A> {
+    /// Pairs raw transfer-system data with its ambient universe.
     pub fn new(raw: RawTransferSystem, universe: Arc<TransferUniverse<A>>) -> Self {
         Self { raw, universe }
     }
 
+    /// Returns the raw bitvector representation.
     pub fn raw(&self) -> &RawTransferSystem {
         &self.raw
     }
 
+    /// Returns the ambient universe.
     pub fn universe(&self) -> &Arc<TransferUniverse<A>> {
         &self.universe
     }
 
+    /// Returns the underlying lattice.
     pub fn lattice(&self) -> &Arc<Lattice<A>> {
         self.universe.lattice()
     }
 
+    /// Returns the relations belonging to this transfer system.
+    ///
+    /// If `include_identities` is true, the identity relations `x <= x` are
+    /// included along with the stored non-identity relations.
     pub fn edges(&self, include_identities: bool) -> EdgeSet {
         let mut result = EdgeSet::new();
         if include_identities {
@@ -277,22 +351,27 @@ impl<A> TransferPoset<A> {
         Self { universe, poset }
     }
 
+    /// Returns the universe shared by all systems in this poset.
     pub fn universe(&self) -> &Arc<TransferUniverse<A>> {
         &self.universe
     }
 
+    /// Returns the raw poset whose labels are bitvector transfer systems.
     pub fn raw_poset(&self) -> &Poset<RawTransferSystem> {
         &self.poset
     }
 
+    /// Returns the number of transfer systems in the poset.
     pub fn size(&self) -> usize {
         self.poset.size()
     }
 
+    /// Returns the cover relations in the Hasse diagram of this poset.
     pub fn cover_relations(&self) -> EdgeSet {
         self.poset.cover_relations()
     }
 
+    /// Returns a transfer system by element id in this poset.
     pub fn system(&self, id: ElementId) -> Option<TransferSystem<A>> {
         self.poset
             .element(id)
@@ -300,6 +379,7 @@ impl<A> TransferPoset<A> {
             .map(|raw| TransferSystem::new(raw, Arc::clone(&self.universe)))
     }
 
+    /// Iterates over all transfer systems in element-id order.
     pub fn systems(&self) -> impl Iterator<Item = TransferSystem<A>> + '_ {
         self.poset
             .elements()
@@ -308,6 +388,7 @@ impl<A> TransferPoset<A> {
             .map(|raw| TransferSystem::new(raw, Arc::clone(&self.universe)))
     }
 
+    /// Relabels the raw poset by user-facing [`TransferSystem`] values.
     pub fn to_system_poset(&self) -> Poset<TransferSystem<A>> {
         self.poset
             .relabelled(|raw| TransferSystem::new(raw.clone(), Arc::clone(&self.universe)))
@@ -319,38 +400,47 @@ impl<A> TransferLattice<A> {
         Self { universe, lattice }
     }
 
+    /// Returns the universe shared by all systems in this lattice.
     pub fn universe(&self) -> &Arc<TransferUniverse<A>> {
         &self.universe
     }
 
+    /// Returns the raw lattice whose labels are bitvector transfer systems.
     pub fn raw_lattice(&self) -> &Lattice<RawTransferSystem> {
         &self.lattice
     }
 
+    /// Returns the underlying poset of the transfer-system lattice.
     pub fn as_poset(&self) -> &Poset<RawTransferSystem> {
         self.lattice.as_poset()
     }
 
+    /// Returns the number of transfer systems in the lattice.
     pub fn size(&self) -> usize {
         self.lattice.size()
     }
 
+    /// Returns the meet of two transfer systems by element id.
     pub fn meet_id(&self, left: ElementId, right: ElementId) -> ElementId {
         self.lattice.meet_id(left, right)
     }
 
+    /// Returns the join of two transfer systems by element id.
     pub fn join_id(&self, left: ElementId, right: ElementId) -> ElementId {
         self.lattice.join_id(left, right)
     }
 
+    /// Returns the bottom transfer system.
     pub fn bottom(&self) -> ElementId {
         self.lattice.bottom()
     }
 
+    /// Returns the top transfer system.
     pub fn top(&self) -> ElementId {
         self.lattice.top()
     }
 
+    /// Returns a transfer system by element id in this lattice.
     pub fn system(&self, id: ElementId) -> Option<TransferSystem<A>> {
         self.lattice
             .element(id)
@@ -358,6 +448,7 @@ impl<A> TransferLattice<A> {
             .map(|raw| TransferSystem::new(raw, Arc::clone(&self.universe)))
     }
 
+    /// Iterates over all transfer systems in element-id order.
     pub fn systems(&self) -> impl Iterator<Item = TransferSystem<A>> + '_ {
         self.lattice
             .elements()
@@ -366,6 +457,7 @@ impl<A> TransferLattice<A> {
             .map(|raw| TransferSystem::new(raw, Arc::clone(&self.universe)))
     }
 
+    /// Relabels the raw lattice by user-facing [`TransferSystem`] values.
     pub fn to_system_lattice(&self) -> Lattice<TransferSystem<A>> {
         self.lattice
             .relabelled(|raw| TransferSystem::new(raw.clone(), Arc::clone(&self.universe)))

@@ -1,3 +1,10 @@
+//! Finite lattices.
+//!
+//! A [`crate::lattice::Lattice`] is a nonempty finite poset in which every pair of elements has
+//! a meet and a join.  The type stores the underlying [`crate::poset::Poset`] together with
+//! precomputed meet and join tables, so lattice operations by element id are
+//! constant-time after construction.
+
 use crate::morphism::LatticeMap;
 use crate::poset::{ElementId, Poset, PosetError};
 use bitvec::prelude::*;
@@ -6,6 +13,11 @@ use std::convert::TryFrom;
 use std::fmt;
 use std::sync::Arc;
 
+/// A finite lattice.
+///
+/// The underlying order is stored as a [`Poset`].  Meets, joins, bottom, and top
+/// are computed once when the lattice is constructed and then accessed by
+/// [`ElementId`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Lattice<A> {
     poset: Poset<A>,
@@ -15,28 +27,56 @@ pub struct Lattice<A> {
     top: ElementId,
 }
 
+/// The horizontal join, or fusion, of two nontrivial lattices.
+///
+/// The construction identifies the two bottom elements and identifies the two
+/// top elements, leaving all other elements in the two factors disjoint.
 #[derive(Debug, Clone)]
 pub struct LatticeFusion<A, B> {
+    /// The fused lattice, with labels tagged according to their original side.
     pub lattice: Arc<Lattice<Either<A, B>>>,
+    /// The canonical lattice embedding of the left factor.
     pub left: LatticeMap<A, Either<A, B>>,
+    /// The canonical lattice embedding of the right factor.
     pub right: LatticeMap<B, Either<A, B>>,
 }
 
+/// The categorical product of two finite lattices and its projections.
+///
+/// The order, meet, and join are all computed componentwise.
 #[derive(Debug, Clone)]
 pub struct LatticeProduct<A, B> {
+    /// The product lattice.
     pub lattice: Arc<Lattice<(A, B)>>,
+    /// The first projection `(a, b) |-> a`.
     pub left_projection: LatticeMap<(A, B), A>,
+    /// The second projection `(a, b) |-> b`.
     pub right_projection: LatticeMap<(A, B), B>,
 }
 
+/// Errors that can occur while constructing a finite lattice.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LatticeError {
+    /// The underlying poset failed validation.
     Poset(PosetError),
+    /// A finite lattice must have at least one element.
     Empty,
-    BooleanRankTooLarge { rank: usize },
+    /// The requested Boolean lattice cannot be encoded by `usize` bitmasks.
+    BooleanRankTooLarge {
+        /// The requested rank.
+        rank: usize,
+    },
+    /// The poset has no element below every other element.
     MissingBottom,
+    /// The poset has no element above every other element.
     MissingTop,
-    NotALattice { left: ElementId, right: ElementId },
+    /// A pair of elements lacks a meet or a join.
+    NotALattice {
+        /// The first element in the failing pair.
+        left: ElementId,
+        /// The second element in the failing pair.
+        right: ElementId,
+    },
 }
 
 impl fmt::Display for LatticeError {
@@ -66,9 +106,12 @@ impl From<PosetError> for LatticeError {
     }
 }
 
+/// Errors that can occur while forming a horizontal join of lattices.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HorizontalJoinError {
+    /// At least one input has bottom equal to top.
     TrivialInput,
+    /// The fused order failed to form a lattice.
     Lattice(LatticeError),
 }
 
@@ -98,18 +141,27 @@ impl From<PosetError> for HorizontalJoinError {
 }
 
 impl<A> Lattice<A> {
+    /// Constructs a lattice from a finite poset.
+    ///
+    /// This checks that the poset is nonempty, has bottom and top, and that
+    /// every pair of elements has both a meet and a join.
     pub fn new(poset: Poset<A>) -> Result<Self, LatticeError> {
         Self::try_from(poset)
     }
 
+    /// Returns the underlying poset.
     pub fn as_poset(&self) -> &Poset<A> {
         &self.poset
     }
 
+    /// Consumes the lattice and returns its underlying poset.
     pub fn into_poset(self) -> Poset<A> {
         self.poset
     }
 
+    /// Returns the same lattice with labels transformed by `f`.
+    ///
+    /// The order, meet table, join table, bottom, and top are unchanged.
     pub fn relabelled<B, F>(&self, f: F) -> Lattice<B>
     where
         F: FnMut(&A) -> B,
@@ -123,15 +175,22 @@ impl<A> Lattice<A> {
         }
     }
 
+    /// Returns the number of elements.
     pub fn size(&self) -> usize {
         self.poset.size()
     }
 
+    /// Returns whether the lattice has exactly one element.
     #[must_use]
     pub fn is_trivial(&self) -> bool {
         self.bottom == self.top
     }
 
+    /// Returns whether the lattice is a fusion of total orders.
+    ///
+    /// Equivalently, any two incomparable non-bottom elements have meet equal
+    /// to bottom.  This is a useful recognition criterion for examples built
+    /// from chains by horizontal joins.
     #[must_use]
     pub fn is_fusion_of_total_orders(&self) -> bool {
         (0..self.size()).all(|i| {
@@ -142,30 +201,43 @@ impl<A> Lattice<A> {
         })
     }
 
+    /// Returns all element labels in `ElementId` order.
     pub fn elements(&self) -> &[A] {
         self.poset.elements()
     }
 
+    /// Returns the label of an element by id.
     pub fn element(&self, id: ElementId) -> Option<&A> {
         self.poset.element(id)
     }
 
+    /// Tests the order relation `left <= right`.
+    ///
+    /// Panics if either id is out of bounds.
     pub fn leq(&self, left: ElementId, right: ElementId) -> bool {
         self.poset.leq(left, right)
     }
 
+    /// Returns the meet `left /\ right`.
+    ///
+    /// Panics if either id is out of bounds.
     pub fn meet_id(&self, left: ElementId, right: ElementId) -> ElementId {
         self.meet[left][right]
     }
 
+    /// Returns the join `left \/ right`.
+    ///
+    /// Panics if either id is out of bounds.
     pub fn join_id(&self, left: ElementId, right: ElementId) -> ElementId {
         self.join[left][right]
     }
 
+    /// Returns the bottom element.
     pub fn bottom(&self) -> ElementId {
         self.bottom
     }
 
+    /// Returns the top element.
     pub fn top(&self) -> ElementId {
         self.top
     }
@@ -194,6 +266,9 @@ impl Lattice<usize> {
 
 impl<A: Clone, B: Clone> Lattice<(A, B)> {
     /// Constructs the direct product of two lattices and its canonical projections.
+    ///
+    /// The product lattice has elements `(a, b)` and componentwise order:
+    /// `(a, b) <= (a', b')` if and only if `a <= a'` and `b <= b'`.
     pub fn product(
         left: Arc<Lattice<A>>,
         right: Arc<Lattice<B>>,
@@ -294,6 +369,11 @@ impl<A> TryFrom<Poset<A>> for Lattice<A> {
 }
 
 /// Fuses two nontrivial lattices by identifying their bottoms and tops.
+///
+/// The resulting lattice contains a copy of each input lattice, except that the
+/// two bottom elements are identified and the two top elements are identified.
+/// No new comparabilities are added between the two factors beyond those forced
+/// by the common bottom and common top.
 pub fn horizontal_join<A: Clone, B: Clone>(
     left: Arc<Lattice<A>>,
     right: Arc<Lattice<B>>,

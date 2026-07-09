@@ -1,3 +1,13 @@
+//! Finite partially ordered sets.
+//!
+//! A [`crate::poset::Poset`] stores the reflexive, transitive order relation as a dense
+//! Boolean matrix.  The entry `relation[i][j]` means `i <= j`.  This is often
+//! more convenient for the small finite lattices that occur in transfer-system
+//! calculations than an adjacency-list representation of the Hasse diagram.
+//!
+//! The labels of a poset are not required to be unique.  Public APIs therefore
+//! refer to elements by [`crate::poset::ElementId`], a stable index into the label vector.
+
 use crate::morphism::{PosetMap, PosetMapError};
 use bitvec::prelude::*;
 use either::Either;
@@ -14,15 +24,19 @@ pub type ElementId = usize;
 /// An ordered relation `from <= to` between elements of a poset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Edge {
+    /// The lower element of the relation.
     pub from: ElementId,
+    /// The upper element of the relation.
     pub to: ElementId,
 }
 
 impl Edge {
+    /// Constructs the relation `from <= to`.
     pub fn new(from: ElementId, to: ElementId) -> Self {
         Self { from, to }
     }
 
+    /// Returns whether this relation is an identity relation `x <= x`.
     pub fn is_identity(self) -> bool {
         self.from == self.to
     }
@@ -40,33 +54,54 @@ impl From<Edge> for (ElementId, ElementId) {
     }
 }
 
+/// A set of ordered relations in a finite poset.
 pub type EdgeSet = HashSet<Edge>;
 
+/// Errors that can occur while validating or constructing a finite poset.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PosetError {
+    /// The relation matrix has the wrong number of rows.
     RelationHeight {
+        /// The number of rows required by the element list.
         expected: usize,
+        /// The number of rows actually supplied.
         actual: usize,
     },
+    /// A row of the relation matrix has the wrong number of columns.
     RelationWidth {
+        /// The row whose width is invalid.
         row: usize,
+        /// The number of columns required by the element list.
         expected: usize,
+        /// The number of columns actually supplied.
         actual: usize,
     },
+    /// The relation is not reflexive.
     MissingReflexiveEdge {
+        /// The element `x` for which `x <= x` is absent.
         element: ElementId,
     },
+    /// The relation has a nontrivial two-cycle.
     NotAntisymmetric {
+        /// One element in a pair with both `left <= right` and `right <= left`.
         left: ElementId,
+        /// The other element in the antisymmetry violation.
         right: ElementId,
     },
+    /// The relation is not transitive.
     NotTransitive {
+        /// The lower element in `lower <= middle <= upper`.
         lower: ElementId,
+        /// The middle element in `lower <= middle <= upper`.
         middle: ElementId,
+        /// The upper element that should be above `lower`.
         upper: ElementId,
     },
+    /// An edge references an element outside the poset.
     EdgeOutOfBounds {
+        /// The invalid edge.
         edge: Edge,
+        /// The number of elements in the poset.
         len: usize,
     },
 }
@@ -126,17 +161,29 @@ pub struct Poset<A> {
     relation: Vec<BitVec>,
 }
 
+/// The coproduct, or disjoint union, of two finite posets.
+///
+/// No order relations are added between the two summands.  Thus an element
+/// from the left summand is incomparable with every element from the right
+/// summand, and vice versa.
 #[derive(Debug, Clone)]
 pub struct PosetCoproduct<A, B> {
+    /// The disjoint union poset, with labels tagged by [`either::Either`].
     pub poset: Arc<Poset<Either<A, B>>>,
+    /// The canonical order embedding of the left summand.
     pub left: PosetMap<A, Either<A, B>>,
+    /// The canonical order embedding of the right summand.
     pub right: PosetMap<B, Either<A, B>>,
 }
 
+/// The categorical product of two finite posets and its projections.
 #[derive(Debug, Clone)]
 pub struct PosetProduct<A, B> {
+    /// The product poset with componentwise order.
     pub poset: Arc<Poset<(A, B)>>,
+    /// The first projection `(a, b) |-> a`.
     pub left_projection: PosetMap<(A, B), A>,
+    /// The second projection `(a, b) |-> b`.
     pub right_projection: PosetMap<(A, B), B>,
 }
 
@@ -169,11 +216,19 @@ impl Poset<usize> {
 }
 
 impl<A> Poset<A> {
+    /// Constructs a poset from an already-computed order relation.
+    ///
+    /// The matrix must be square of size `elements.len()`, reflexive,
+    /// antisymmetric, and transitive.  Entry `[i][j]` is interpreted as
+    /// `i <= j`.
     pub fn from_relation(elements: Vec<A>, relation: Vec<BitVec>) -> Result<Self, PosetError> {
         validate_relation(elements.len(), &relation)?;
         Ok(Self { elements, relation })
     }
 
+    /// Returns the same ordered set with labels transformed by `f`.
+    ///
+    /// The order relation is copied exactly; only the element labels change.
     pub fn relabelled<B, F>(&self, f: F) -> Poset<B>
     where
         F: FnMut(&A) -> B,
@@ -209,41 +264,64 @@ impl<A> Poset<A> {
         Self { elements, relation }
     }
 
+    /// Returns the number of elements.
     pub fn size(&self) -> usize {
         self.elements.len()
     }
 
+    /// Returns whether the poset has no elements.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.elements.is_empty()
     }
 
+    /// Returns all element labels in `ElementId` order.
     pub fn elements(&self) -> &[A] {
         &self.elements
     }
 
+    /// Returns the label of an element by id.
     pub fn element(&self, id: ElementId) -> Option<&A> {
         self.elements.get(id)
     }
 
+    /// Returns the dense order matrix.
+    ///
+    /// The returned rows satisfy `relation_matrix()[i][j] == true` exactly
+    /// when `i <= j`.
     pub fn relation_matrix(&self) -> &[BitVec] {
         &self.relation
     }
 
+    /// Tests the order relation `left <= right`.
+    ///
+    /// Panics if either id is out of bounds.
     pub fn leq(&self, left: ElementId, right: ElementId) -> bool {
         self.relation[left][right]
     }
 
+    /// Returns a bottom element, if one exists.
+    ///
+    /// A bottom element is an element `bot` such that `bot <= x` for every
+    /// element `x`.
     pub fn bottom(&self) -> Option<ElementId> {
         self.relation
             .iter()
             .position(|row| row.count_ones() == self.elements.len())
     }
 
+    /// Returns a top element, if one exists.
+    ///
+    /// A top element is an element `top` such that `x <= top` for every
+    /// element `x`.
     pub fn top(&self) -> Option<ElementId> {
         (0..self.size()).find(|&j| self.relation.iter().all(|row| row[j]))
     }
 
+    /// Returns the greatest lower bound of two elements, if it exists.
+    ///
+    /// Returns `None` when either input id is out of bounds or when the two
+    /// elements have no meet.
     pub fn meet(&self, left: ElementId, right: ElementId) -> Option<ElementId> {
         if left >= self.size() || right >= self.size() {
             return None;
@@ -257,6 +335,10 @@ impl<A> Poset<A> {
         })
     }
 
+    /// Returns the least upper bound of two elements, if it exists.
+    ///
+    /// Returns `None` when either input id is out of bounds or when the two
+    /// elements have no join.
     pub fn join(&self, left: ElementId, right: ElementId) -> Option<ElementId> {
         if left >= self.size() || right >= self.size() {
             return None;
@@ -270,6 +352,7 @@ impl<A> Poset<A> {
         })
     }
 
+    /// Returns whether every pair of elements has both meet and join.
     #[must_use]
     pub fn is_lattice(&self) -> bool {
         !self.is_empty()
@@ -278,11 +361,16 @@ impl<A> Poset<A> {
             })
     }
 
+    /// Returns whether every pair of elements is comparable.
     #[must_use]
     pub fn is_total_order(&self) -> bool {
         (0..self.size()).all(|i| (i + 1..self.size()).all(|j| self.leq(i, j) || self.leq(j, i)))
     }
 
+    /// Iterates over all ordered pairs `x <= y`, including identities.
+    ///
+    /// Relations are yielded in row-major order with respect to the internal
+    /// matrix: increasing lower element, then increasing upper element.
     pub fn all_relations_iter(&self) -> impl Iterator<Item = Edge> {
         self.relation
             .iter()
@@ -290,6 +378,7 @@ impl<A> Poset<A> {
             .flat_map(|(from, row)| row.iter_ones().map(move |to| Edge { from, to }))
     }
 
+    /// Iterates over all non-identity ordered pairs `x < y`.
     pub fn proper_relations_iter(&self) -> impl Iterator<Item = Edge> {
         self.all_relations_iter().filter(|edge| !edge.is_identity())
     }
@@ -308,18 +397,33 @@ impl<A> Poset<A> {
             .collect()
     }
 
+    /// Returns all minimal elements.
+    ///
+    /// A minimal element has no strictly smaller element below it.
     pub fn minimal_elements(&self) -> Vec<ElementId> {
         (0..self.size())
             .filter(|&id| (0..self.size()).all(|other| other == id || !self.leq(other, id)))
             .collect()
     }
 
+    /// Returns all maximal elements.
+    ///
+    /// A maximal element has no strictly larger element above it.
     pub fn maximal_elements(&self) -> Vec<ElementId> {
         (0..self.size())
             .filter(|&id| (0..self.size()).all(|other| other == id || !self.leq(id, other)))
             .collect()
     }
 
+    /// Computes the left lifting class of a set of arrows.
+    ///
+    /// For finite posets, this is the set of all relations `edge1` such that
+    /// for every `edge2` in `arrows`, the transfer-system lifting condition
+    /// holds:
+    ///
+    /// `!(edge1.from <= edge2.from) || !(edge1.to <= edge2.to) || edge1.to <= edge2.from`.
+    ///
+    /// Identity relations are always included.
     pub fn llc(&self, arrows: &EdgeSet) -> EdgeSet {
         self.all_relations_iter()
             .filter(|edge1| {
@@ -333,6 +437,11 @@ impl<A> Poset<A> {
             .collect()
     }
 
+    /// Computes the right lifting class of a set of arrows.
+    ///
+    /// This is dual to [`Poset::llc`]: it returns all relations `edge2` that
+    /// satisfy the lifting condition against every `edge1` in `arrows`.
+    /// Identity relations are always included.
     pub fn rlc(&self, arrows: &EdgeSet) -> EdgeSet {
         self.all_relations_iter()
             .filter(|edge2| {
@@ -360,6 +469,10 @@ pub fn compose(class1: &EdgeSet, class2: &EdgeSet) -> EdgeSet {
     result
 }
 
+/// Returns whether a class of relations is closed under composition.
+///
+/// Composition is computed in the thin category associated to a poset: given
+/// `x <= y` and `y <= z`, closure requires the composite relation `x <= z`.
 #[must_use]
 pub fn composition_closed(class: &EdgeSet) -> bool {
     class.iter().all(|edge1| {
@@ -386,6 +499,10 @@ pub fn product<A: Clone, B: Clone>(
 }
 
 impl<A: Clone, B: Clone> Poset<Either<A, B>> {
+    /// Constructs the disjoint union of two posets and its canonical inclusions.
+    ///
+    /// This is the same construction as [`disjoint_union`], exposed as an
+    /// associated function on the tagged label type.
     pub fn disjoint_union(
         left: Arc<Poset<A>>,
         right: Arc<Poset<B>>,
@@ -416,6 +533,10 @@ impl<A: Clone, B: Clone> Poset<Either<A, B>> {
 }
 
 impl<A: Clone, B: Clone> Poset<(A, B)> {
+    /// Constructs the direct product of two posets and its canonical projections.
+    ///
+    /// The order is componentwise: `(a, b) <= (a', b')` if and only if
+    /// `a <= a'` in the left factor and `b <= b'` in the right factor.
     pub fn product(
         left: Arc<Poset<A>>,
         right: Arc<Poset<B>>,

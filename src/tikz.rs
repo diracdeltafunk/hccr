@@ -1,45 +1,67 @@
+//! TikZ rendering for finite posets, lattices, and transfer-system diagrams.
+//!
+//! The module provides a small typed TikZ abstract syntax tree together with
+//! convenience renderers for Hasse diagrams.  The default layout ranks elements
+//! by distance from minimal elements and draws cover relations unless full
+//! relations are requested.
+
 use crate::lattice::Lattice;
 use crate::poset::{Edge, ElementId, Poset};
 use crate::transfer_lattice::{TransferLattice, TransferPoset, TransferSystem};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
+/// A type that can be rendered as a TikZ picture.
 pub trait ToTikz {
+    /// Renders `self` as a [`TikzPicture`].
     fn to_tikz(&self) -> TikzPicture;
 }
 
+/// A comma-separated list of TikZ options.
+///
+/// The same representation is used for picture options, node options, path
+/// options, and style bodies.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TikzOptions {
     entries: Vec<String>,
 }
 
 impl TikzOptions {
+    /// Constructs a TikZ option list from strings.
     pub fn new(entries: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self {
             entries: entries.into_iter().map(Into::into).collect(),
         }
     }
 
+    /// Appends one option.
     pub fn push(&mut self, entry: impl Into<String>) {
         self.entries.push(entry.into());
     }
 
+    /// Appends several options.
     pub fn extend(&mut self, entries: impl IntoIterator<Item = impl Into<String>>) {
         self.entries.extend(entries.into_iter().map(Into::into));
     }
 
+    /// Returns whether the option list is empty.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
+    /// Iterates over the option entries.
     pub fn iter(&self) -> impl Iterator<Item = &str> + '_ {
         self.entries.iter().map(String::as_str)
     }
 
+    /// Renders the comma-separated option body, without brackets or braces.
     pub fn render_inner(&self) -> String {
         self.entries.join(", ")
     }
 
+    /// Renders the options in TikZ square-bracket syntax.
+    ///
+    /// Empty option lists render as the empty string.
     pub fn render_brackets(&self) -> String {
         if self.is_empty() {
             String::new()
@@ -48,25 +70,34 @@ impl TikzOptions {
         }
     }
 
+    /// Renders the options in TikZ brace syntax.
     pub fn render_braces(&self) -> String {
         format!("{{{}}}", self.render_inner())
     }
 }
 
+/// A named TikZ style declaration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TikzStyle {
+    /// The style name.
     pub name: String,
+    /// The style body.
     pub options: TikzOptions,
 }
 
+/// Text to place inside a TikZ node.
+///
+/// Labels can either be escaped plain text or raw TeX/TikZ markup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TikzLabel(String);
 
 impl TikzLabel {
+    /// Constructs a label by escaping TeX special characters.
     pub fn escaped(label: impl AsRef<str>) -> Self {
         Self(escape_tikz(label.as_ref()))
     }
 
+    /// Constructs a label from raw TeX/TikZ markup.
     pub fn raw(label: impl Into<String>) -> Self {
         Self(label.into())
     }
@@ -76,22 +107,29 @@ impl TikzLabel {
     }
 }
 
+/// A TikZ coordinate.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TikzCoord {
+    /// A numeric point `(x, y)`.
     Point(f64, f64),
+    /// A reference to a named TikZ coordinate or node.
     Named(String),
+    /// Raw coordinate syntax, inserted without modification.
     Raw(String),
 }
 
 impl TikzCoord {
+    /// Constructs a numeric point.
     pub fn point(x: f64, y: f64) -> Self {
         Self::Point(x, y)
     }
 
+    /// Constructs a coordinate reference by name.
     pub fn named(name: impl Into<String>) -> Self {
         Self::Named(name.into())
     }
 
+    /// Constructs a raw TikZ coordinate.
     pub fn raw(coord: impl Into<String>) -> Self {
         Self::Raw(coord.into())
     }
@@ -111,32 +149,49 @@ impl From<(f64, f64)> for TikzCoord {
     }
 }
 
+/// A TikZ node command.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TikzNode {
+    /// Optional node name.
     pub name: Option<String>,
+    /// The node coordinate.
     pub at: TikzCoord,
+    /// The node label.
     pub label: TikzLabel,
+    /// TikZ node options.
     pub options: TikzOptions,
 }
 
+/// The syntax used to connect two coordinates in a path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TikzPathOperation {
+    /// A straight `--` path.
     Line,
+    /// A TikZ `to` path, useful for bends.
     To,
 }
 
+/// A TikZ path between two coordinates.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TikzPath {
+    /// The starting coordinate.
     pub from: TikzCoord,
+    /// The ending coordinate.
     pub to: TikzCoord,
+    /// The path operation.
     pub operation: TikzPathOperation,
+    /// TikZ path options.
     pub options: TikzOptions,
 }
 
+/// The drawing command used for a circle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TikzDrawCommand {
+    /// A `\draw` command.
     Draw,
+    /// A `\fill` command.
     Fill,
+    /// A `\filldraw` command.
     FillDraw,
 }
 
@@ -150,27 +205,42 @@ impl TikzDrawCommand {
     }
 }
 
+/// A TikZ circle command.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TikzCircle {
+    /// The center coordinate.
     pub center: TikzCoord,
+    /// The circle radius.
     pub radius: f64,
+    /// Whether to draw, fill, or fill-draw the circle.
     pub command: TikzDrawCommand,
+    /// TikZ options for the command.
     pub options: TikzOptions,
 }
 
+/// A TikZ scope with its own options.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TikzScope {
+    /// Options placed on the scope.
     pub options: TikzOptions,
+    /// The picture fragment rendered inside the scope.
     pub picture: TikzPicture,
 }
 
+/// One item in a TikZ picture.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TikzItem {
+    /// A style declaration.
     Style(TikzStyle),
+    /// A node command.
     Node(TikzNode),
+    /// A path command.
     Path(TikzPath),
+    /// A circle command.
     Circle(TikzCircle),
+    /// A nested scope.
     Scope(TikzScope),
+    /// Raw TikZ source.
     Raw(String),
 }
 
@@ -204,17 +274,22 @@ impl From<TikzScope> for TikzItem {
     }
 }
 
+/// A complete TikZ picture.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TikzPicture {
+    /// Options placed on the `tikzpicture` environment.
     pub options: TikzOptions,
+    /// Commands rendered inside the picture.
     pub items: Vec<TikzItem>,
 }
 
 impl TikzPicture {
+    /// Constructs an empty picture with no options.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Constructs an empty picture with explicit options.
     pub fn with_options(options: TikzOptions) -> Self {
         Self {
             options,
@@ -222,14 +297,17 @@ impl TikzPicture {
         }
     }
 
+    /// Appends an item to the picture.
     pub fn push(&mut self, item: impl Into<TikzItem>) {
         self.items.push(item.into());
     }
 
+    /// Appends raw TikZ source to the picture.
     pub fn push_raw(&mut self, raw: impl Into<String>) {
         self.push(TikzItem::Raw(raw.into()));
     }
 
+    /// Renders the picture as a `tikzpicture` environment.
     pub fn render(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!(
@@ -241,6 +319,7 @@ impl TikzPicture {
         out
     }
 
+    /// Renders the picture as an inline `\tikz{...}` command.
     pub fn render_inline(&self) -> String {
         let mut out = format!("\\tikz{}{{", self.options.render_brackets());
         self.render_body_inline_into(&mut out);
@@ -267,20 +346,34 @@ impl fmt::Display for TikzPicture {
     }
 }
 
+/// Layout and styling options for rendering a finite poset.
 #[derive(Debug, Clone)]
 pub struct PosetTikzOptions {
+    /// Options placed on the outer `tikzpicture`.
     pub picture_options: TikzOptions,
+    /// Horizontal spacing between elements of the same rank.
     pub x_spacing: f64,
+    /// Vertical spacing between ranks.
     pub y_spacing: f64,
+    /// Options applied to each element node.
     pub node_options: TikzOptions,
+    /// Options applied to each order-relation edge.
     pub edge_options: TikzOptions,
+    /// Whether to draw small auxiliary labels showing element ids.
     pub debug_element_ids: bool,
+    /// Options applied to the auxiliary element-id labels.
     pub debug_id_options: TikzOptions,
+    /// Offset for auxiliary element-id labels.
     pub debug_id_offset: (f64, f64),
+    /// Whether to draw all proper relations instead of only cover relations.
     pub full_relations: bool,
+    /// Whether to bend edges that would overlap nodes or preferred edges.
     pub bend_colinear_edges: bool,
+    /// Bend angle used when an edge must be curved.
     pub bend_angle: f64,
+    /// Numerical tolerance used in colinearity checks.
     pub colinear_tolerance: f64,
+    /// Explicit coordinates for selected element ids.
     pub coordinate_overrides: HashMap<ElementId, (f64, f64)>,
 }
 
@@ -310,9 +403,12 @@ impl Default for PosetTikzOptions {
     }
 }
 
+/// Options for drawing a poset of transfer systems.
 #[derive(Debug, Clone)]
 pub struct TransferSystemTikzOptions {
+    /// Options for the outer poset of transfer systems.
     pub poset: PosetTikzOptions,
+    /// Options for the miniature transfer-system glyph at each node.
     pub glyph: TransferSystemGlyphOptions,
 }
 
@@ -332,15 +428,24 @@ impl Default for TransferSystemTikzOptions {
     }
 }
 
+/// Options for a miniature transfer-system diagram used as a node label.
 #[derive(Debug, Clone)]
 pub struct TransferSystemGlyphOptions {
+    /// Scale factor for the inline glyph.
     pub scale: f64,
+    /// TikZ baseline option for inline placement.
     pub baseline: String,
+    /// Horizontal spacing in the underlying lattice glyph.
     pub x_spacing: f64,
+    /// Vertical spacing in the underlying lattice glyph.
     pub y_spacing: f64,
+    /// Options for relations that belong to the transfer system.
     pub highlighted_edge_options: TikzOptions,
+    /// Options for proper lattice relations not in the transfer system.
     pub dim_edge_options: TikzOptions,
+    /// Options for element dots.
     pub dot_options: TikzOptions,
+    /// Radius of element dots.
     pub dot_radius: f64,
 }
 
@@ -368,6 +473,10 @@ impl TransferSystemGlyphOptions {
     }
 }
 
+/// Renders a poset as a TikZ Hasse diagram with custom labels.
+///
+/// By default, only cover relations are drawn.  Set
+/// [`PosetTikzOptions::full_relations`] to draw every proper relation.
 pub fn poset_to_tikz_with<A, F>(
     poset: &Poset<A>,
     options: &PosetTikzOptions,
@@ -447,10 +556,12 @@ impl<A: fmt::Display> ToTikz for Lattice<A> {
     }
 }
 
+/// Renders the containment lattice of transfer systems as a TikZ picture.
 pub fn transfer_system_lattice_to_tikz<A>(lattice: &TransferLattice<A>) -> TikzPicture {
     transfer_system_lattice_to_tikz_with(lattice, &transfer_system_tikz_options())
 }
 
+/// Renders the containment lattice of transfer systems with custom options.
 pub fn transfer_system_lattice_to_tikz_with<A>(
     lattice: &TransferLattice<A>,
     options: &TransferSystemTikzOptions,
@@ -463,10 +574,12 @@ pub fn transfer_system_lattice_to_tikz_with<A>(
     })
 }
 
+/// Renders a poset of transfer systems as a TikZ picture.
 pub fn transfer_system_order_to_tikz<A>(order: &TransferPoset<A>) -> TikzPicture {
     transfer_system_order_to_tikz_with(order, &transfer_system_tikz_options())
 }
 
+/// Renders a poset of transfer systems with custom options.
 pub fn transfer_system_order_to_tikz_with<A>(
     order: &TransferPoset<A>,
     options: &TransferSystemTikzOptions,
@@ -479,10 +592,12 @@ pub fn transfer_system_order_to_tikz_with<A>(
     })
 }
 
+/// Returns the default options for transfer-system diagrams.
 pub fn transfer_system_tikz_options() -> TransferSystemTikzOptions {
     TransferSystemTikzOptions::default()
 }
 
+/// Escapes TeX special characters in a plain-text label.
 pub fn escape_tikz(input: &str) -> String {
     let mut escaped = String::new();
     for ch in input.chars() {
