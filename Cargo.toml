@@ -12,10 +12,7 @@ path = "src/lib.rs"
 bitvec = "1.0.1"
 fcars = { version = "0.2.1", features = ["random"] }
 either = "1.16.0"
-gap-sys = { version = "0.2.4", optional = true }
+gap-sys = { git = "https://github.com/diracdeltafunk/gap-sys", optional = true }
 
 [features]
 groups = ["dep:gap-sys"]
-
-[patch.crates-io]
-gap-sys = { path = "../gap-sys" }

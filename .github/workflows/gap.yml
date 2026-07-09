@@ -1,0 +1,44 @@
+name: Rust with GAP
+
+on:
+  push:
+    branches: ["master"]
+  pull_request:
+    branches: ["master"]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test-groups:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install GAP and libgap
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gap build-essential clang libclang-dev pkg-config
+          if apt-cache show libgap-dev >/dev/null 2>&1; then
+            sudo apt-get install -y libgap-dev
+          elif apt-cache show gap-dev >/dev/null 2>&1; then
+            sudo apt-get install -y gap-dev
+          else
+            echo "Could not find a GAP development package containing libgap headers"
+            apt-cache search 'libgap|gap.*dev' || true
+            exit 1
+          fi
+
+      - name: Show GAP installation
+        run: |
+          gap --version
+          gap --print-gaproot || true
+          ldconfig -p | grep libgap || true
+
+      - name: Build with groups feature
+        run: cargo build --features groups --verbose
+
+      - name: Run GAP-backed tests
+        run: cargo test --features groups --verbose
