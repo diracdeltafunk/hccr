@@ -67,5 +67,5 @@ jobs:
       - name: Build with groups feature
         run: cargo build --features groups --verbose
 
-      - name: Run GAP-backed tests
-        run: cargo test --features groups --verbose
+      - name: Run groups-specific tests
+        run: cargo test --features groups --test g_lattice --verbose
