@@ -5,16 +5,31 @@
 //! by distance from minimal elements and draws cover relations unless full
 //! relations are requested.
 
+#[cfg(feature = "groups")]
+use crate::g_lattice::GTransferLattice;
 use crate::lattice::Lattice;
 use crate::poset::{Edge, ElementId, Poset};
 use crate::transfer_lattice::{TransferLattice, TransferPoset, TransferSystem};
+use bitvec::prelude::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
 /// A type that can be rendered as a TikZ picture.
+///
+/// Each renderable type chooses its own associated option type.  Call
+/// [`ToTikz::to_tikz`] for the mathematical default, or
+/// [`ToTikz::to_tikz_with`] to control layout and styling explicitly.
 pub trait ToTikz {
-    /// Renders `self` as a [`TikzPicture`].
-    fn to_tikz(&self) -> TikzPicture;
+    /// The options accepted by [`ToTikz::to_tikz_with`].
+    type Options: Default;
+
+    /// Renders `self` as a TikZ picture with explicit options.
+    fn to_tikz_with(&self, options: &Self::Options) -> TikzPicture;
+
+    /// Renders `self` using [`Default::default`] for its associated options.
+    fn to_tikz(&self) -> TikzPicture {
+        self.to_tikz_with(&Self::Options::default())
+    }
 }
 
 /// A comma-separated list of TikZ options.
@@ -439,6 +454,17 @@ pub struct TransferSystemGlyphOptions {
     pub x_spacing: f64,
     /// Vertical spacing in the underlying lattice glyph.
     pub y_spacing: f64,
+    /// Which relations of the full ambient lattice are drawn in the background.
+    ///
+    /// By default, every non-identity relation is drawn.
+    pub ambient_relations: RelationDisplay,
+    /// Which relations of the transfer-system suborder are highlighted.
+    ///
+    /// By default, every non-identity relation belonging to the transfer
+    /// system is drawn.
+    pub highlighted_relations: RelationDisplay,
+    /// Whether ambient-lattice elements are shown as dots or supplied labels.
+    pub node_display: GlyphNodeDisplay,
     /// Options for relations that belong to the transfer system.
     pub highlighted_edge_options: TikzOptions,
     /// Options for proper lattice relations not in the transfer system.
@@ -447,6 +473,56 @@ pub struct TransferSystemGlyphOptions {
     pub dot_options: TikzOptions,
     /// Radius of element dots.
     pub dot_radius: f64,
+    /// Options for nodes when [`GlyphNodeDisplay::Labels`] is selected.
+    pub label_node_options: TikzOptions,
+}
+
+/// The content shown for each element of a miniature suborder diagram.
+///
+/// A label vector must have one entry for every element of the ambient lattice,
+/// in `ElementId` order. This lets a single transfer-system rendering option be
+/// reused for every node of an outer transfer-system lattice.
+#[derive(Debug, Clone)]
+pub enum GlyphNodeDisplay {
+    /// Show the compact filled dots used by default.
+    Dots,
+    /// Show a supplied label at each ambient-lattice element.
+    Labels(Vec<TikzLabel>),
+}
+
+impl GlyphNodeDisplay {
+    /// Constructs label nodes from plain text, escaping TeX special characters.
+    pub fn escaped(labels: impl IntoIterator<Item = impl AsRef<str>>) -> Self {
+        Self::Labels(labels.into_iter().map(TikzLabel::escaped).collect())
+    }
+
+    /// Constructs label nodes from TeX math or TikZ markup.
+    ///
+    /// Callers are responsible for ensuring that every label is valid TeX.
+    /// [`GlyphNodeDisplay::escaped`] is the appropriate constructor for plain
+    /// text.
+    pub fn raw(labels: impl IntoIterator<Item = impl AsRef<str>>) -> Self {
+        Self::Labels(
+            labels
+                .into_iter()
+                .map(|label| TikzLabel::raw(label.as_ref()))
+                .collect(),
+        )
+    }
+}
+
+/// The amount of order-relation data displayed in a suborder glyph.
+///
+/// When used for the ambient lattice, [`RelationDisplay::Covers`] means its
+/// ordinary Hasse edges.  When used for a transfer system, it means covers in
+/// the transfer-system partial order itself, which can differ from covers in
+/// the ambient lattice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelationDisplay {
+    /// Draw only cover relations, producing a Hasse-style diagram.
+    Covers,
+    /// Draw every non-identity relation, including transitive ones.
+    AllProperRelations,
 }
 
 impl Default for TransferSystemGlyphOptions {
@@ -456,10 +532,14 @@ impl Default for TransferSystemGlyphOptions {
             baseline: "-.5ex".to_string(),
             x_spacing: 1.0,
             y_spacing: 0.9,
+            ambient_relations: RelationDisplay::AllProperRelations,
+            highlighted_relations: RelationDisplay::AllProperRelations,
+            node_display: GlyphNodeDisplay::Dots,
             highlighted_edge_options: TikzOptions::new(["line width=.75pt", "orange"]),
             dim_edge_options: TikzOptions::new(["black!30"]),
             dot_options: TikzOptions::new(["black"]),
             dot_radius: 0.1,
+            label_node_options: TikzOptions::new(["inner sep=.5pt", "font=\\tiny"]),
         }
     }
 }
@@ -543,22 +623,28 @@ where
 }
 
 impl<A: fmt::Display> ToTikz for Poset<A> {
-    fn to_tikz(&self) -> TikzPicture {
-        poset_to_tikz_with(self, &PosetTikzOptions::default(), |_id, element| {
+    type Options = PosetTikzOptions;
+
+    fn to_tikz_with(&self, options: &Self::Options) -> TikzPicture {
+        poset_to_tikz_with(self, options, |_id, element| {
             TikzLabel::escaped(element.to_string())
         })
     }
 }
 
 impl<A: fmt::Display> ToTikz for Lattice<A> {
-    fn to_tikz(&self) -> TikzPicture {
-        self.as_poset().to_tikz()
+    type Options = PosetTikzOptions;
+
+    fn to_tikz_with(&self, options: &Self::Options) -> TikzPicture {
+        poset_to_tikz_with(self.as_poset(), options, |_id, element| {
+            TikzLabel::escaped(element.to_string())
+        })
     }
 }
 
 /// Renders the containment lattice of transfer systems as a TikZ picture.
 pub fn transfer_system_lattice_to_tikz<A>(lattice: &TransferLattice<A>) -> TikzPicture {
-    transfer_system_lattice_to_tikz_with(lattice, &transfer_system_tikz_options())
+    lattice.to_tikz()
 }
 
 /// Renders the containment lattice of transfer systems with custom options.
@@ -566,17 +652,12 @@ pub fn transfer_system_lattice_to_tikz_with<A>(
     lattice: &TransferLattice<A>,
     options: &TransferSystemTikzOptions,
 ) -> TikzPicture {
-    poset_to_tikz_with(lattice.as_poset(), &options.poset, |node_id, _raw| {
-        let system = lattice
-            .system(node_id)
-            .expect("transfer-system lattice node id should be valid");
-        TikzLabel::raw(small_transfer_system_picture(&system, &options.glyph).render_inline())
-    })
+    lattice.to_tikz_with(options)
 }
 
 /// Renders a poset of transfer systems as a TikZ picture.
 pub fn transfer_system_order_to_tikz<A>(order: &TransferPoset<A>) -> TikzPicture {
-    transfer_system_order_to_tikz_with(order, &transfer_system_tikz_options())
+    order.to_tikz()
 }
 
 /// Renders a poset of transfer systems with custom options.
@@ -584,11 +665,93 @@ pub fn transfer_system_order_to_tikz_with<A>(
     order: &TransferPoset<A>,
     options: &TransferSystemTikzOptions,
 ) -> TikzPicture {
-    poset_to_tikz_with(order.raw_poset(), &options.poset, |node_id, _raw| {
-        let system = order
-            .system(node_id)
-            .expect("transfer-system poset node id should be valid");
-        TikzLabel::raw(small_transfer_system_picture(&system, &options.glyph).render_inline())
+    order.to_tikz_with(options)
+}
+
+/// Renders the containment lattice of G-transfer systems as a TikZ picture.
+///
+/// Each node is shown as a suborder of the full underlying lattice.  This
+/// function is available only with the `groups` feature; it is also exposed by
+/// the feature-gated [`ToTikz`] implementation for [`GTransferLattice`].
+#[cfg(feature = "groups")]
+pub fn g_transfer_system_lattice_to_tikz<A>(lattice: &GTransferLattice<A>) -> TikzPicture {
+    lattice.to_tikz()
+}
+
+/// Renders the containment lattice of G-transfer systems with custom options.
+#[cfg(feature = "groups")]
+pub fn g_transfer_system_lattice_to_tikz_with<A>(
+    lattice: &GTransferLattice<A>,
+    options: &TransferSystemTikzOptions,
+) -> TikzPicture {
+    lattice.to_tikz_with(options)
+}
+
+impl<A> ToTikz for TransferLattice<A> {
+    type Options = TransferSystemTikzOptions;
+
+    fn to_tikz_with(&self, options: &Self::Options) -> TikzPicture {
+        transfer_system_order_picture(
+            self.as_poset(),
+            self.universe().lattice().as_ref(),
+            options,
+            |node_id, glyph_renderer| {
+                self.system(node_id)
+                    .map(|system| glyph_renderer.render_transfer_system(&system))
+                    .expect("transfer-system lattice node id should be valid")
+            },
+        )
+    }
+}
+
+impl<A> ToTikz for TransferPoset<A> {
+    type Options = TransferSystemTikzOptions;
+
+    fn to_tikz_with(&self, options: &Self::Options) -> TikzPicture {
+        transfer_system_order_picture(
+            self.raw_poset(),
+            self.universe().lattice().as_ref(),
+            options,
+            |node_id, glyph_renderer| {
+                self.system(node_id)
+                    .map(|system| glyph_renderer.render_transfer_system(&system))
+                    .expect("transfer-system poset node id should be valid")
+            },
+        )
+    }
+}
+
+#[cfg(feature = "groups")]
+impl<A> ToTikz for GTransferLattice<A> {
+    type Options = TransferSystemTikzOptions;
+
+    fn to_tikz_with(&self, options: &Self::Options) -> TikzPicture {
+        transfer_system_order_picture(
+            self.as_poset(),
+            self.universe().lattice().as_ref(),
+            options,
+            |node_id, glyph_renderer| {
+                let system = self
+                    .system(node_id)
+                    .expect("G-transfer-system lattice node id should be valid");
+                glyph_renderer.render_with(|relation| system.contains_relation(relation))
+            },
+        )
+    }
+}
+
+fn transfer_system_order_picture<A, R, F>(
+    order: &Poset<R>,
+    underlying_lattice: &Lattice<A>,
+    options: &TransferSystemTikzOptions,
+    mut glyph_for_node: F,
+) -> TikzPicture
+where
+    F: FnMut(ElementId, &SuborderGlyphRenderer<'_, A>) -> TikzPicture,
+{
+    let glyph_renderer = SuborderGlyphRenderer::new(underlying_lattice, &options.glyph);
+    poset_to_tikz_with(order, &options.poset, |node_id, _raw| {
+        TikzLabel::raw(glyph_for_node(node_id, &glyph_renderer).render_inline())
     })
 }
 
@@ -936,39 +1099,164 @@ fn node_name(id: ElementId) -> String {
     format!("p{id}")
 }
 
+/// Cached geometry and drawing data for miniature spanning suborders.
+///
+/// One renderer is created for the ambient lattice of an outer transfer-system
+/// diagram and reused for every node.  This keeps all glyphs in the same
+/// coordinates and avoids recomputing the ranked layout for each transfer
+/// system.
+struct SuborderGlyphRenderer<'a, A> {
+    lattice: &'a Lattice<A>,
+    coordinates: HashMap<ElementId, (f64, f64)>,
+    proper_edges: Vec<Edge>,
+    ambient_edges: Vec<Edge>,
+    options: &'a TransferSystemGlyphOptions,
+}
+
+impl<'a, A> SuborderGlyphRenderer<'a, A> {
+    fn new(lattice: &'a Lattice<A>, options: &'a TransferSystemGlyphOptions) -> Self {
+        if let GlyphNodeDisplay::Labels(labels) = &options.node_display {
+            assert_eq!(
+                labels.len(),
+                lattice.size(),
+                "suborder glyph received {} labels for a lattice with {} elements",
+                labels.len(),
+                lattice.size(),
+            );
+        }
+        let proper_edges = lattice
+            .as_poset()
+            .proper_relations_iter()
+            .collect::<Vec<_>>();
+        let ambient_edges = match options.ambient_relations {
+            RelationDisplay::Covers => {
+                let mut edges = lattice
+                    .as_poset()
+                    .cover_relations()
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                edges.sort_unstable();
+                edges
+            }
+            RelationDisplay::AllProperRelations => proper_edges.clone(),
+        };
+        Self {
+            lattice,
+            coordinates: ranked_layout(lattice.as_poset(), options.x_spacing, options.y_spacing),
+            proper_edges,
+            ambient_edges,
+            options,
+        }
+    }
+
+    fn render_transfer_system(&self, system: &TransferSystem<A>) -> TikzPicture {
+        self.render_with(|relation| system.contains_relation(relation))
+    }
+
+    fn render_with<F>(&self, mut contains_relation: F) -> TikzPicture
+    where
+        F: FnMut(Edge) -> bool,
+    {
+        let selected = self
+            .proper_edges
+            .iter()
+            .copied()
+            .map(&mut contains_relation)
+            .collect::<Vec<_>>();
+        let highlighted_edges = match self.options.highlighted_relations {
+            RelationDisplay::Covers => {
+                selected_cover_relations(self.lattice.size(), &self.proper_edges, &selected)
+            }
+            RelationDisplay::AllProperRelations => self
+                .proper_edges
+                .iter()
+                .copied()
+                .zip(selected.iter().copied())
+                .filter_map(|(edge, is_selected)| is_selected.then_some(edge))
+                .collect(),
+        };
+
+        let mut picture = TikzPicture::with_options(self.options.picture_options());
+        for edge in &self.ambient_edges {
+            picture.push(TikzPath {
+                from: self.coordinates[&edge.from].into(),
+                to: self.coordinates[&edge.to].into(),
+                operation: TikzPathOperation::Line,
+                options: self.options.dim_edge_options.clone(),
+            });
+        }
+        for edge in highlighted_edges {
+            picture.push(TikzPath {
+                from: self.coordinates[&edge.from].into(),
+                to: self.coordinates[&edge.to].into(),
+                operation: TikzPathOperation::Line,
+                options: self.options.highlighted_edge_options.clone(),
+            });
+        }
+        match &self.options.node_display {
+            GlyphNodeDisplay::Dots => {
+                for id in 0..self.lattice.size() {
+                    picture.push(TikzCircle {
+                        center: self.coordinates[&id].into(),
+                        radius: self.options.dot_radius,
+                        command: TikzDrawCommand::Fill,
+                        options: self.options.dot_options.clone(),
+                    });
+                }
+            }
+            GlyphNodeDisplay::Labels(labels) => {
+                for (id, label) in labels.iter().enumerate() {
+                    picture.push(TikzNode {
+                        name: None,
+                        at: self.coordinates[&id].into(),
+                        label: label.clone(),
+                        options: self.options.label_node_options.clone(),
+                    });
+                }
+            }
+        }
+        picture
+    }
+}
+
+fn selected_cover_relations(
+    lattice_size: usize,
+    proper_edges: &[Edge],
+    selected: &[bool],
+) -> Vec<Edge> {
+    let mut relation: Vec<BitVec> = vec![BitVec::repeat(false, lattice_size); lattice_size];
+    for (id, row) in relation.iter_mut().enumerate() {
+        row.set(id, true);
+    }
+    for (&edge, &is_selected) in proper_edges.iter().zip(selected) {
+        if is_selected {
+            relation[edge.from].set(edge.to, true);
+        }
+    }
+
+    proper_edges
+        .iter()
+        .copied()
+        .zip(selected.iter().copied())
+        .filter_map(|(edge, is_selected)| {
+            (is_selected
+                && !(0..lattice_size).any(|middle| {
+                    middle != edge.from
+                        && middle != edge.to
+                        && relation[edge.from][middle]
+                        && relation[middle][edge.to]
+                }))
+            .then_some(edge)
+        })
+        .collect()
+}
+
+#[cfg(test)]
 fn small_transfer_system_picture<A>(
     system: &TransferSystem<A>,
     options: &TransferSystemGlyphOptions,
 ) -> TikzPicture {
-    let highlighted_edges = system.edges(false);
-    let coords = ranked_layout(
-        system.lattice().as_poset(),
-        options.x_spacing,
-        options.y_spacing,
-    );
-    let mut picture = TikzPicture::with_options(options.picture_options());
-    for edge in system.lattice().as_poset().proper_relations_iter() {
-        let edge_options = if highlighted_edges.contains(&edge) {
-            options.highlighted_edge_options.clone()
-        } else {
-            options.dim_edge_options.clone()
-        };
-        picture.push(TikzPath {
-            from: coords[&edge.from].into(),
-            to: coords[&edge.to].into(),
-            operation: TikzPathOperation::Line,
-            options: edge_options,
-        });
-    }
-    for id in 0..system.lattice().size() {
-        picture.push(TikzCircle {
-            center: coords[&id].into(),
-            radius: options.dot_radius,
-            command: TikzDrawCommand::Fill,
-            options: options.dot_options.clone(),
-        });
-    }
-    picture
+    SuborderGlyphRenderer::new(system.lattice().as_ref(), options).render_transfer_system(system)
 }
 
 #[cfg(test)]
@@ -1081,6 +1369,71 @@ mod tests {
         assert!(inline.contains("\\draw[line width=.75pt, orange]"));
         assert!(inline.contains("\\fill[black]"));
         assert!(inline.ends_with('}'));
+    }
+
+    #[test]
+    fn transfer_system_glyphs_show_all_relations_by_default() {
+        let diamond = Arc::new(
+            Lattice::new(
+                Poset::from_edges(
+                    vec![0i32, 1, 2, 3],
+                    [
+                        Edge::new(0, 1),
+                        Edge::new(0, 2),
+                        Edge::new(1, 3),
+                        Edge::new(2, 3),
+                    ],
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+        );
+        let containment = diamond.transfer_systems_containment().unwrap();
+        let top = containment
+            .system(containment.top())
+            .expect("the transfer-system lattice has a top element");
+
+        let default =
+            small_transfer_system_picture(&top, &TransferSystemGlyphOptions::default()).render();
+        assert_eq!(default.matches("line width=.75pt, orange").count(), 5);
+        assert_eq!(default.matches("black!30").count(), 5);
+
+        let bottom = containment
+            .system(containment.bottom())
+            .expect("the transfer-system lattice has a bottom element");
+        let bottom_default =
+            small_transfer_system_picture(&bottom, &TransferSystemGlyphOptions::default()).render();
+        assert_eq!(
+            bottom_default.matches("line width=.75pt, orange").count(),
+            0
+        );
+        assert_eq!(bottom_default.matches("black!30").count(), 5);
+
+        let mut covers_only = TransferSystemGlyphOptions::default();
+        covers_only.ambient_relations = RelationDisplay::Covers;
+        covers_only.highlighted_relations = RelationDisplay::Covers;
+        let covers = small_transfer_system_picture(&top, &covers_only).render();
+        assert_eq!(covers.matches("line width=.75pt, orange").count(), 4);
+        assert_eq!(covers.matches("black!30").count(), 4);
+    }
+
+    #[test]
+    fn transfer_system_glyphs_can_use_labels_in_place_of_dots() {
+        let chain = Arc::new(
+            Lattice::new(Poset::from_edges(vec![0i32, 1], [Edge::new(0, 1)]).unwrap()).unwrap(),
+        );
+        let containment = chain.transfer_systems_containment().unwrap();
+        let top = containment
+            .system(containment.top())
+            .expect("the transfer-system lattice has a top element");
+        let mut options = TransferSystemGlyphOptions::default();
+        options.node_display = GlyphNodeDisplay::escaped(["bottom", "top"]);
+
+        let rendered = small_transfer_system_picture(&top, &options).render();
+        assert!(rendered.contains("{bottom}"));
+        assert!(rendered.contains("{top}"));
+        assert!(rendered.contains("font=\\tiny"));
+        assert!(!rendered.contains("\\fill[black]"));
     }
 
     #[test]

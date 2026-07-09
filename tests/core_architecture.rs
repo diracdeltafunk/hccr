@@ -1,6 +1,9 @@
 use hccr::lattice::Lattice;
 use hccr::poset::{self, Edge, Poset};
-use hccr::tikz::{transfer_system_lattice_to_tikz, transfer_system_order_to_tikz};
+use hccr::tikz::{
+    ToTikz, TransferSystemTikzOptions, transfer_system_lattice_to_tikz,
+    transfer_system_order_to_tikz,
+};
 use std::sync::Arc;
 
 /// Verifies that `Lattice`'s precomputed meet/join tables agree with the
@@ -161,6 +164,8 @@ fn transfer_system_orders_are_available_from_lattices() {
 
     let _ = transfer_system_lattice_to_tikz(&containment);
     let _ = transfer_system_order_to_tikz(&composition);
+    let _ = containment.to_tikz();
+    let _ = composition.to_tikz_with(&TransferSystemTikzOptions::default());
 }
 
 #[test]

@@ -45,16 +45,31 @@ impl PartialOrd for RawTransferSystem {
     }
 }
 
+/// A stable indexing of the proper relations of a finite lattice.
+///
+/// The index is the common coordinate system for ordinary and equivariant
+/// transfer systems.  It orders the non-identity relations `x < y` of a
+/// lattice in row-major order and provides constant-time lookup of the bit
+/// assigned to a relation.  In particular, a G-transfer system can expand its
+/// selected relation orbits into the raw bitvector of an ordinary transfer
+/// system without allocating an intermediate relation set.
+#[derive(Debug)]
+pub struct RelationIndex<A> {
+    lattice: Arc<Lattice<A>>,
+    proper_edges: Vec<Edge>,
+    proper_edge_ids: Vec<Vec<Option<usize>>>,
+}
+
 /// Shared ambient data that gives raw transfer-system bitsets their meaning.
 ///
-/// A universe fixes the lattice `L`, the deterministic ordering of the proper
-/// relations of `L`, and the formal context whose concepts enumerate transfer
-/// systems.
+/// A universe fixes the lattice `L`, a shared [`RelationIndex`], and the
+/// formal context whose concepts enumerate transfer systems.  Constructing a
+/// universe eagerly prepares that formal context, so the universe is always a
+/// complete ambient object for formal-concept calculations.
 #[derive(Debug)]
 pub struct TransferUniverse<A> {
-    /// The lattice on which we might have a transfer system.
-    underlying_lattice: Arc<Lattice<A>>,
-    /// The formal context whose concepts correspond to transfer systems on `underlying_lattice`.
+    relation_index: Arc<RelationIndex<A>>,
+    /// The formal context whose concepts correspond to transfer systems.
     context: TransferContext,
 }
 
@@ -130,24 +145,6 @@ impl<A> Lattice<A> {
         Arc::new(TransferUniverse::new(self))
     }
 
-    fn transfer_context(&self) -> TransferContext {
-        let proper_edges: Vec<_> = self.as_poset().proper_relations_iter().collect();
-        let matrix = proper_edges
-            .iter()
-            .map(|edge1| {
-                proper_edges
-                    .iter()
-                    .map(|edge2| {
-                        self.leq(edge2.to, edge1.from)
-                            || !self.leq(edge2.to, edge1.to)
-                            || !self.leq(edge2.from, edge1.from)
-                    })
-                    .collect()
-            })
-            .collect();
-        FormalContext::new(proper_edges.clone(), proper_edges, matrix)
-    }
-
     /// Constructs the lattice of transfer systems ordered by containment.
     ///
     /// A transfer system is below another precisely when its set of
@@ -181,7 +178,7 @@ struct PartialOrder {
 }
 
 impl RawTransferSystem {
-    fn new(arrows: BitVec) -> Self {
+    pub(crate) fn new(arrows: BitVec) -> Self {
         Self { arrows }
     }
 
@@ -216,26 +213,82 @@ impl RawTransferSystem {
     }
 }
 
+impl<A> RelationIndex<A> {
+    /// Constructs the row-major index of all proper relations of `lattice`.
+    pub fn new(lattice: Arc<Lattice<A>>) -> Self {
+        let proper_edges = lattice
+            .as_poset()
+            .proper_relations_iter()
+            .collect::<Vec<_>>();
+        let mut proper_edge_ids = vec![vec![None; lattice.size()]; lattice.size()];
+        for (edge_id, &edge) in proper_edges.iter().enumerate() {
+            proper_edge_ids[edge.from][edge.to] = Some(edge_id);
+        }
+
+        Self {
+            lattice,
+            proper_edges,
+            proper_edge_ids,
+        }
+    }
+
+    /// Returns the lattice whose proper relations are indexed.
+    pub fn lattice(&self) -> &Arc<Lattice<A>> {
+        &self.lattice
+    }
+
+    /// Returns the proper lattice relations in deterministic row-major order.
+    pub fn proper_edges(&self) -> &[Edge] {
+        &self.proper_edges
+    }
+
+    /// Returns the bit index assigned to a proper relation.
+    ///
+    /// Identity relations, non-relations, and out-of-range edges have no bit
+    /// index and therefore return `None`.
+    pub fn proper_edge_id(&self, edge: Edge) -> Option<usize> {
+        self.proper_edge_ids
+            .get(edge.from)
+            .and_then(|row| row.get(edge.to))
+            .copied()
+            .flatten()
+    }
+}
+
 impl<A> TransferUniverse<A> {
     /// Constructs the transfer-system universe for a lattice.
     pub fn new(underlying_lattice: Arc<Lattice<A>>) -> Self {
-        let context = underlying_lattice.transfer_context();
+        Self::from_relation_index(Arc::new(RelationIndex::new(underlying_lattice)))
+    }
+
+    /// Constructs a transfer-system universe using an existing relation index.
+    ///
+    /// This crate-private constructor lets a G-transfer universe share the
+    /// ordinary relation coordinates needed for the fixed-point expansion.
+    pub(crate) fn from_relation_index(relation_index: Arc<RelationIndex<A>>) -> Self {
+        let context =
+            build_transfer_context(relation_index.lattice(), relation_index.proper_edges());
         Self {
-            underlying_lattice,
+            relation_index,
             context,
         }
     }
 
     /// Returns the underlying lattice.
     pub fn underlying_lattice(&self) -> &Arc<Lattice<A>> {
-        &self.underlying_lattice
+        self.relation_index.lattice()
     }
 
     /// Returns the underlying lattice.
     ///
     /// This is an alias for [`TransferUniverse::underlying_lattice`].
     pub fn lattice(&self) -> &Arc<Lattice<A>> {
-        &self.underlying_lattice
+        self.underlying_lattice()
+    }
+
+    /// Returns the shared indexing of the proper lattice relations.
+    pub fn relation_index(&self) -> &Arc<RelationIndex<A>> {
+        &self.relation_index
     }
 
     fn context(&self) -> &TransferContext {
@@ -247,7 +300,7 @@ impl<A> TransferUniverse<A> {
     /// These are the non-identity relations `x < y`, in deterministic
     /// row-major order inherited from the underlying poset.
     pub fn proper_edges(&self) -> &[Edge] {
-        &self.context.objects
+        self.relation_index.proper_edges()
     }
 
     /// Enumerates all transfer systems on the underlying lattice.
@@ -308,6 +361,22 @@ impl<A> TransferSystem<A> {
         self.universe.lattice()
     }
 
+    /// Returns whether a relation belongs to this transfer system.
+    ///
+    /// Every in-range identity relation belongs to a transfer system.  A
+    /// non-identity relation belongs precisely when its corresponding bit is
+    /// selected; non-relations and out-of-range edges return `false`.
+    pub fn contains_relation(&self, relation: Edge) -> bool {
+        if relation.is_identity() {
+            return relation.from < self.lattice().size();
+        }
+
+        self.universe
+            .relation_index()
+            .proper_edge_id(relation)
+            .is_some_and(|edge_id| self.raw.arrows()[edge_id])
+    }
+
     /// Returns the relations belonging to this transfer system.
     ///
     /// If `include_identities` is true, the identity relations `x <= x` are
@@ -327,6 +396,23 @@ impl<A> TransferSystem<A> {
         );
         result
     }
+}
+
+fn build_transfer_context<A>(lattice: &Lattice<A>, proper_edges: &[Edge]) -> TransferContext {
+    let matrix = proper_edges
+        .iter()
+        .map(|edge1| {
+            proper_edges
+                .iter()
+                .map(|edge2| {
+                    lattice.leq(edge2.to, edge1.from)
+                        || !lattice.leq(edge2.to, edge1.to)
+                        || !lattice.leq(edge2.from, edge1.from)
+                })
+                .collect()
+        })
+        .collect();
+    FormalContext::new(proper_edges.to_vec(), proper_edges.to_vec(), matrix)
 }
 
 impl<A> Clone for TransferSystem<A> {
@@ -576,4 +662,41 @@ pub(crate) fn bitvec_subset(left: &BitVec, right: &BitVec) -> bool {
 
     let mask = (1usize << remainder) - 1;
     (left_words[full_words] & !right_words[full_words] & mask) == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relation_index_and_formal_context_are_precomputed_together() {
+        let lattice = Arc::new(Lattice::chain(2).expect("the finite chain is a lattice"));
+        let universe = lattice.transfer_universe();
+
+        assert_eq!(
+            universe.proper_edges(),
+            &[Edge::new(0, 1), Edge::new(0, 2), Edge::new(1, 2)]
+        );
+        assert_eq!(universe.context.objects, universe.proper_edges());
+        assert_eq!(universe.context.attributes, universe.proper_edges());
+        assert_eq!(
+            universe.relation_index().proper_edge_id(Edge::new(0, 2)),
+            Some(1)
+        );
+        assert_eq!(
+            universe.relation_index().proper_edge_id(Edge::new(1, 1)),
+            None
+        );
+        let systems = universe.transfer_systems();
+        assert!(!systems.is_empty());
+
+        let top = systems
+            .iter()
+            .max_by_key(|system| system.raw().arrows().count_ones())
+            .expect("the chain has a top transfer system");
+        assert!(top.contains_relation(Edge::new(0, 0)));
+        assert!(top.contains_relation(Edge::new(0, 2)));
+        assert!(!top.contains_relation(Edge::new(2, 0)));
+        assert!(!top.contains_relation(Edge::new(3, 3)));
+    }
 }

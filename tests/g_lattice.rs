@@ -2,32 +2,27 @@
 
 use hccr::g_lattice::{
     GLattice, GLatticeError, GapSubgroup, RelationOrbit, RelationOrbitLabel, RelationTransporter,
-    SubgroupGLattice,
+    SubgroupGLattice, structure_description_to_tex,
 };
 use hccr::lattice::Lattice;
 use hccr::poset::{Edge, Poset};
+use hccr::tikz::{
+    GlyphNodeDisplay, ToTikz, TransferSystemTikzOptions, g_transfer_system_lattice_to_tikz,
+};
 use std::error::Error;
 use std::sync::Arc;
 
 #[test]
 fn g_lattice_constructors_precompute_relation_orbits() -> Result<(), Box<dyn Error>> {
     let diamond = diamond_lattice();
-    let group = gap_sys::gap_eval("Group((1,2));")?;
+    let group = gap_sys::eval("Group((1,2));")?;
 
-    let from_generators = GLattice::from_generator_images(
-        Arc::clone(&diamond),
-        group.as_element(),
-        vec![vec![0, 2, 1, 3]],
-    )?;
+    let from_generators =
+        GLattice::from_generator_images(Arc::clone(&diamond), &group, vec![vec![0, 2, 1, 3]])?;
 
-    let homomorphism = gap_sys::gap_eval(
-        "GroupHomomorphismByImages(Group((1,2)), Group((2,3)), [(1,2)], [(2,3)]);",
-    )?;
-    let from_gap = GLattice::from_gap_homomorphism(
-        Arc::clone(&diamond),
-        group.as_element(),
-        homomorphism.as_element(),
-    )?;
+    let homomorphism =
+        gap_sys::eval("GroupHomomorphismByImages(Group((1,2)), Group((2,3)), [(1,2)], [(2,3)]);")?;
+    let from_gap = GLattice::from_gap_homomorphism(Arc::clone(&diamond), &group, &homomorphism)?;
 
     let expected_relations = vec![
         Edge::new(0, 0),
@@ -80,7 +75,7 @@ fn g_lattice_constructors_precompute_relation_orbits() -> Result<(), Box<dyn Err
     }
 
     check_subgroup_lattice_constructor_uses_conjugation_action()?;
-    assert_rejections(group.as_element())?;
+    assert_rejections(&group)?;
 
     Ok(())
 }
@@ -124,6 +119,10 @@ fn assert_transfer_system_containment_lattice_uses_orbit_inclusion(
     let expected_labels = g_lattice.non_identity_relation_orbit_labels();
     let universe = g_lattice.transfer_universe();
     assert!(Arc::ptr_eq(universe.lattice(), g_lattice.lattice()));
+    assert!(Arc::ptr_eq(
+        universe.underlying_transfer_universe().lattice(),
+        g_lattice.lattice()
+    ));
     assert_eq!(universe.relation_orbit_labels(), expected_labels);
 
     let containment = g_lattice.transfer_systems_containment()?;
@@ -146,6 +145,9 @@ fn assert_transfer_system_containment_lattice_uses_orbit_inclusion(
     assert!(bottom.relation_orbit_labels().is_empty());
     assert!(bottom.relations(false).is_empty());
     assert_eq!(bottom.relations(true).len(), g_lattice.lattice().size());
+    let ordinary_bottom = bottom.underlying_transfer_system();
+    assert!(ordinary_bottom.raw().arrows().not_any());
+    assert_eq!(ordinary_bottom.edges(false), bottom.relations(false));
 
     let top = containment
         .system(containment.top())
@@ -160,6 +162,24 @@ fn assert_transfer_system_containment_lattice_uses_orbit_inclusion(
         Edge::new(2, 3),
     ] {
         assert!(top.relations(false).contains(&relation));
+        assert!(top.contains_relation(relation));
+    }
+    let ordinary_top = top.underlying_transfer_system();
+    assert_eq!(ordinary_top.edges(false), top.relations(false));
+    assert!(Arc::ptr_eq(
+        ordinary_top.universe(),
+        containment.universe().underlying_transfer_universe()
+    ));
+
+    for system in containment.systems() {
+        let ordinary = system.underlying_transfer_system();
+        assert_eq!(ordinary.edges(false), system.relations(false));
+        for relation in ordinary.edges(true) {
+            assert_eq!(
+                ordinary.contains_relation(relation),
+                system.contains_relation(relation)
+            );
+        }
     }
 
     let mut orbit_counts = containment
@@ -169,12 +189,23 @@ fn assert_transfer_system_containment_lattice_uses_orbit_inclusion(
     orbit_counts.sort_unstable();
     assert_eq!(orbit_counts, vec![0, 1, 2, 3]);
 
+    let default_picture = containment.to_tikz();
+    let custom_picture = containment.to_tikz_with(&TransferSystemTikzOptions::default());
+    let free_function_picture = g_transfer_system_lattice_to_tikz(&containment);
+    assert_eq!(default_picture.render(), custom_picture.render());
+    assert_eq!(default_picture.render(), free_function_picture.render());
+    assert!(
+        default_picture
+            .render()
+            .contains("line width=.75pt, orange")
+    );
+
     Ok(())
 }
 
 fn check_subgroup_lattice_constructor_uses_conjugation_action() -> Result<(), Box<dyn Error>> {
-    let group = gap_sys::gap_eval("SymmetricGroup(3);")?;
-    let subgroup_lattice = SubgroupGLattice::new(group.as_element())?;
+    let group = gap_sys::eval("SymmetricGroup(3);")?;
+    let subgroup_lattice = SubgroupGLattice::new(&group)?;
     let g_lattice = subgroup_lattice.g_lattice();
 
     assert_eq!(subgroup_lattice.subgroups().len(), 6);
@@ -219,13 +250,76 @@ fn check_subgroup_lattice_constructor_uses_conjugation_action() -> Result<(), Bo
     assert_eq!(c3_identity_orbit.relations(), &[Edge::new(4, 4)]);
     assert_eq!(order(c3_identity_orbit.stabilizer())?, 6);
 
-    let via_associated = GLattice::from_subgroup_lattice(group.as_element())?;
+    let via_associated = GLattice::from_subgroup_lattice(&group)?;
     assert_eq!(via_associated.g_lattice().lattice().size(), 6);
+    assert_eq!(
+        subgroup_lattice.subgroup_structure_descriptions(),
+        &[
+            "1".to_string(),
+            "C2".to_string(),
+            "C2".to_string(),
+            "C2".to_string(),
+            "C3".to_string(),
+            "S3".to_string(),
+        ],
+    );
+    assert_eq!(
+        subgroup_lattice.subgroup_structure_description(4),
+        Some("C3")
+    );
+    assert_eq!(
+        subgroup_lattice.subgroup_structure_descriptions_tex(),
+        &[
+            "$1$".to_string(),
+            "$C_{2}$".to_string(),
+            "$C_{2}$".to_string(),
+            "$C_{2}$".to_string(),
+            "$C_{3}$".to_string(),
+            "$S_{3}$".to_string(),
+        ],
+    );
+    assert_eq!(
+        subgroup_lattice.subgroup_structure_description_tex(4),
+        Some("$C_{3}$")
+    );
+    assert_eq!(
+        structure_description_to_tex("C7 : (C9 x Q8)"),
+        "$C_{7} \\rtimes (C_{9} \\times Q_{8})$"
+    );
+    assert_eq!(
+        structure_description_to_tex("2F(4,2)'"),
+        "${}^{2}F(4,2)^{\\prime}$"
+    );
+    assert_eq!(
+        structure_description_to_tex("O+(6,3) . Fi24'"),
+        "$O^{+}(6,3) \\cdot Fi_{24}^{\\prime}$"
+    );
+    let subgroup_transfer_lattice = subgroup_lattice.transfer_systems_containment()?;
+    assert_eq!(
+        subgroup_transfer_lattice.size(),
+        g_lattice.transfer_systems_containment()?.size()
+    );
+    assert!(
+        subgroup_transfer_lattice
+            .to_tikz()
+            .render()
+            .contains("tikzpicture")
+    );
+
+    let mut named_options = TransferSystemTikzOptions::default();
+    named_options.glyph.node_display =
+        GlyphNodeDisplay::raw(subgroup_lattice.subgroup_structure_descriptions_tex());
+    let named_picture = subgroup_transfer_lattice
+        .to_tikz_with(&named_options)
+        .render();
+    assert!(named_picture.contains("{$C_{2}$}"));
+    assert!(named_picture.contains("{$S_{3}$}"));
+    assert!(!named_picture.contains("\\fill[black]"));
 
     Ok(())
 }
 
-fn assert_rejections(group: &gap_sys::GapElement) -> Result<(), Box<dyn Error>> {
+fn assert_rejections(group: &gap_sys::GapValue) -> Result<(), Box<dyn Error>> {
     let diamond = diamond_lattice();
 
     let err = GLattice::from_generator_images(Arc::clone(&diamond), group, vec![vec![0, 1, 2]])
@@ -256,15 +350,14 @@ fn assert_transporter<A>(
     transporter: &RelationTransporter,
 ) -> Result<(), Box<dyn Error>> {
     let gap = gap_sys::global()?;
-    let image = gap.call_global_rooted(
+    let image = gap.call_global(
         "Image",
         &[
             g_lattice.relation_action_homomorphism(),
             transporter.group_element(),
         ],
     )?;
-    let permutation =
-        gap.permutation_images_zero_based(image.as_element(), g_lattice.relations().len())?;
+    let permutation = gap.permutation_images_zero_based(&image, g_lattice.relations().len())?;
     assert_eq!(
         permutation[orbit.canonical_relation_id()],
         transporter.relation_id()
@@ -272,10 +365,10 @@ fn assert_transporter<A>(
     Ok(())
 }
 
-fn order(element: &gap_sys::GapElement) -> Result<usize, Box<dyn Error>> {
+fn order(element: &gap_sys::GapValue) -> Result<usize, Box<dyn Error>> {
     let gap = gap_sys::global()?;
-    let order = gap.call_global_rooted("Order", &[element])?;
-    Ok(gap.integer_usize(order.as_element())?)
+    let order = gap.call_global("Order", &[element])?;
+    Ok(gap.to_usize(&order)?)
 }
 
 fn orbit_ids<A>(g_lattice: &GLattice<A>) -> Vec<Vec<usize>> {
