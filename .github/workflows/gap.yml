@@ -31,11 +31,38 @@ jobs:
             exit 1
           fi
 
-      - name: Show GAP installation
+      - name: Configure GAP environment
         run: |
-          gap --version
-          gap --print-gaproot || true
-          ldconfig -p | grep libgap || true
+          INIT_FILE="$(find /usr/share /usr/lib -path '*/lib/init.g' -print -quit)"
+          HEADER_FILE="$(find /usr/include /usr/lib -name libgap-api.h -print -quit)"
+          LIBGAP_FILE="$(find /usr/lib /usr/local/lib -name 'libgap.so*' -print -quit)"
+
+          if [ -z "$INIT_FILE" ] || [ -z "$HEADER_FILE" ] || [ -z "$LIBGAP_FILE" ]; then
+            echo "Could not locate GAP runtime, headers, or libgap"
+            echo "init.g candidates:"
+            find /usr/share /usr/lib -path '*/lib/init.g' -print || true
+            echo "libgap-api.h candidates:"
+            find /usr/include /usr/lib -name libgap-api.h -print || true
+            echo "libgap candidates:"
+            find /usr/lib /usr/local/lib -name 'libgap.so*' -print || true
+            exit 1
+          fi
+
+          GAP_ROOT="$(dirname "$(dirname "$INIT_FILE")")"
+          case "$HEADER_FILE" in
+            */gap/libgap-api.h) INCLUDE_DIR="$(dirname "$(dirname "$HEADER_FILE")")" ;;
+            *) INCLUDE_DIR="$(dirname "$HEADER_FILE")" ;;
+          esac
+          LIB_DIR="$(dirname "$LIBGAP_FILE")"
+
+          echo "GAP_SYS_ROOT=$GAP_ROOT" >> "$GITHUB_ENV"
+          echo "GAP_SYS_INCLUDE_DIRS=$INCLUDE_DIR" >> "$GITHUB_ENV"
+          echo "GAP_SYS_LIB_DIRS=$LIB_DIR" >> "$GITHUB_ENV"
+
+          echo "GAP_SYS_ROOT=$GAP_ROOT"
+          echo "GAP_SYS_INCLUDE_DIRS=$INCLUDE_DIR"
+          echo "GAP_SYS_LIB_DIRS=$LIB_DIR"
+          echo "libgap=$LIBGAP_FILE"
 
       - name: Build with groups feature
         run: cargo build --features groups --verbose
