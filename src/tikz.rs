@@ -1,9 +1,10 @@
 //! TikZ rendering for finite posets, lattices, and transfer-system diagrams.
 //!
 //! The module provides a small typed TikZ abstract syntax tree together with
-//! convenience renderers for Hasse diagrams.  The default layout ranks elements
-//! by distance from minimal elements and draws cover relations unless full
-//! relations are requested.
+//! convenience renderers for Hasse diagrams.  The default layout uses centered
+//! feasible heights and layered crossing reduction when that produces a better
+//! straight-line cover drawing, with the former ranked layout as a fallback.
+//! Cover relations are drawn unless full relations are requested.
 
 #[cfg(feature = "groups")]
 use crate::g_lattice::GTransferLattice;
@@ -11,7 +12,7 @@ use crate::lattice::Lattice;
 use crate::poset::{Edge, ElementId, Poset};
 use crate::transfer_lattice::{TransferLattice, TransferPoset, TransferSystem};
 use bitvec::prelude::*;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 
 /// A type that can be rendered as a TikZ picture.
@@ -366,9 +367,9 @@ impl fmt::Display for TikzPicture {
 pub struct PosetTikzOptions {
     /// Options placed on the outer `tikzpicture`.
     pub picture_options: TikzOptions,
-    /// Horizontal spacing between elements of the same rank.
+    /// Minimum horizontal spacing between elements of the same rank.
     pub x_spacing: f64,
-    /// Vertical spacing between ranks.
+    /// Vertical spacing between consecutive ranks on a longest chain.
     pub y_spacing: f64,
     /// Options applied to each element node.
     pub node_options: TikzOptions,
@@ -454,6 +455,12 @@ pub struct TransferSystemGlyphOptions {
     pub x_spacing: f64,
     /// Vertical spacing in the underlying lattice glyph.
     pub y_spacing: f64,
+    /// Whether to bend relations that would overlap glyph nodes or relations.
+    pub bend_colinear_edges: bool,
+    /// Bend angle used when a glyph relation must be curved.
+    pub bend_angle: f64,
+    /// Numerical tolerance used in glyph collinearity checks.
+    pub colinear_tolerance: f64,
     /// Which relations of the full ambient lattice are drawn in the background.
     ///
     /// By default, every non-identity relation is drawn.
@@ -532,6 +539,9 @@ impl Default for TransferSystemGlyphOptions {
             baseline: "-.5ex".to_string(),
             x_spacing: 1.0,
             y_spacing: 0.9,
+            bend_colinear_edges: true,
+            bend_angle: 18.0,
+            colinear_tolerance: 1e-6,
             ambient_relations: RelationDisplay::AllProperRelations,
             highlighted_relations: RelationDisplay::AllProperRelations,
             node_display: GlyphNodeDisplay::Dots,
@@ -565,7 +575,10 @@ pub fn poset_to_tikz_with<A, F>(
 where
     F: FnMut(ElementId, &A) -> TikzLabel,
 {
-    let mut coords = ranked_layout(poset, options.x_spacing, options.y_spacing);
+    let mut covers: Vec<_> = poset.cover_relations().into_iter().collect();
+    covers.sort_unstable();
+    let mut coords =
+        ranked_layout_with_covers(poset.size(), &covers, options.x_spacing, options.y_spacing);
     for (&id, &coordinate) in &options.coordinate_overrides {
         if id < poset.size() {
             coords.insert(id, coordinate);
@@ -576,8 +589,6 @@ where
     let edges: Vec<Edge> = if options.full_relations {
         poset.proper_relations_iter().collect()
     } else {
-        let mut covers: Vec<_> = poset.cover_relations().into_iter().collect();
-        covers.sort();
         covers
     };
     let bend_edges = if options.bend_colinear_edges {
@@ -907,37 +918,801 @@ fn render_raw_into(raw: &str, out: &mut String, indent: usize) {
     }
 }
 
+#[cfg(test)]
 fn ranked_layout<A>(
     poset: &Poset<A>,
     x_spacing: f64,
     y_spacing: f64,
 ) -> HashMap<ElementId, (f64, f64)> {
-    let covers = poset.cover_relations();
-    let mut memo = HashMap::new();
-    for id in 0..poset.size() {
-        rank_of(id, &covers, &mut memo);
-    }
+    let mut covers: Vec<_> = poset.cover_relations().into_iter().collect();
+    covers.sort_unstable();
+    ranked_layout_with_covers(poset.size(), &covers, x_spacing, y_spacing)
+}
 
-    let mut ranks: BTreeMap<usize, Vec<ElementId>> = BTreeMap::new();
-    for (id, rank) in memo {
-        ranks.entry(rank).or_default().push(id);
+fn ranked_layout_with_covers(
+    size: usize,
+    covers: &[Edge],
+    x_spacing: f64,
+    y_spacing: f64,
+) -> HashMap<ElementId, (f64, f64)> {
+    let vertical = vertical_levels(size, covers);
+    if !properization_has_linear_size(&vertical.centered, covers) {
+        return id_order_coordinates(&vertical.earliest, x_spacing, y_spacing);
     }
+    let mut layout = LayeredCoverGraph::new(&vertical.centered, covers);
+    let improved_defects = layout.reduce_crossings();
 
-    let mut coords = HashMap::new();
-    for (rank, mut ids) in ranks {
-        ids.sort_unstable();
-        let width = ids.len().saturating_sub(1) as f64;
-        for (slot, id) in ids.into_iter().enumerate() {
-            coords.insert(
-                id,
-                (
-                    (slot as f64 - width / 2.0) * x_spacing,
-                    rank as f64 * y_spacing,
-                ),
-            );
+    // Crossing reduction is performed on a properized graph with temporary
+    // dummy vertices, but TikZ emits straight cover segments. Judge the real
+    // segments and keep the former layout when its unrounded cover geometry is
+    // better. Styling, manual overrides, and optional bends happen later.
+    let baseline_points = id_order_grid_points(&vertical.earliest);
+    if straight_geometry_defects(covers, &baseline_points) < improved_defects {
+        id_order_coordinates(&vertical.earliest, x_spacing, y_spacing)
+    } else {
+        layout.real_coordinates(x_spacing, y_spacing)
+    }
+}
+
+/// Bounds the properized graph by a linear expansion of the input cover graph
+/// and prevents invisible dummy vertices from making a visible layer wider
+/// than the real poset. Larger cases retain the inexpensive legacy layout.
+fn properization_has_linear_size(real_levels: &[usize], covers: &[Edge]) -> bool {
+    let Some(expansion_budget) = real_levels.len().checked_add(covers.len()) else {
+        return false;
+    };
+    let layer_count = real_levels
+        .iter()
+        .copied()
+        .max()
+        .map_or(0, |maximum| maximum + 1);
+    let mut starts = vec![0usize; layer_count];
+    let mut ends = vec![0usize; layer_count];
+    let mut dummy_count = 0usize;
+
+    for &edge in covers {
+        let from = real_levels[edge.from];
+        let to = real_levels[edge.to];
+        let Some(edge_dummies) = to.checked_sub(from + 1) else {
+            return false;
+        };
+        let Some(new_count) = dummy_count.checked_add(edge_dummies) else {
+            return false;
+        };
+        dummy_count = new_count;
+        if dummy_count > expansion_budget {
+            return false;
+        }
+        if edge_dummies > 0 {
+            starts[from + 1] += 1;
+            ends[to] += 1;
         }
     }
-    coords
+
+    let mut real_layer = vec![false; layer_count];
+    for &level in real_levels {
+        real_layer[level] = true;
+    }
+    let mut active_dummies = 0usize;
+    for level in 0..layer_count {
+        active_dummies -= ends[level];
+        active_dummies += starts[level];
+        if real_layer[level] && active_dummies > real_levels.len() {
+            return false;
+        }
+    }
+    true
+}
+
+/// Assigns twice the centered feasible rank of each element, following the
+/// vertical-ranking rule in Freese's automated lattice-drawing algorithm.
+///
+/// `height[v]` is the earliest rank at which `v` can occur, while
+/// `longest_height - depth[v]` is its latest feasible rank. Their midpoint
+/// makes graded posets look exactly as before and uses the available vertical
+/// slack in non-graded posets. Keeping the doubled value as an integer also
+/// gives crossing reduction explicit half-rank layers to work with.
+struct VerticalLevels {
+    earliest: Vec<usize>,
+    centered: Vec<usize>,
+}
+
+fn vertical_levels(size: usize, covers: &[Edge]) -> VerticalLevels {
+    let mut incoming = vec![Vec::new(); size];
+    let mut outgoing = vec![Vec::new(); size];
+    for &edge in covers {
+        incoming[edge.to].push(edge.from);
+        outgoing[edge.from].push(edge.to);
+    }
+
+    let mut remaining_predecessors: Vec<_> = incoming.iter().map(Vec::len).collect();
+    let mut ready: BTreeSet<_> = remaining_predecessors
+        .iter()
+        .enumerate()
+        .filter_map(|(id, &count)| (count == 0).then_some(id))
+        .collect();
+    let mut topological_order = Vec::with_capacity(size);
+    let mut heights = vec![0usize; size];
+
+    while let Some(id) = ready.pop_first() {
+        topological_order.push(id);
+        for &upper in &outgoing[id] {
+            heights[upper] = heights[upper].max(heights[id] + 1);
+            remaining_predecessors[upper] -= 1;
+            if remaining_predecessors[upper] == 0 {
+                ready.insert(upper);
+            }
+        }
+    }
+    debug_assert_eq!(topological_order.len(), size);
+
+    let mut depths = vec![0usize; size];
+    for &id in topological_order.iter().rev() {
+        depths[id] = outgoing[id]
+            .iter()
+            .map(|&upper| depths[upper] + 1)
+            .max()
+            .unwrap_or(0);
+    }
+
+    let longest_height = heights.iter().copied().max().unwrap_or(0);
+    let centered = heights
+        .iter()
+        .copied()
+        .zip(depths)
+        .map(|(height, depth)| height + longest_height - depth)
+        .collect();
+    VerticalLevels {
+        earliest: heights,
+        centered,
+    }
+}
+
+/// A proper layered graph made by subdividing every Hasse edge at each
+/// intervening half-rank. Vertices below `real_count` are poset elements; the
+/// rest are temporary dummy vertices used only by crossing reduction.
+struct LayeredCoverGraph {
+    real_count: usize,
+    real_edges: Vec<Edge>,
+    levels: Vec<usize>,
+    layers: Vec<Vec<usize>>,
+    incoming: Vec<Vec<usize>>,
+    outgoing: Vec<Vec<usize>>,
+}
+
+impl LayeredCoverGraph {
+    fn new(real_levels: &[usize], covers: &[Edge]) -> Self {
+        let real_count = real_levels.len();
+        let layer_count = real_levels
+            .iter()
+            .copied()
+            .max()
+            .map_or(0, |maximum| maximum + 1);
+        let mut graph = Self {
+            real_count,
+            real_edges: covers.to_vec(),
+            levels: real_levels.to_vec(),
+            layers: vec![Vec::new(); layer_count],
+            incoming: vec![Vec::new(); real_count],
+            outgoing: vec![Vec::new(); real_count],
+        };
+
+        for (id, &level) in real_levels.iter().enumerate() {
+            graph.layers[level].push(id);
+        }
+
+        for &edge in covers {
+            let from_level = graph.levels[edge.from];
+            let to_level = graph.levels[edge.to];
+            debug_assert!(from_level < to_level);
+
+            let mut previous = edge.from;
+            for level in from_level + 1..to_level {
+                let dummy = graph.levels.len();
+                graph.levels.push(level);
+                graph.layers[level].push(dummy);
+                graph.incoming.push(Vec::new());
+                graph.outgoing.push(Vec::new());
+                graph.add_edge(previous, dummy);
+                previous = dummy;
+            }
+            graph.add_edge(previous, edge.to);
+        }
+
+        graph
+    }
+
+    fn add_edge(&mut self, from: usize, to: usize) {
+        debug_assert_eq!(self.levels[from] + 1, self.levels[to]);
+        self.outgoing[from].push(to);
+        self.incoming[to].push(from);
+    }
+
+    fn reduce_crossings(&mut self) -> StraightGeometryDefects {
+        if self.layers.len() < 2 {
+            return self.straight_geometry_defects();
+        }
+
+        let mut best_layers = self.layers.clone();
+        let mut best_score = self.ordering_score();
+        for _ in 0..8 {
+            let cycle_start = self.layers.clone();
+            self.sweep_downward();
+            self.remember_if_better(&mut best_layers, &mut best_score);
+            self.sweep_upward();
+            self.remember_if_better(&mut best_layers, &mut best_score);
+            if self.layers == cycle_start {
+                break;
+            }
+        }
+        self.layers = best_layers;
+        self.greedy_switch_adjacent()
+    }
+
+    /// Escapes barycenter ties and local plateaus by trying adjacent layer
+    /// swaps against the exact emitted-edge score. Dummy-dummy swaps cannot
+    /// immediately change real geometry, so only pairs containing a real
+    /// vertex are considered.
+    fn greedy_switch_adjacent(&mut self) -> StraightGeometryDefects {
+        let positions = self.vertex_positions();
+        let mut points = self.real_grid_points_with_positions(&positions);
+        let mut current_geometry = straight_geometry_defects(&self.real_edges, &points);
+        if current_geometry.is_clean() {
+            return current_geometry;
+        }
+        for _ in 0..self.real_count.max(1) {
+            let mut improved = false;
+            for level in 0..self.layers.len() {
+                for position in 0..self.layers[level].len().saturating_sub(1) {
+                    let left = self.layers[level][position];
+                    let right = self.layers[level][position + 1];
+                    if left >= self.real_count && right >= self.real_count {
+                        continue;
+                    }
+
+                    let (moved_storage, moved_count) =
+                        match (left < self.real_count, right < self.real_count) {
+                            (true, true) => ([left, right], 2),
+                            (true, false) => ([left, left], 1),
+                            (false, true) => ([right, right], 1),
+                            (false, false) => unreachable!("dummy-dummy swaps are skipped"),
+                        };
+                    let moved_vertices = &moved_storage[..moved_count];
+                    let old_contribution =
+                        straight_geometry_contribution(&self.real_edges, &points, moved_vertices);
+                    self.layers[level].swap(position, position + 1);
+                    if left < self.real_count {
+                        points[left].x += 2;
+                    }
+                    if right < self.real_count {
+                        points[right].x -= 2;
+                    }
+                    let new_contribution =
+                        straight_geometry_contribution(&self.real_edges, &points, moved_vertices);
+                    let candidate_geometry =
+                        current_geometry.replace_contribution(old_contribution, new_contribution);
+                    if candidate_geometry < current_geometry {
+                        current_geometry = candidate_geometry;
+                        improved = true;
+                        if current_geometry.is_clean() {
+                            debug_assert_eq!(
+                                current_geometry,
+                                straight_geometry_defects(&self.real_edges, &points)
+                            );
+                            return current_geometry;
+                        }
+                    } else {
+                        self.layers[level].swap(position, position + 1);
+                        if left < self.real_count {
+                            points[left].x -= 2;
+                        }
+                        if right < self.real_count {
+                            points[right].x += 2;
+                        }
+                    }
+                }
+            }
+            if !improved {
+                break;
+            }
+        }
+        debug_assert_eq!(
+            current_geometry,
+            straight_geometry_defects(&self.real_edges, &points)
+        );
+        current_geometry
+    }
+
+    fn remember_if_better(
+        &self,
+        best_layers: &mut Vec<Vec<usize>>,
+        best_score: &mut OrderingScore,
+    ) {
+        let score = self.ordering_score();
+        if score < *best_score {
+            *best_score = score;
+            *best_layers = self.layers.clone();
+        }
+    }
+
+    fn sweep_downward(&mut self) {
+        let mut positions = self.vertex_positions();
+        for level in 1..self.layers.len() {
+            self.reorder_layer(level, level - 1, true, &mut positions);
+        }
+    }
+
+    fn sweep_upward(&mut self) {
+        let mut positions = self.vertex_positions();
+        for level in (0..self.layers.len() - 1).rev() {
+            self.reorder_layer(level, level + 1, false, &mut positions);
+        }
+    }
+
+    fn reorder_layer(
+        &mut self,
+        level: usize,
+        neighbor_level: usize,
+        use_incoming: bool,
+        positions: &mut [usize],
+    ) {
+        if self.layers[level].len() < 2 {
+            return;
+        }
+
+        let layer_len = self.layers[level].len() as f64;
+        let neighbor_len = self.layers[neighbor_level].len() as f64;
+        let mut keyed: Vec<_> = self.layers[level]
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(old_position, vertex)| {
+                let neighbors = if use_incoming {
+                    &self.incoming[vertex]
+                } else {
+                    &self.outgoing[vertex]
+                };
+                let barycenter = if neighbors.is_empty() {
+                    // A source or sink in a shorter disconnected component has
+                    // no neighbor in this sweep direction. Preserve its rough
+                    // horizontal position relative to the adjacent layer.
+                    (old_position as f64 + 0.5) * neighbor_len / layer_len - 0.5
+                } else {
+                    neighbors
+                        .iter()
+                        .map(|&neighbor| positions[neighbor] as f64)
+                        .sum::<f64>()
+                        / neighbors.len() as f64
+                };
+                (vertex, barycenter, old_position)
+            })
+            .collect();
+
+        keyed.sort_by(|left, right| {
+            left.1
+                .total_cmp(&right.1)
+                .then_with(|| left.2.cmp(&right.2))
+                .then_with(|| left.0.cmp(&right.0))
+        });
+        self.layers[level] = keyed.into_iter().map(|(vertex, _, _)| vertex).collect();
+        for (position, &vertex) in self.layers[level].iter().enumerate() {
+            positions[vertex] = position;
+        }
+    }
+
+    fn ordering_score(&self) -> OrderingScore {
+        let positions = self.vertex_positions();
+        let geometry = straight_geometry_defects(
+            &self.real_edges,
+            &self.real_grid_points_with_positions(&positions),
+        );
+        let mut routed_crossings = 0u64;
+        let mut horizontal_length = 0u64;
+
+        for level in 0..self.layers.len().saturating_sub(1) {
+            let upper_width = self.layers[level + 1].len();
+            let mut targets_seen = FenwickTree::new(upper_width);
+            let mut seen_count = 0u64;
+
+            for &source in &self.layers[level] {
+                // Query the whole source group before inserting it, so edges
+                // with a shared endpoint are not counted as crossings.
+                for &target in &self.outgoing[source] {
+                    let target_position = positions[target];
+                    routed_crossings = routed_crossings
+                        .saturating_add(seen_count - targets_seen.prefix_sum(target_position + 1));
+                }
+                for &target in &self.outgoing[source] {
+                    targets_seen.add(positions[target], 1);
+                    seen_count += 1;
+
+                    let source_x =
+                        doubled_centered_slot(positions[source], self.layers[level].len());
+                    let target_x = doubled_centered_slot(positions[target], upper_width);
+                    horizontal_length =
+                        horizontal_length.saturating_add(source_x.abs_diff(target_x));
+                }
+            }
+        }
+
+        OrderingScore {
+            geometry,
+            routed_crossings,
+            horizontal_length,
+        }
+    }
+
+    fn straight_geometry_defects(&self) -> StraightGeometryDefects {
+        let positions = self.vertex_positions();
+        straight_geometry_defects(
+            &self.real_edges,
+            &self.real_grid_points_with_positions(&positions),
+        )
+    }
+
+    fn real_grid_points_with_positions(&self, positions: &[usize]) -> Vec<GridPoint> {
+        (0..self.real_count)
+            .map(|id| {
+                let level = self.levels[id];
+                GridPoint {
+                    x: doubled_centered_slot(positions[id], self.layers[level].len()),
+                    y: level as i64,
+                }
+            })
+            .collect()
+    }
+
+    fn vertex_positions(&self) -> Vec<usize> {
+        let mut positions = vec![0usize; self.levels.len()];
+        for layer in &self.layers {
+            for (position, &vertex) in layer.iter().enumerate() {
+                positions[vertex] = position;
+            }
+        }
+        positions
+    }
+
+    fn real_coordinates(&self, x_spacing: f64, y_spacing: f64) -> HashMap<ElementId, (f64, f64)> {
+        let positions = self.vertex_positions();
+        (0..self.real_count)
+            .map(|id| {
+                let level = self.levels[id];
+                let width = self.layers[level].len().saturating_sub(1) as f64;
+                let x = (positions[id] as f64 - width / 2.0) * x_spacing;
+                let y = level as f64 * y_spacing / 2.0;
+                (id, (x, y))
+            })
+            .collect()
+    }
+}
+
+fn id_order_layers(ranks: &[usize]) -> Vec<Vec<ElementId>> {
+    let layer_count = ranks.iter().copied().max().map_or(0, |maximum| maximum + 1);
+    let mut layers = vec![Vec::new(); layer_count];
+    for (id, &rank) in ranks.iter().enumerate() {
+        layers[rank].push(id);
+    }
+    layers
+}
+
+fn id_order_grid_points(ranks: &[usize]) -> Vec<GridPoint> {
+    let layers = id_order_layers(ranks);
+    let mut points = vec![GridPoint { x: 0, y: 0 }; ranks.len()];
+    for (rank, layer) in layers.iter().enumerate() {
+        for (position, &id) in layer.iter().enumerate() {
+            points[id] = GridPoint {
+                x: doubled_centered_slot(position, layer.len()),
+                y: 2 * rank as i64,
+            };
+        }
+    }
+    points
+}
+
+fn id_order_coordinates(
+    ranks: &[usize],
+    x_spacing: f64,
+    y_spacing: f64,
+) -> HashMap<ElementId, (f64, f64)> {
+    let points = id_order_grid_points(ranks);
+    points
+        .into_iter()
+        .enumerate()
+        .map(|(id, point)| {
+            (
+                id,
+                (
+                    point.x as f64 * x_spacing / 2.0,
+                    point.y as f64 * y_spacing / 2.0,
+                ),
+            )
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GridPoint {
+    x: i64,
+    y: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GridSegment {
+    from: GridPoint,
+    to: GridPoint,
+    min_x: i64,
+    max_x: i64,
+    min_y: i64,
+    max_y: i64,
+}
+
+impl GridSegment {
+    fn new(from: GridPoint, to: GridPoint) -> Self {
+        Self {
+            from,
+            to,
+            min_x: from.x.min(to.x),
+            max_x: from.x.max(to.x),
+            min_y: from.y.min(to.y),
+            max_y: from.y.max(to.y),
+        }
+    }
+
+    fn bounding_box_overlaps(self, other: Self) -> bool {
+        self.min_x <= other.max_x
+            && other.min_x <= self.max_x
+            && self.min_y <= other.max_y
+            && other.min_y <= self.max_y
+    }
+
+    fn bounding_box_contains(self, point: GridPoint) -> bool {
+        self.min_x <= point.x
+            && point.x <= self.max_x
+            && self.min_y <= point.y
+            && point.y <= self.max_y
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct StraightGeometryDefects {
+    proper_crossings: u64,
+    node_intersections: u64,
+    collinear_overlaps: u64,
+}
+
+impl StraightGeometryDefects {
+    fn is_clean(self) -> bool {
+        self.proper_crossings == 0 && self.node_intersections == 0 && self.collinear_overlaps == 0
+    }
+
+    fn replace_contribution(self, before: Self, after: Self) -> Self {
+        debug_assert!(before.proper_crossings <= self.proper_crossings);
+        debug_assert!(before.node_intersections <= self.node_intersections);
+        debug_assert!(before.collinear_overlaps <= self.collinear_overlaps);
+        Self {
+            proper_crossings: self.proper_crossings - before.proper_crossings
+                + after.proper_crossings,
+            node_intersections: self.node_intersections - before.node_intersections
+                + after.node_intersections,
+            collinear_overlaps: self.collinear_overlaps - before.collinear_overlaps
+                + after.collinear_overlaps,
+        }
+    }
+}
+
+fn edges_share_endpoint(left: Edge, right: Edge) -> bool {
+    left.from == right.from || left.from == right.to || left.to == right.from || left.to == right.to
+}
+
+fn add_segment_pair_defects(
+    defects: &mut StraightGeometryDefects,
+    segment: GridSegment,
+    other: GridSegment,
+) {
+    if !segment.bounding_box_overlaps(other) {
+        return;
+    }
+    if grid_segments_properly_cross(segment.from, segment.to, other.from, other.to) {
+        defects.proper_crossings += 1;
+    } else if grid_segments_collinearly_overlap(segment.from, segment.to, other.from, other.to) {
+        defects.collinear_overlaps += 1;
+    }
+}
+
+fn segment_contains_unrelated_node(
+    edge: Edge,
+    segment: GridSegment,
+    node: ElementId,
+    point: GridPoint,
+) -> bool {
+    node != edge.from
+        && node != edge.to
+        && segment.bounding_box_contains(point)
+        && grid_point_strictly_on_segment(segment.from, segment.to, point)
+}
+
+fn straight_geometry_defects(edges: &[Edge], points: &[GridPoint]) -> StraightGeometryDefects {
+    let segments: Vec<_> = edges
+        .iter()
+        .map(|edge| GridSegment::new(points[edge.from], points[edge.to]))
+        .collect();
+    let mut defects = StraightGeometryDefects {
+        proper_crossings: 0,
+        node_intersections: 0,
+        collinear_overlaps: 0,
+    };
+    for (index, &edge) in edges.iter().enumerate() {
+        let segment = segments[index];
+        for (offset, &other) in edges[index + 1..].iter().enumerate() {
+            if edges_share_endpoint(edge, other) {
+                continue;
+            }
+            let other_segment = segments[index + 1 + offset];
+            add_segment_pair_defects(&mut defects, segment, other_segment);
+        }
+    }
+
+    for (&edge, &segment) in edges.iter().zip(&segments) {
+        for (id, &point) in points.iter().enumerate() {
+            if segment_contains_unrelated_node(edge, segment, id, point) {
+                defects.node_intersections += 1;
+            }
+        }
+    }
+
+    defects
+}
+
+/// Counts exactly those defects whose truth can change when `moved_vertices`
+/// move horizontally. This lets adjacent switching update the global score
+/// without rechecking pairs of unaffected edges and nodes.
+fn straight_geometry_contribution(
+    edges: &[Edge],
+    points: &[GridPoint],
+    moved_vertices: &[ElementId],
+) -> StraightGeometryDefects {
+    let segments: Vec<_> = edges
+        .iter()
+        .map(|edge| GridSegment::new(points[edge.from], points[edge.to]))
+        .collect();
+    let affected_edges: Vec<_> = edges
+        .iter()
+        .map(|edge| {
+            moved_vertices
+                .iter()
+                .any(|&vertex| edge.from == vertex || edge.to == vertex)
+        })
+        .collect();
+    let mut defects = StraightGeometryDefects {
+        proper_crossings: 0,
+        node_intersections: 0,
+        collinear_overlaps: 0,
+    };
+
+    for (index, &is_affected) in affected_edges.iter().enumerate() {
+        if !is_affected {
+            continue;
+        }
+        for other_index in 0..edges.len() {
+            if other_index == index
+                || (affected_edges[other_index] && other_index < index)
+                || edges_share_endpoint(edges[index], edges[other_index])
+            {
+                continue;
+            }
+            add_segment_pair_defects(&mut defects, segments[index], segments[other_index]);
+        }
+    }
+
+    for (index, (&edge, &segment)) in edges.iter().zip(&segments).enumerate() {
+        if affected_edges[index] {
+            for (node, &point) in points.iter().enumerate() {
+                if segment_contains_unrelated_node(edge, segment, node, point) {
+                    defects.node_intersections += 1;
+                }
+            }
+        } else {
+            for &node in moved_vertices {
+                if segment_contains_unrelated_node(edge, segment, node, points[node]) {
+                    defects.node_intersections += 1;
+                }
+            }
+        }
+    }
+
+    defects
+}
+
+fn grid_segments_properly_cross(a: GridPoint, b: GridPoint, c: GridPoint, d: GridPoint) -> bool {
+    let ab_c = grid_orientation(a, b, c);
+    let ab_d = grid_orientation(a, b, d);
+    let cd_a = grid_orientation(c, d, a);
+    let cd_b = grid_orientation(c, d, b);
+    have_opposite_signs(ab_c, ab_d) && have_opposite_signs(cd_a, cd_b)
+}
+
+fn grid_segments_collinearly_overlap(
+    a: GridPoint,
+    b: GridPoint,
+    c: GridPoint,
+    d: GridPoint,
+) -> bool {
+    if grid_orientation(a, b, c) != 0 || grid_orientation(a, b, d) != 0 {
+        return false;
+    }
+
+    if (b.x - a.x).abs() >= (b.y - a.y).abs() {
+        intervals_strictly_overlap(a.x, b.x, c.x, d.x)
+    } else {
+        intervals_strictly_overlap(a.y, b.y, c.y, d.y)
+    }
+}
+
+fn intervals_strictly_overlap(a: i64, b: i64, c: i64, d: i64) -> bool {
+    a.min(b).max(c.min(d)) < a.max(b).min(c.max(d))
+}
+
+fn grid_point_strictly_on_segment(a: GridPoint, b: GridPoint, point: GridPoint) -> bool {
+    if grid_orientation(a, b, point) != 0 {
+        return false;
+    }
+    let relative = (point.x - a.x, point.y - a.y);
+    let segment = (b.x - a.x, b.y - a.y);
+    let projection =
+        relative.0 as i128 * segment.0 as i128 + relative.1 as i128 * segment.1 as i128;
+    let length_squared =
+        segment.0 as i128 * segment.0 as i128 + segment.1 as i128 * segment.1 as i128;
+    projection > 0 && projection < length_squared
+}
+
+fn grid_orientation(a: GridPoint, b: GridPoint, c: GridPoint) -> i128 {
+    (b.x - a.x) as i128 * (c.y - a.y) as i128 - (b.y - a.y) as i128 * (c.x - a.x) as i128
+}
+
+fn have_opposite_signs(left: i128, right: i128) -> bool {
+    (left < 0 && right > 0) || (left > 0 && right < 0)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct OrderingScore {
+    geometry: StraightGeometryDefects,
+    routed_crossings: u64,
+    horizontal_length: u64,
+}
+
+fn doubled_centered_slot(position: usize, layer_width: usize) -> i64 {
+    2 * position as i64 - layer_width.saturating_sub(1) as i64
+}
+
+struct FenwickTree {
+    entries: Vec<u64>,
+}
+
+impl FenwickTree {
+    fn new(size: usize) -> Self {
+        Self {
+            entries: vec![0; size + 1],
+        }
+    }
+
+    fn add(&mut self, index: usize, value: u64) {
+        let mut index = index + 1;
+        while index < self.entries.len() {
+            self.entries[index] += value;
+            index += index & index.wrapping_neg();
+        }
+    }
+
+    /// Returns the sum over indices strictly below `end`.
+    fn prefix_sum(&self, end: usize) -> u64 {
+        let mut index = end;
+        let mut sum = 0;
+        while index > 0 {
+            sum += self.entries[index];
+            index &= index - 1;
+        }
+        sum
+    }
 }
 
 fn debug_id_picture(size: usize, options: &PosetTikzOptions) -> TikzPicture {
@@ -956,20 +1731,6 @@ fn debug_id_picture(size: usize, options: &PosetTikzOptions) -> TikzPicture {
         });
     }
     picture
-}
-
-fn rank_of(id: ElementId, covers: &HashSet<Edge>, memo: &mut HashMap<ElementId, usize>) -> usize {
-    if let Some(&rank) = memo.get(&id) {
-        return rank;
-    }
-    let rank = covers
-        .iter()
-        .filter(|edge| edge.to == id)
-        .map(|edge| rank_of(edge.from, covers, memo) + 1)
-        .max()
-        .unwrap_or(0);
-    memo.insert(id, rank);
-    rank
 }
 
 fn edge_bend_decisions(
@@ -1128,21 +1889,24 @@ impl<'a, A> SuborderGlyphRenderer<'a, A> {
             .as_poset()
             .proper_relations_iter()
             .collect::<Vec<_>>();
+        let mut covers = lattice
+            .as_poset()
+            .cover_relations()
+            .into_iter()
+            .collect::<Vec<_>>();
+        covers.sort_unstable();
         let ambient_edges = match options.ambient_relations {
-            RelationDisplay::Covers => {
-                let mut edges = lattice
-                    .as_poset()
-                    .cover_relations()
-                    .into_iter()
-                    .collect::<Vec<_>>();
-                edges.sort_unstable();
-                edges
-            }
+            RelationDisplay::Covers => covers.clone(),
             RelationDisplay::AllProperRelations => proper_edges.clone(),
         };
         Self {
             lattice,
-            coordinates: ranked_layout(lattice.as_poset(), options.x_spacing, options.y_spacing),
+            coordinates: ranked_layout_with_covers(
+                lattice.size(),
+                &covers,
+                options.x_spacing,
+                options.y_spacing,
+            ),
             proper_edges,
             ambient_edges,
             options,
@@ -1176,22 +1940,53 @@ impl<'a, A> SuborderGlyphRenderer<'a, A> {
                 .collect(),
         };
 
-        let mut picture = TikzPicture::with_options(self.options.picture_options());
-        for edge in &self.ambient_edges {
-            picture.push(TikzPath {
+        // Compute one decision per visible relation so that an ambient edge
+        // and its highlighted copy follow precisely the same curve.
+        let mut visible_edges = self.ambient_edges.clone();
+        visible_edges.extend(highlighted_edges.iter().copied());
+        visible_edges.sort_unstable();
+        visible_edges.dedup();
+        let bend_edges = if self.options.bend_colinear_edges {
+            edge_bend_decisions(
+                &visible_edges,
+                &self.coordinates,
+                self.options.colinear_tolerance,
+            )
+        } else {
+            vec![false; visible_edges.len()]
+        };
+        let make_path = |edge: Edge, mut options: TikzOptions| {
+            let index = visible_edges
+                .binary_search(&edge)
+                .expect("visible glyph relation should have a bend decision");
+            let operation = if bend_edges[index] {
+                let direction = if index.is_multiple_of(2) {
+                    "left"
+                } else {
+                    "right"
+                };
+                options.push(format!("bend {direction}={}", self.options.bend_angle));
+                TikzPathOperation::To
+            } else {
+                TikzPathOperation::Line
+            };
+            TikzPath {
                 from: self.coordinates[&edge.from].into(),
                 to: self.coordinates[&edge.to].into(),
-                operation: TikzPathOperation::Line,
-                options: self.options.dim_edge_options.clone(),
-            });
+                operation,
+                options,
+            }
+        };
+
+        let mut picture = TikzPicture::with_options(self.options.picture_options());
+        for &edge in &self.ambient_edges {
+            picture.push(make_path(edge, self.options.dim_edge_options.clone()));
         }
         for edge in highlighted_edges {
-            picture.push(TikzPath {
-                from: self.coordinates[&edge.from].into(),
-                to: self.coordinates[&edge.to].into(),
-                operation: TikzPathOperation::Line,
-                options: self.options.highlighted_edge_options.clone(),
-            });
+            picture.push(make_path(
+                edge,
+                self.options.highlighted_edge_options.clone(),
+            ));
         }
         match &self.options.node_display {
             GlyphNodeDisplay::Dots => {
@@ -1418,6 +2213,31 @@ mod tests {
     }
 
     #[test]
+    fn transfer_system_glyphs_bend_transitive_relations_around_colinear_nodes() {
+        let chain = Arc::new(
+            Lattice::new(
+                Poset::from_edges(vec![0i32, 1, 2], [Edge::new(0, 1), Edge::new(1, 2)]).unwrap(),
+            )
+            .unwrap(),
+        );
+        let containment = chain.transfer_systems_containment().unwrap();
+        let top = containment
+            .system(containment.top())
+            .expect("the transfer-system lattice has a top element");
+
+        let options = TransferSystemGlyphOptions::default();
+        let rendered = small_transfer_system_picture(&top, &options).render();
+        assert_eq!(rendered.matches("bend right=18").count(), 2);
+        assert!(rendered.contains("to[black!30, bend right=18]"));
+        assert!(rendered.contains("to[line width=.75pt, orange, bend right=18]"));
+
+        let mut straight_options = options;
+        straight_options.bend_colinear_edges = false;
+        let straight = small_transfer_system_picture(&top, &straight_options).render();
+        assert!(!straight.contains("bend"));
+    }
+
+    #[test]
     fn transfer_system_glyphs_can_use_labels_in_place_of_dots() {
         let chain = Arc::new(
             Lattice::new(Poset::from_edges(vec![0i32, 1], [Edge::new(0, 1)]).unwrap()).unwrap(),
@@ -1445,7 +2265,7 @@ mod tests {
     }
 
     #[test]
-    fn ranked_layout_orders_same_rank_elements_by_element_id() {
+    fn layout_uses_element_ids_as_the_antichain_tie_break() {
         let poset = Poset::from_edges(vec![0i32, 1, 2], []).unwrap();
         let picture = poset_to_tikz_with(&poset, &PosetTikzOptions::default(), |_id, element| {
             TikzLabel::escaped(element.to_string())
@@ -1460,6 +2280,211 @@ mod tests {
         );
         assert!(
             rendered.contains("\\node[circle, draw, inner sep=1.5pt] (p2) at (1.800,0.000) {2};")
+        );
+    }
+
+    #[test]
+    fn centered_layout_gives_n5_five_distinct_heights() {
+        // The long branch is 0 < a < c < 1, while b lies strictly between
+        // 0 and 1. Centering b in its feasible rank interval gives the usual
+        // pentagon rather than placing it level with a.
+        let n5 = Poset::from_edges(
+            vec!["0", "a", "b", "c", "1"],
+            [
+                Edge::new(0, 1),
+                Edge::new(1, 3),
+                Edge::new(3, 4),
+                Edge::new(0, 2),
+                Edge::new(2, 4),
+            ],
+        )
+        .unwrap();
+
+        let coords = ranked_layout(&n5, 1.8, 1.4);
+        let expected_heights = [0.0, 1.4, 2.1, 2.8, 4.2];
+        for (id, expected) in expected_heights.into_iter().enumerate() {
+            assert!(
+                (coords[&id].1 - expected).abs() < 1e-9,
+                "unexpected N5 coordinates: {coords:?}"
+            );
+        }
+
+        assert!((coords[&1].0 - coords[&3].0).abs() < 1e-9);
+        assert!(
+            (coords[&1].0 - coords[&2].0) * (coords[&3].0 - coords[&2].0) > 0.0,
+            "the short branch should be on the other side of the long branch: {coords:?}"
+        );
+    }
+
+    #[test]
+    fn properization_budget_keeps_n5_but_rejects_superlinear_expansion() {
+        let n5_covers = [
+            Edge::new(0, 1),
+            Edge::new(0, 2),
+            Edge::new(1, 3),
+            Edge::new(2, 4),
+            Edge::new(3, 4),
+        ];
+        let vertical = vertical_levels(5, &n5_covers);
+        assert!(properization_has_linear_size(
+            &vertical.centered,
+            &n5_covers
+        ));
+
+        let widely_spanning_edges = [Edge::new(0, 3), Edge::new(1, 3)];
+        assert!(!properization_has_linear_size(
+            &[0, 2, 4, 6],
+            &widely_spanning_edges
+        ));
+    }
+
+    #[test]
+    fn layered_sweeps_remove_an_avoidable_crossing() {
+        // Element-id order crosses 1--4 with 2--3. The adjacency-based order
+        // should instead keep the two branches on consistent sides.
+        let poset = Poset::from_edges(
+            (0..6).collect::<Vec<_>>(),
+            [
+                Edge::new(0, 1),
+                Edge::new(0, 2),
+                Edge::new(1, 4),
+                Edge::new(2, 3),
+                Edge::new(3, 5),
+                Edge::new(4, 5),
+            ],
+        )
+        .unwrap();
+
+        let coords = ranked_layout(&poset, 1.8, 1.4);
+        assert!(
+            (coords[&1].0 - coords[&2].0) * (coords[&4].0 - coords[&3].0) > 0.0,
+            "the two middle cover edges should not cross: {coords:?}"
+        );
+    }
+
+    #[test]
+    fn adjacent_switching_separates_staggered_branches() {
+        // One shorter branch has a half-rank vertex between two vertices of
+        // the longer branch. Adjacent exact-score switches should place the
+        // branches on separate rails rather than stacking all three vertices.
+        let poset = Poset::from_edges(
+            (0..6).collect::<Vec<_>>(),
+            [
+                Edge::new(0, 1),
+                Edge::new(0, 2),
+                Edge::new(1, 5),
+                Edge::new(2, 3),
+                Edge::new(3, 4),
+                Edge::new(3, 5),
+            ],
+        )
+        .unwrap();
+        let mut covers: Vec<_> = poset.cover_relations().into_iter().collect();
+        covers.sort_unstable();
+
+        let coords = ranked_layout(&poset, 2.0, 2.0);
+        assert!((coords[&1].0 - coords[&5].0).abs() < 1e-9);
+        assert!((coords[&2].0 - coords[&3].0).abs() < 1e-9);
+        assert!((coords[&3].0 - coords[&4].0).abs() < 1e-9);
+        assert!((coords[&1].0 - coords[&2].0).abs() > 1e-9);
+
+        let points: Vec<_> = (0..poset.size())
+            .map(|id| GridPoint {
+                x: coords[&id].0.round() as i64,
+                y: coords[&id].1.round() as i64,
+            })
+            .collect();
+        assert_eq!(
+            straight_geometry_defects(&covers, &points),
+            StraightGeometryDefects {
+                proper_crossings: 0,
+                node_intersections: 0,
+                collinear_overlaps: 0,
+            }
+        );
+        assert!(
+            edge_bend_decisions(&covers, &coords, 1e-6)
+                .into_iter()
+                .all(|bend| !bend)
+        );
+    }
+
+    #[test]
+    fn local_geometry_delta_matches_full_rescoring() {
+        let edges = [
+            Edge::new(0, 1),
+            Edge::new(0, 2),
+            Edge::new(1, 5),
+            Edge::new(2, 3),
+            Edge::new(3, 4),
+            Edge::new(3, 5),
+        ];
+        let points = [
+            GridPoint { x: 0, y: 0 },
+            GridPoint { x: -1, y: 3 },
+            GridPoint { x: -1, y: 2 },
+            GridPoint { x: -1, y: 4 },
+            GridPoint { x: -1, y: 6 },
+            GridPoint { x: 1, y: 6 },
+        ];
+        let full_before = straight_geometry_defects(&edges, &points);
+
+        for moved in 0..points.len() {
+            for delta in [-2, 2] {
+                let old_contribution = straight_geometry_contribution(&edges, &points, &[moved]);
+                let mut changed = points;
+                changed[moved].x += delta;
+                let new_contribution = straight_geometry_contribution(&edges, &changed, &[moved]);
+                assert_eq!(
+                    full_before.replace_contribution(old_contribution, new_contribution),
+                    straight_geometry_defects(&edges, &changed)
+                );
+            }
+        }
+
+        for left in 0..points.len() {
+            for right in left + 1..points.len() {
+                let moved = [left, right];
+                let old_contribution = straight_geometry_contribution(&edges, &points, &moved);
+                let mut changed = points;
+                let (left_points, right_points) = changed.split_at_mut(right);
+                std::mem::swap(&mut left_points[left].x, &mut right_points[0].x);
+                let new_contribution = straight_geometry_contribution(&edges, &changed, &moved);
+                assert_eq!(
+                    full_before.replace_contribution(old_contribution, new_contribution),
+                    straight_geometry_defects(&edges, &changed)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn straight_edge_score_prevents_a_dummy_route_regression() {
+        // Optimizing only the subdivided dummy routes can cross 1--3 with
+        // 2--4 after those routes are replaced by TikZ's straight segments.
+        let poset = Poset::from_edges(
+            (0..5).collect::<Vec<_>>(),
+            [
+                Edge::new(0, 1),
+                Edge::new(1, 3),
+                Edge::new(1, 4),
+                Edge::new(2, 4),
+            ],
+        )
+        .unwrap();
+        let mut covers: Vec<_> = poset.cover_relations().into_iter().collect();
+        covers.sort_unstable();
+
+        let coords = ranked_layout(&poset, 2.0, 2.0);
+        let points: Vec<_> = (0..poset.size())
+            .map(|id| GridPoint {
+                x: coords[&id].0.round() as i64,
+                y: coords[&id].1.round() as i64,
+            })
+            .collect();
+        assert_eq!(
+            straight_geometry_defects(&covers, &points).proper_crossings,
+            0
         );
     }
 }
