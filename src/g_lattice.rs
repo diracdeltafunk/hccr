@@ -14,8 +14,7 @@
 //! of non-identity relation orbits.
 
 use crate::bitvec_utils::{is_subset, set_partial_cmp};
-pub use crate::group_theory::GapSubgroup;
-use crate::group_theory::{self, GapAction, GroupTheoryError, PointOrbitError};
+use crate::group_theory::{self, GapAction, GapSubgroup, GroupTheoryError, PointOrbitError};
 use crate::lattice::{Lattice, LatticeError};
 use crate::morphism::LatticeMapError;
 use crate::poset::{Edge, EdgeSet, ElementId, Poset, PosetError};

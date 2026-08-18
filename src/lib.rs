@@ -12,7 +12,8 @@
 mod bitvec_utils;
 
 #[cfg(feature = "groups")]
-mod group_theory;
+/// GAP-backed finite-group data and permutation-action support.
+pub mod group_theory;
 
 /// Finite posets, relations, products, coproducts, and relation operations.
 pub mod poset;

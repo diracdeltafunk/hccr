@@ -1,9 +1,10 @@
 #![cfg(feature = "groups")]
 
 use hccr::g_lattice::{
-    GLattice, GLatticeError, GapSubgroup, RelationOrbit, RelationOrbitLabel, RelationTransporter,
+    GLattice, GLatticeError, RelationOrbit, RelationOrbitLabel, RelationTransporter,
     SubgroupGLattice, structure_description_to_tex,
 };
+use hccr::group_theory::GapSubgroup;
 use hccr::lattice::Lattice;
 use hccr::poset::{Edge, Poset};
 use hccr::tikz::{

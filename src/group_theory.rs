@@ -1,8 +1,10 @@
-//! Internal finite-group and permutation-action operations backed by GAP.
+//! Finite-group and permutation-action operations backed by GAP.
 //!
-//! This module owns the group-theoretic composition of GAP primitives. The
-//! `gap-sys` crate remains responsible for interpreter access, rooted values,
-//! generic calls, and Rust/GAP representation conversion.
+//! [`crate::group_theory::GapSubgroup`] is the public label used for subgroups
+//! in GAP's subgroup enumeration. The remaining implementation in this module
+//! composes `gap-sys` primitives for use by the crate's G-lattice
+//! constructions; `gap-sys` itself remains responsible for interpreter access,
+//! rooted values, generic calls, and Rust/GAP representation conversion.
 
 use bitvec::prelude::*;
 use gap_sys::{Gap, GapValue, GlobalGapGuard};
