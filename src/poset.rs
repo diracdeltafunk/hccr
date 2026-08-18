@@ -160,8 +160,8 @@ impl std::error::Error for PosetError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Poset<A> {
     elements: Vec<A>,
-    relation: Vec<BitVec>,
-    relation_transpose: Vec<BitVec>,
+    relation: Arc<Vec<BitVec>>,
+    relation_transpose: Arc<Vec<BitVec>>,
 }
 
 /// The coproduct, or disjoint union, of two finite posets.
@@ -229,8 +229,8 @@ impl<A> Poset<A> {
         let relation_transpose = transpose(&relation);
         Ok(Self {
             elements,
-            relation,
-            relation_transpose,
+            relation: Arc::new(relation),
+            relation_transpose: Arc::new(relation_transpose),
         })
     }
 
@@ -243,8 +243,8 @@ impl<A> Poset<A> {
     {
         Poset {
             elements: self.elements.iter().map(f).collect(),
-            relation: self.relation.clone(),
-            relation_transpose: self.relation_transpose.clone(),
+            relation: Arc::clone(&self.relation),
+            relation_transpose: Arc::clone(&self.relation_transpose),
         }
     }
 
@@ -276,8 +276,8 @@ impl<A> Poset<A> {
         let relation_transpose = transpose(&relation);
         Self {
             elements,
-            relation,
-            relation_transpose,
+            relation: Arc::new(relation),
+            relation_transpose: Arc::new(relation_transpose),
         }
     }
 
@@ -668,5 +668,28 @@ pub(crate) fn transitive_closure(relation: &mut [BitVec]) {
                 union_assign(lower_upper_set, &middle_upper_set);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clone_and_relabel_share_dense_order_storage() {
+        let poset = Poset::chain(2).expect("a finite chain is a poset");
+        let cloned = poset.clone();
+        let relabelled = poset.relabelled(|label| label.to_string());
+
+        assert!(Arc::ptr_eq(&poset.relation, &cloned.relation));
+        assert!(Arc::ptr_eq(
+            &poset.relation_transpose,
+            &cloned.relation_transpose
+        ));
+        assert!(Arc::ptr_eq(&poset.relation, &relabelled.relation));
+        assert!(Arc::ptr_eq(
+            &poset.relation_transpose,
+            &relabelled.relation_transpose
+        ));
     }
 }

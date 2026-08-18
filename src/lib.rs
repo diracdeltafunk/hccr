@@ -31,6 +31,9 @@ pub mod tikz;
 /// composition-closed orders.
 pub mod transfer_lattice;
 
+/// Pushforwards, pullbacks, and induced order maps on transfer systems.
+pub mod transfer_morphism;
+
 #[cfg(feature = "groups")]
 /// GAP-backed finite group actions on lattices and G-equivariant transfer
 /// systems.
