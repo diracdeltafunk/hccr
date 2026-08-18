@@ -16,3 +16,11 @@ gap-sys = { git = "https://github.com/diracdeltafunk/gap-sys", branch = "codex/f
 
 [features]
 groups = ["dep:gap-sys"]
+
+[[example]]
+name = "tr_S_3"
+required-features = ["groups"]
+
+[[example]]
+name = "tr_C_4"
+required-features = ["groups"]
