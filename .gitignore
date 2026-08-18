@@ -1,5 +1,5 @@
 /target
 Cargo.lock
 .DS_Store
-.zed/settings.json
-.cargo
+/.zed
+/.cargo
