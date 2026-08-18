@@ -13,10 +13,11 @@
 //! relations to their `G`-orbits.  Thus a G-transfer system is stored as a set
 //! of non-identity relation orbits.
 
+use crate::bitvec_utils::{is_subset, set_partial_cmp};
 use crate::lattice::{Lattice, LatticeError};
 use crate::morphism::LatticeMapError;
 use crate::poset::{Edge, EdgeSet, ElementId, Poset, PosetError};
-use crate::transfer_lattice::{RawTransferSystem, TransferSystem, TransferUniverse, bitvec_subset};
+use crate::transfer_lattice::{RawTransferSystem, TransferSystem, TransferUniverse};
 use bitvec::prelude::*;
 use fcars::FormalContext;
 use gap_sys::{Gap, GapValue, GlobalGapGuard};
@@ -415,15 +416,7 @@ impl From<LatticeError> for GLatticeError {
 
 impl PartialOrd for RawGTransferSystem {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        if self.orbit_arrows == other.orbit_arrows {
-            Some(std::cmp::Ordering::Equal)
-        } else if bitvec_subset(&self.orbit_arrows, &other.orbit_arrows) {
-            Some(std::cmp::Ordering::Less)
-        } else if bitvec_subset(&other.orbit_arrows, &self.orbit_arrows) {
-            Some(std::cmp::Ordering::Greater)
-        } else {
-            None
-        }
+        set_partial_cmp(&self.orbit_arrows, &other.orbit_arrows)
     }
 }
 
@@ -1623,7 +1616,7 @@ fn g_containment_lattice<A>(
     systems: Vec<RawGTransferSystem>,
 ) -> Result<GTransferLattice<A>, LatticeError> {
     let poset = g_transfer_systems_ordered_by(systems, |left, right| {
-        bitvec_subset(left.orbit_arrows(), right.orbit_arrows())
+        is_subset(left.orbit_arrows(), right.orbit_arrows())
     })?;
     Ok(GTransferLattice::new(universe, Lattice::new(poset)?))
 }

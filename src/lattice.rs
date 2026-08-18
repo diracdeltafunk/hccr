@@ -309,16 +309,6 @@ impl<A> TryFrom<Poset<A>> for Lattice<A> {
         }
 
         let n = poset.size();
-        let relation = poset.relation_matrix();
-
-        // col[j] has bit i set iff i ≤ j (the transpose of the relation matrix).
-        // This lets us find all lower bounds of a pair (i, j) with a single
-        // bitwise AND of two column bitmasks, rather than an O(n) scan per
-        // candidate.
-        let col: Vec<BitVec> = (0..n)
-            .map(|j| (0..n).map(|i| relation[i][j]).collect())
-            .collect();
-
         let mut meet = vec![vec![0usize; n]; n];
         let mut join = vec![vec![0usize; n]; n];
 
@@ -327,27 +317,13 @@ impl<A> TryFrom<Poset<A>> for Lattice<A> {
             meet[i][i] = i;
             join[i][i] = i;
             for j in (i + 1)..n {
-                // Lower bounds of (i, j): elements below both i and j.
-                let lower_bounds = col[i].clone() & col[j].clone();
-                // Meet = the greatest lower bound: the element m ∈ lower_bounds
-                // such that every other lower bound k satisfies k ≤ m.
-                let Some(m) = lower_bounds
-                    .iter_ones()
-                    .find(|&m| lower_bounds.iter_ones().all(|k| relation[k][m]))
-                else {
+                let Some(m) = poset.meet(i, j) else {
                     return Err(LatticeError::NotALattice { left: i, right: j });
                 };
                 meet[i][j] = m;
                 meet[j][i] = m;
 
-                // Upper bounds of (i, j): elements above both i and j.
-                let upper_bounds = relation[i].clone() & relation[j].clone();
-                // Join = the least upper bound: the element k ∈ upper_bounds
-                // such that every other upper bound u satisfies k ≤ u.
-                let Some(k) = upper_bounds
-                    .iter_ones()
-                    .find(|&k| upper_bounds.iter_ones().all(|u| relation[k][u]))
-                else {
+                let Some(k) = poset.join(i, j) else {
                     return Err(LatticeError::NotALattice { left: i, right: j });
                 };
                 join[i][j] = k;

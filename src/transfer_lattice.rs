@@ -11,6 +11,7 @@
 //! are used as both objects and attributes in a formal context, and formal
 //! concepts of this context correspond to transfer systems.
 
+use crate::bitvec_utils::{is_subset, set_partial_cmp};
 use crate::lattice::{Lattice, LatticeError};
 use crate::poset::{Edge, EdgeSet, ElementId, Poset, PosetError};
 use bitvec::prelude::*;
@@ -33,15 +34,7 @@ pub struct RawTransferSystem {
 
 impl PartialOrd for RawTransferSystem {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        if self.arrows == other.arrows {
-            Some(std::cmp::Ordering::Equal)
-        } else if bitvec_subset(&self.arrows, &other.arrows) {
-            Some(std::cmp::Ordering::Less)
-        } else if bitvec_subset(&other.arrows, &self.arrows) {
-            Some(std::cmp::Ordering::Greater)
-        } else {
-            None
-        }
+        set_partial_cmp(&self.arrows, &other.arrows)
     }
 }
 
@@ -585,7 +578,7 @@ fn containment_lattice<A>(
     systems: Vec<RawTransferSystem>,
 ) -> Result<TransferLattice<A>, LatticeError> {
     let poset = transfer_systems_ordered_by(systems, |left, right| {
-        bitvec_subset(left.arrows(), right.arrows())
+        is_subset(left.arrows(), right.arrows())
     })?;
     Ok(TransferLattice::new(universe, Lattice::new(poset)?))
 }
@@ -622,7 +615,7 @@ fn composition_closed_order<A>(
         .map(|left| {
             (0..systems.len())
                 .map(|right| {
-                    bitvec_subset(systems[left].arrows(), systems[right].arrows())
+                    is_subset(systems[left].arrows(), systems[right].arrows())
                         && factorization_condition(
                             &order,
                             &partial_orders[left],
@@ -636,32 +629,6 @@ fn composition_closed_order<A>(
         universe,
         Poset::from_relation(systems, relation)?,
     ))
-}
-
-///  Checks if the set of bits in `left` is a subset of the set of bits in `right` (and that they have the same number of bits). To do this we loop over the underlying words of the bit vectors and check that no bit is set in `left` that is not also set in `right`.
-pub(crate) fn bitvec_subset(left: &BitVec, right: &BitVec) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-
-    let bits_per_word = usize::BITS as usize;
-    let full_words = left.len() / bits_per_word;
-    let remainder = left.len() % bits_per_word;
-    let left_words = left.as_raw_slice();
-    let right_words = right.as_raw_slice();
-
-    for i in 0..full_words {
-        if left_words[i] & !right_words[i] != 0 {
-            return false;
-        }
-    }
-
-    if remainder == 0 {
-        return true;
-    }
-
-    let mask = (1usize << remainder) - 1;
-    (left_words[full_words] & !right_words[full_words] & mask) == 0
 }
 
 #[cfg(test)]

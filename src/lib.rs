@@ -9,6 +9,8 @@
 //! indices, while user-supplied labels carry the mathematical names or data
 //! attached to those indices.
 
+mod bitvec_utils;
+
 /// Finite posets, relations, products, coproducts, and relation operations.
 pub mod poset;
 

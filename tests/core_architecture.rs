@@ -6,6 +6,40 @@ use hccr::tikz::{
 };
 use std::sync::Arc;
 
+#[test]
+fn poset_stores_the_transposed_relation_matrix() {
+    let poset = Poset::from_edges(
+        vec![0, 1, 2, 3],
+        [
+            Edge::new(0, 1),
+            Edge::new(0, 2),
+            Edge::new(1, 3),
+            Edge::new(2, 3),
+        ],
+    )
+    .unwrap();
+
+    for from in 0..poset.size() {
+        for to in 0..poset.size() {
+            assert_eq!(
+                poset.relation_matrix()[from][to],
+                poset.relation_matrix_transpose()[to][from]
+            );
+        }
+    }
+    assert_eq!(
+        poset.cover_relations(),
+        [
+            Edge::new(0, 1),
+            Edge::new(0, 2),
+            Edge::new(1, 3),
+            Edge::new(2, 3),
+        ]
+        .into_iter()
+        .collect()
+    );
+}
+
 /// Verifies that `Lattice`'s precomputed meet/join tables agree with the
 /// independent `Poset::meet` and `Poset::join` methods for every pair of
 /// elements.
