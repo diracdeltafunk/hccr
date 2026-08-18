@@ -14,14 +14,15 @@
 //! of non-identity relation orbits.
 
 use crate::bitvec_utils::{is_subset, set_partial_cmp};
+pub use crate::group_theory::GapSubgroup;
+use crate::group_theory::{self, GapAction, GroupTheoryError, PointOrbitError};
 use crate::lattice::{Lattice, LatticeError};
 use crate::morphism::LatticeMapError;
 use crate::poset::{Edge, EdgeSet, ElementId, Poset, PosetError};
 use crate::transfer_lattice::{RawTransferSystem, TransferSystem, TransferUniverse};
 use bitvec::prelude::*;
 use fcars::FormalContext;
-use gap_sys::{Gap, GapValue, GlobalGapGuard};
-use std::collections::VecDeque;
+use gap_sys::{Gap, GapValue};
 use std::fmt;
 use std::sync::Arc;
 
@@ -96,17 +97,6 @@ pub struct RelationOrbitLabel {
     orbit_id: usize,
     canonical_relation_id: usize,
     canonical_representative: Edge,
-}
-
-/// A label for a subgroup in GAP's subgroup-lattice enumeration.
-///
-/// GAP's `LatticeSubgroups` organizes subgroups into conjugacy classes.  This
-/// label records a zero-based conjugacy class index and a zero-based element
-/// index within that class.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct GapSubgroup {
-    conjugacy_class: usize,
-    class_element: usize,
 }
 
 /// The subgroup lattice of a finite GAP group with the conjugation action.
@@ -253,11 +243,6 @@ pub enum GLatticeError {
     },
 }
 
-struct GapAction {
-    image_group: GapValue,
-    homomorphism: GapValue,
-}
-
 struct GLatticeParts<A> {
     lattice: Arc<Lattice<A>>,
     group: GapValue,
@@ -394,7 +379,8 @@ impl fmt::Display for GLatticeError {
             } => write!(
                 f,
                 "GAP did not find the conjugate of subgroup class {}, element {} under generator {generator}",
-                subgroup.conjugacy_class, subgroup.class_element
+                subgroup.conjugacy_class(),
+                subgroup.class_element()
             ),
         }
     }
@@ -411,6 +397,58 @@ impl From<PosetError> for GLatticeError {
 impl From<LatticeError> for GLatticeError {
     fn from(error: LatticeError) -> Self {
         Self::Lattice(error)
+    }
+}
+
+impl From<GroupTheoryError> for GLatticeError {
+    fn from(error: GroupTheoryError) -> Self {
+        match error {
+            GroupTheoryError::Gap(error) => Self::Gap(error),
+            GroupTheoryError::GroupIsNotFinite => Self::GroupIsNotFinite,
+            GroupTheoryError::NotAGroupHomomorphism => Self::NotAGroupHomomorphism,
+            GroupTheoryError::GeneratorCountMismatch { expected, actual } => {
+                Self::GeneratorCountMismatch { expected, actual }
+            }
+            GroupTheoryError::WrongPermutationLength {
+                generator,
+                expected,
+                actual,
+            } => Self::WrongPermutationLength {
+                generator,
+                expected,
+                actual,
+            },
+            GroupTheoryError::PermutationImageOutOfBounds {
+                generator,
+                element,
+                image,
+                len,
+            } => Self::PermutationImageOutOfBounds {
+                generator,
+                element,
+                image,
+                len,
+            },
+            GroupTheoryError::DuplicatePermutationImage {
+                generator,
+                first_element,
+                second_element,
+                image,
+            } => Self::DuplicatePermutationImage {
+                generator,
+                first_element,
+                second_element,
+                image,
+            },
+            GroupTheoryError::HomomorphismByImagesFailed => Self::HomomorphismByImagesFailed,
+            GroupTheoryError::SubgroupConjugateNotFound {
+                generator,
+                subgroup,
+            } => Self::SubgroupConjugateNotFound {
+                generator,
+                subgroup,
+            },
+        }
     }
 }
 
@@ -464,36 +502,6 @@ impl RelationOrbitLabel {
     }
 }
 
-impl GapSubgroup {
-    /// Constructs a zero-based subgroup-lattice label.
-    pub fn new(conjugacy_class: usize, class_element: usize) -> Self {
-        Self {
-            conjugacy_class,
-            class_element,
-        }
-    }
-
-    /// Returns the zero-based conjugacy class index.
-    pub fn conjugacy_class(&self) -> usize {
-        self.conjugacy_class
-    }
-
-    /// Returns the zero-based index inside the conjugacy class.
-    pub fn class_element(&self) -> usize {
-        self.class_element
-    }
-
-    /// Returns the one-based conjugacy class index used by GAP.
-    pub fn gap_conjugacy_class(&self) -> usize {
-        self.conjugacy_class + 1
-    }
-
-    /// Returns the one-based class-element index used by GAP.
-    pub fn gap_class_element(&self) -> usize {
-        self.class_element + 1
-    }
-}
-
 impl<A> GLattice<A> {
     /// Constructs a G-lattice from a GAP homomorphism to a permutation group.
     ///
@@ -507,20 +515,25 @@ impl<A> GLattice<A> {
         group: &GapValue,
         homomorphism: &GapValue,
     ) -> Result<Self, GLatticeError> {
-        let mut gap = global_gap()?;
-        validate_finite_group(&mut gap, group)?;
-        validate_group_homomorphism(&mut gap, homomorphism)?;
+        let mut gap = group_theory::global_gap()?;
+        group_theory::validate_finite_group(&mut gap, group)?;
+        group_theory::validate_group_homomorphism(&mut gap, homomorphism)?;
 
         let group = group.clone();
         let element_action_homomorphism = homomorphism.clone();
-        let element_image_group = call_global(&mut gap, "Image", &[&element_action_homomorphism])?;
-        let source_generators = call_global(&mut gap, "GeneratorsOfGroup", &[&group])?;
-        let element_generator_permutations = generator_images_from_homomorphism(
-            &mut gap,
-            &lattice,
-            &source_generators,
-            homomorphism,
-        )?;
+        let element_image_group =
+            group_theory::homomorphism_image(&mut gap, &element_action_homomorphism)?;
+        let source_generators = group_theory::generators_of_group(&mut gap, &group)?;
+        let element_generator_permutations =
+            group_theory::generator_permutations_from_homomorphism(
+                &mut gap,
+                &source_generators,
+                homomorphism,
+                lattice.size(),
+            )?;
+        for (generator, permutation) in element_generator_permutations.iter().enumerate() {
+            validate_lattice_automorphism(generator, &lattice, permutation)?;
+        }
         let relations = lattice.as_poset().all_relations_iter().collect::<Vec<_>>();
         let relation_ids = relation_id_matrix(lattice.size(), &relations);
         let relation_generator_permutations = relation_generator_permutations(
@@ -528,7 +541,7 @@ impl<A> GLattice<A> {
             &relation_ids,
             &element_generator_permutations,
         )?;
-        let relation_action = gap_action_from_generator_permutations(
+        let relation_action = group_theory::action_from_generator_permutations(
             &mut gap,
             &group,
             &source_generators,
@@ -564,7 +577,7 @@ impl<A> GLattice<A> {
         group: &GapValue,
         generator_images: Vec<Vec<ElementId>>,
     ) -> Result<Self, GLatticeError> {
-        let mut gap = global_gap()?;
+        let mut gap = group_theory::global_gap()?;
         Self::from_generator_images_with_gap(&mut gap, lattice, group, generator_images)
     }
 
@@ -574,21 +587,16 @@ impl<A> GLattice<A> {
         group: &GapValue,
         generator_images: Vec<Vec<ElementId>>,
     ) -> Result<Self, GLatticeError> {
-        validate_finite_group(gap, group)?;
+        group_theory::validate_finite_group(gap, group)?;
         let group = group.clone();
-        let source_generators = call_global(gap, "GeneratorsOfGroup", &[&group])?;
-        if generator_images.len() != gap.list_len(&source_generators) {
-            return Err(GLatticeError::GeneratorCountMismatch {
-                expected: gap.list_len(&source_generators),
-                actual: generator_images.len(),
-            });
-        }
+        let source_generators = group_theory::generators_of_group(gap, &group)?;
+        group_theory::validate_generator_count(gap, &source_generators, generator_images.len())?;
 
         for (generator, image) in generator_images.iter().enumerate() {
             validate_lattice_automorphism(generator, &lattice, image)?;
         }
 
-        let element_action = gap_action_from_generator_permutations(
+        let element_action = group_theory::action_from_generator_permutations(
             gap,
             &group,
             &source_generators,
@@ -599,7 +607,7 @@ impl<A> GLattice<A> {
         let relation_ids = relation_id_matrix(lattice.size(), &relations);
         let relation_generator_permutations =
             relation_generator_permutations(&relations, &relation_ids, &generator_images)?;
-        let relation_action = gap_action_from_generator_permutations(
+        let relation_action = group_theory::action_from_generator_permutations(
             gap,
             &group,
             &source_generators,
@@ -769,18 +777,45 @@ impl<A> GLattice<A> {
     }
 
     fn from_parts(gap: &mut Gap, parts: GLatticeParts<A>) -> Result<Self, GLatticeError> {
-        let relation_to_orbit = relation_to_orbit(
+        let point_orbits = group_theory::point_orbits(
+            gap,
             parts.relations.len(),
             &parts.relation_generator_permutations,
-            &parts.relations,
-        );
-        let relation_orbits = build_relation_orbits(
-            gap,
-            &parts.relations,
-            &relation_to_orbit,
             &parts.relation_action.image_group,
             &parts.relation_action.homomorphism,
-        )?;
+        )
+        .map_err(|error| relation_orbit_error(error, &parts.relations))?;
+        let relation_to_orbit = point_orbits.point_to_orbit;
+        let relation_orbits = point_orbits
+            .orbits
+            .into_iter()
+            .map(|orbit| {
+                let canonical_relation_id = orbit.canonical_point;
+                let canonical_representative = parts.relations[canonical_relation_id];
+                let relations = orbit
+                    .points
+                    .iter()
+                    .map(|&relation_id| parts.relations[relation_id])
+                    .collect();
+                let transporters = orbit
+                    .transporters
+                    .into_iter()
+                    .map(|transporter| RelationTransporter {
+                        relation_id: transporter.point,
+                        relation: parts.relations[transporter.point],
+                        group_element: transporter.group_element,
+                    })
+                    .collect();
+                RelationOrbit {
+                    canonical_relation_id,
+                    canonical_representative,
+                    relation_ids: orbit.points,
+                    relations,
+                    stabilizer: orbit.stabilizer,
+                    transporters,
+                }
+            })
+            .collect();
 
         Ok(Self {
             lattice: parts.lattice,
@@ -813,42 +848,31 @@ impl GLattice<GapSubgroup> {
 impl SubgroupGLattice {
     /// Constructs the subgroup lattice of a finite GAP group with conjugation action.
     pub fn new(group: &GapValue) -> Result<Self, GLatticeError> {
-        let mut gap = global_gap()?;
-        validate_finite_group(&mut gap, group)?;
-
-        let gap_lattice = call_global(&mut gap, "LatticeSubgroups", &[group])?;
-        let conjugacy_classes =
-            call_global(&mut gap, "ConjugacyClassesSubgroups", &[&gap_lattice])?;
-        let (labels, subgroups) = subgroup_lattice_elements(&mut gap, &conjugacy_classes)?;
-        let subgroup_structure_descriptions =
-            subgroup_structure_descriptions(&mut gap, &subgroups)?;
-        let subgroup_structure_descriptions_tex = subgroup_structure_descriptions
+        let mut gap = group_theory::global_gap()?;
+        let data = group_theory::subgroup_lattice_data(&mut gap, group)?;
+        let subgroup_structure_descriptions_tex = data
+            .structure_descriptions
             .iter()
             .map(|description| structure_description_to_tex(description))
             .collect();
-        let subgroup_list = gap.list(&subgroups);
-        let relation = subgroup_inclusion_relation(&mut gap, &subgroups)?;
         let lattice = Arc::new(Lattice::new(Poset::from_relation(
-            labels.clone(),
-            relation,
+            data.labels.clone(),
+            data.inclusion_relation,
         )?)?);
-        let generator_images = subgroup_conjugation_generator_images(
+        let g_lattice = GLattice::from_generator_images_with_gap(
             &mut gap,
+            lattice,
             group,
-            &subgroups,
-            &subgroup_list,
-            &labels,
+            data.conjugation_generator_images,
         )?;
-        let g_lattice =
-            GLattice::from_generator_images_with_gap(&mut gap, lattice, group, generator_images)?;
 
         Ok(Self {
             g_lattice,
-            gap_lattice,
-            conjugacy_classes,
-            subgroup_list,
-            subgroups,
-            subgroup_structure_descriptions,
+            gap_lattice: data.gap_lattice,
+            conjugacy_classes: data.conjugacy_classes,
+            subgroup_list: data.subgroup_list,
+            subgroups: data.subgroups,
+            subgroup_structure_descriptions: data.structure_descriptions,
             subgroup_structure_descriptions_tex,
         })
     }
@@ -1291,44 +1315,6 @@ impl RelationTransporter {
     }
 }
 
-fn subgroup_lattice_elements(
-    gap: &mut Gap,
-    conjugacy_classes: &GapValue,
-) -> Result<(Vec<GapSubgroup>, Vec<GapValue>), GLatticeError> {
-    let class_count = gap.list_len(conjugacy_classes);
-    let mut labels = Vec::new();
-    let mut subgroups = Vec::new();
-
-    for conjugacy_class in 0..class_count {
-        let class = get_list_elem(gap, conjugacy_classes, conjugacy_class)?;
-        let class_size = call_global(gap, "Size", &[&class])?;
-        let class_size = integer_usize(gap, &class_size)?;
-        for class_element in 0..class_size {
-            let n = gap.int((class_element + 1) as isize);
-            let subgroup = call_global(gap, "ClassElementLattice", &[&class, &n])?;
-            labels.push(GapSubgroup::new(conjugacy_class, class_element));
-            subgroups.push(subgroup);
-        }
-    }
-
-    Ok((labels, subgroups))
-}
-
-fn subgroup_structure_descriptions(
-    gap: &mut Gap,
-    subgroups: &[GapValue],
-) -> Result<Vec<String>, GLatticeError> {
-    subgroups
-        .iter()
-        .map(|subgroup| {
-            let description = call_global(gap, "StructureDescription", &[subgroup])?;
-            // `StructureDescription` returns a GAP string, so it can be read
-            // directly without invoking GAP's general-purpose printer.
-            Ok(description.as_unrooted().to_string())
-        })
-        .collect()
-}
-
 /// Converts GAP's documented `StructureDescription` notation to TeX math mode.
 ///
 /// GAP uses an intentionally small grammar: named groups have an adjacent
@@ -1420,143 +1406,14 @@ pub fn structure_description_to_tex(description: &str) -> String {
     result
 }
 
-fn subgroup_inclusion_relation(
-    gap: &mut Gap,
-    subgroups: &[GapValue],
-) -> Result<Vec<BitVec>, GLatticeError> {
-    let n = subgroups.len();
-    let mut relation = vec![BitVec::repeat(false, n); n];
-    for (lower, lower_subgroup) in subgroups.iter().enumerate() {
-        for (upper, upper_subgroup) in subgroups.iter().enumerate() {
-            let is_subgroup = call_global(gap, "IsSubgroup", &[upper_subgroup, lower_subgroup])?;
-            relation[lower].set(upper, boolean(gap, &is_subgroup)?);
-        }
-    }
-    Ok(relation)
-}
-
-fn subgroup_conjugation_generator_images(
-    gap: &mut Gap,
-    group: &GapValue,
-    subgroups: &[GapValue],
-    subgroup_list: &GapValue,
-    labels: &[GapSubgroup],
-) -> Result<Vec<Vec<ElementId>>, GLatticeError> {
-    let generators = call_global(gap, "GeneratorsOfGroup", &[group])?;
-    let generator_count = gap.list_len(&generators);
-    let mut result = Vec::with_capacity(generator_count);
-
-    for generator in 0..generator_count {
-        let gap_generator = get_list_elem(gap, &generators, generator)?;
-        let mut image = Vec::with_capacity(subgroups.len());
-        for (subgroup_id, subgroup) in subgroups.iter().enumerate() {
-            let conjugate = call_global(gap, "OnPoints", &[subgroup, &gap_generator])?;
-            let position = call_global(gap, "Position", &[subgroup_list, &conjugate])?;
-            if gap.is_fail(&position) {
-                return Err(GLatticeError::SubgroupConjugateNotFound {
-                    generator,
-                    subgroup: labels[subgroup_id],
-                });
-            }
-            let position = integer_usize(gap, &position)?;
-            let image_id =
-                position
-                    .checked_sub(1)
-                    .ok_or(GLatticeError::SubgroupConjugateNotFound {
-                        generator,
-                        subgroup: labels[subgroup_id],
-                    })?;
-            image.push(image_id);
-        }
-        result.push(image);
-    }
-
-    Ok(result)
-}
-
-fn validate_finite_group(gap: &mut Gap, group: &GapValue) -> Result<(), GLatticeError> {
-    let is_finite = call_global(gap, "IsFinite", &[group])?;
-    if boolean(gap, &is_finite)? {
-        Ok(())
-    } else {
-        Err(GLatticeError::GroupIsNotFinite)
-    }
-}
-
-fn validate_group_homomorphism(
-    gap: &mut Gap,
-    homomorphism: &GapValue,
-) -> Result<(), GLatticeError> {
-    let is_homomorphism = call_global(gap, "IsGroupHomomorphism", &[homomorphism])?;
-    if boolean(gap, &is_homomorphism)? {
-        Ok(())
-    } else {
-        Err(GLatticeError::NotAGroupHomomorphism)
-    }
-}
-
-fn generator_images_from_homomorphism<A>(
-    gap: &mut Gap,
-    lattice: &Arc<Lattice<A>>,
-    source_generators: &GapValue,
-    homomorphism: &GapValue,
-) -> Result<Vec<Vec<ElementId>>, GLatticeError> {
-    let generator_count = gap.list_len(source_generators);
-    let mut result = Vec::with_capacity(generator_count);
-    for generator in 0..generator_count {
-        let source_generator = get_list_elem(gap, source_generators, generator)?;
-        let image = call_global(gap, "Image", &[homomorphism, &source_generator])?;
-        let permutation = permutation_images_zero_based(gap, &image, lattice.size())?;
-        validate_lattice_automorphism(generator, lattice, &permutation)?;
-        result.push(permutation);
-    }
-    Ok(result)
-}
-
 fn validate_lattice_automorphism<A>(
     generator: usize,
     lattice: &Arc<Lattice<A>>,
     image: &[ElementId],
 ) -> Result<(), GLatticeError> {
-    validate_permutation(generator, lattice.size(), image)?;
+    group_theory::validate_permutation(generator, lattice.size(), image)?;
     crate::morphism::LatticeMap::new(Arc::clone(lattice), Arc::clone(lattice), image.to_vec())
         .map_err(|source| GLatticeError::NotALatticeAutomorphism { generator, source })?;
-    Ok(())
-}
-
-fn validate_permutation(
-    generator: usize,
-    len: usize,
-    image: &[ElementId],
-) -> Result<(), GLatticeError> {
-    if image.len() != len {
-        return Err(GLatticeError::WrongPermutationLength {
-            generator,
-            expected: len,
-            actual: image.len(),
-        });
-    }
-
-    let mut seen = vec![None; len];
-    for (element, &target) in image.iter().enumerate() {
-        if target >= len {
-            return Err(GLatticeError::PermutationImageOutOfBounds {
-                generator,
-                element,
-                image: target,
-                len,
-            });
-        }
-        if let Some(first_element) = seen[target] {
-            return Err(GLatticeError::DuplicatePermutationImage {
-                generator,
-                first_element,
-                second_element: element,
-                image: target,
-            });
-        }
-        seen[target] = Some(element);
-    }
     Ok(())
 }
 
@@ -1635,215 +1492,18 @@ where
     Poset::from_relation(systems, relation)
 }
 
-fn gap_action_from_generator_permutations(
-    gap: &mut Gap,
-    group: &GapValue,
-    source_generators: &GapValue,
-    generator_permutations: &[Vec<usize>],
-    degree: usize,
-) -> Result<GapAction, GLatticeError> {
-    let gap_generators = generator_permutations
-        .iter()
-        .map(|permutation| permutation_from_zero_based_images(gap, permutation))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let image_group_generators = if gap_generators.is_empty() {
-        vec![permutation_from_zero_based_images(
-            gap,
-            &(0..degree).collect::<Vec<_>>(),
-        )?]
-    } else {
-        gap_generators.clone()
-    };
-
-    let image_group_generator_list = gap.list(&image_group_generators);
-    let image_group = call_global(gap, "Group", &[&image_group_generator_list])?;
-
-    let homomorphism_image_list = gap.list(&gap_generators);
-    let homomorphism = call_global(
-        gap,
-        "GroupHomomorphismByImages",
-        &[
-            group,
-            &image_group,
-            source_generators,
-            &homomorphism_image_list,
-        ],
-    )?;
-
-    if gap.is_fail(&homomorphism) {
-        return Err(GLatticeError::HomomorphismByImagesFailed);
-    }
-    validate_group_homomorphism(gap, &homomorphism)?;
-
-    Ok(GapAction {
-        image_group,
-        homomorphism,
-    })
-}
-
-fn relation_to_orbit(
-    relation_count: usize,
-    generator_permutations: &[Vec<usize>],
-    relations: &[Edge],
-) -> Vec<usize> {
-    let mut relation_to_orbit = vec![usize::MAX; relation_count];
-    let mut next_orbit = 0;
-
-    for seed in 0..relation_count {
-        if relation_to_orbit[seed] != usize::MAX {
-            continue;
-        }
-
-        let mut queue = VecDeque::from([seed]);
-        relation_to_orbit[seed] = next_orbit;
-        while let Some(relation_id) = queue.pop_front() {
-            for permutation in generator_permutations {
-                let image = permutation[relation_id];
-                if relation_to_orbit[image] == usize::MAX {
-                    relation_to_orbit[image] = next_orbit;
-                    queue.push_back(image);
-                }
+fn relation_orbit_error(error: PointOrbitError, relations: &[Edge]) -> GLatticeError {
+    match error {
+        PointOrbitError::Group(error) => error.into(),
+        PointOrbitError::MissingTransporter { canonical, target } => {
+            GLatticeError::MissingTransporter {
+                canonical: relations[canonical],
+                target: relations[target],
             }
         }
-
-        next_orbit += 1;
+        PointOrbitError::MissingPreimage { canonical, target } => GLatticeError::MissingPreimage {
+            canonical: relations[canonical],
+            target: relations[target],
+        },
     }
-
-    debug_assert!(relation_to_orbit.iter().all(|&orbit| orbit != usize::MAX));
-    debug_assert!(relations.len() == relation_to_orbit.len());
-    relation_to_orbit
-}
-
-fn build_relation_orbits(
-    gap: &mut Gap,
-    relations: &[Edge],
-    relation_to_orbit: &[usize],
-    relation_image_group: &GapValue,
-    relation_action_homomorphism: &GapValue,
-) -> Result<Vec<RelationOrbit>, GLatticeError> {
-    let orbit_count = relation_to_orbit
-        .iter()
-        .copied()
-        .max()
-        .map_or(0, |orbit| orbit + 1);
-    let mut orbit_relation_ids = vec![Vec::new(); orbit_count];
-    for (relation_id, &orbit) in relation_to_orbit.iter().enumerate() {
-        orbit_relation_ids[orbit].push(relation_id);
-    }
-
-    orbit_relation_ids
-        .into_iter()
-        .map(|mut relation_ids| {
-            relation_ids.sort_unstable();
-            let canonical_relation_id = relation_ids[0];
-            let canonical_representative = relations[canonical_relation_id];
-            let canonical_point = gap.int((canonical_relation_id + 1) as isize);
-            let on_points = global_obj(gap, "OnPoints")?;
-            let image_stabilizer = call_global(
-                gap,
-                "Stabilizer",
-                &[relation_image_group, &canonical_point, &on_points],
-            )?;
-            let stabilizer = call_global(
-                gap,
-                "PreImage",
-                &[relation_action_homomorphism, &image_stabilizer],
-            )?;
-            let mut orbit_relations = Vec::with_capacity(relation_ids.len());
-            let mut transporters = Vec::with_capacity(relation_ids.len());
-
-            for &relation_id in &relation_ids {
-                let relation = relations[relation_id];
-                orbit_relations.push(relation);
-                let target_point = gap.int((relation_id + 1) as isize);
-                let image_transporter = call_global(
-                    gap,
-                    "RepresentativeAction",
-                    &[
-                        relation_image_group,
-                        &canonical_point,
-                        &target_point,
-                        &on_points,
-                    ],
-                )?;
-                if gap.is_fail(&image_transporter) {
-                    return Err(GLatticeError::MissingTransporter {
-                        canonical: canonical_representative,
-                        target: relation,
-                    });
-                }
-                let group_element = call_global(
-                    gap,
-                    "PreImagesRepresentative",
-                    &[relation_action_homomorphism, &image_transporter],
-                )?;
-                if gap.is_fail(&group_element) {
-                    return Err(GLatticeError::MissingPreimage {
-                        canonical: canonical_representative,
-                        target: relation,
-                    });
-                }
-                transporters.push(RelationTransporter {
-                    relation_id,
-                    relation,
-                    group_element,
-                });
-            }
-
-            Ok(RelationOrbit {
-                canonical_relation_id,
-                canonical_representative,
-                relation_ids,
-                relations: orbit_relations,
-                stabilizer,
-                transporters,
-            })
-        })
-        .collect()
-}
-
-fn global_gap() -> Result<GlobalGapGuard, GLatticeError> {
-    gap_sys::global().map_err(gap_error)
-}
-
-fn global_obj(gap: &mut Gap, name: &str) -> Result<GapValue, GLatticeError> {
-    gap.get_global(name).map_err(gap_error)
-}
-
-fn call_global(gap: &mut Gap, name: &str, args: &[&GapValue]) -> Result<GapValue, GLatticeError> {
-    gap.call_global(name, args).map_err(gap_error)
-}
-
-fn get_list_elem(gap: &mut Gap, list: &GapValue, idx: usize) -> Result<GapValue, GLatticeError> {
-    gap.list_get(list, idx).map_err(gap_error)
-}
-
-fn integer_usize(gap: &mut Gap, element: &GapValue) -> Result<usize, GLatticeError> {
-    gap.to_usize(element).map_err(gap_error)
-}
-
-fn boolean(gap: &mut Gap, element: &GapValue) -> Result<bool, GLatticeError> {
-    gap.to_bool(element).map_err(gap_error)
-}
-
-fn permutation_from_zero_based_images(
-    gap: &mut Gap,
-    images: &[usize],
-) -> Result<GapValue, GLatticeError> {
-    gap.permutation_from_zero_based_images(images)
-        .map_err(gap_error)
-}
-
-fn permutation_images_zero_based(
-    gap: &mut Gap,
-    permutation: &GapValue,
-    degree: usize,
-) -> Result<Vec<usize>, GLatticeError> {
-    gap.permutation_images_zero_based(permutation, degree)
-        .map_err(gap_error)
-}
-
-fn gap_error(error: impl fmt::Display) -> GLatticeError {
-    GLatticeError::Gap(error.to_string())
 }

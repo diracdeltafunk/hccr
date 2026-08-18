@@ -11,6 +11,9 @@
 
 mod bitvec_utils;
 
+#[cfg(feature = "groups")]
+mod group_theory;
+
 /// Finite posets, relations, products, coproducts, and relation operations.
 pub mod poset;
 
