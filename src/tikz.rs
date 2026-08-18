@@ -2,8 +2,8 @@
 //!
 //! The module provides a small typed TikZ abstract syntax tree together with
 //! convenience renderers for Hasse diagrams.  The default layout uses centered
-//! feasible heights and layered crossing reduction when that produces a better
-//! straight-line cover drawing, with the former ranked layout as a fallback.
+//! feasible heights and layered crossing reduction, retaining the best
+//! straight-line geometry found among the ranked and optimized candidates.
 //! Cover relations are drawn unless full relations are requested.
 
 #[cfg(feature = "groups")]
@@ -362,6 +362,16 @@ impl fmt::Display for TikzPicture {
     }
 }
 
+/// The algorithm used to assign coordinates to elements of a finite poset.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PosetLayoutAlgorithm {
+    /// Place elements at their earliest rank and order each rank by element id.
+    Ranked,
+    /// Center feasible heights and reduce crossings in a proper layered graph.
+    #[default]
+    CrossingReduced,
+}
+
 /// Layout and styling options for rendering a finite poset.
 #[derive(Debug, Clone)]
 pub struct PosetTikzOptions {
@@ -371,6 +381,8 @@ pub struct PosetTikzOptions {
     pub x_spacing: f64,
     /// Vertical spacing between consecutive ranks on a longest chain.
     pub y_spacing: f64,
+    /// The algorithm used to assign coordinates to elements.
+    pub layout_algorithm: PosetLayoutAlgorithm,
     /// Options applied to each element node.
     pub node_options: TikzOptions,
     /// Options applied to each order-relation edge.
@@ -399,6 +411,7 @@ impl Default for PosetTikzOptions {
             picture_options: TikzOptions::default(),
             x_spacing: 1.8,
             y_spacing: 1.4,
+            layout_algorithm: PosetLayoutAlgorithm::default(),
             node_options: TikzOptions::new(["circle", "draw", "inner sep=1.5pt"]),
             edge_options: TikzOptions::default(),
             debug_element_ids: false,
@@ -455,6 +468,8 @@ pub struct TransferSystemGlyphOptions {
     pub x_spacing: f64,
     /// Vertical spacing in the underlying lattice glyph.
     pub y_spacing: f64,
+    /// The algorithm used to lay out the underlying lattice glyph.
+    pub layout_algorithm: PosetLayoutAlgorithm,
     /// Whether to bend relations that would overlap glyph nodes or relations.
     pub bend_colinear_edges: bool,
     /// Bend angle used when a glyph relation must be curved.
@@ -539,6 +554,7 @@ impl Default for TransferSystemGlyphOptions {
             baseline: "-.5ex".to_string(),
             x_spacing: 1.0,
             y_spacing: 0.9,
+            layout_algorithm: PosetLayoutAlgorithm::default(),
             bend_colinear_edges: true,
             bend_angle: 18.0,
             colinear_tolerance: 1e-6,
@@ -577,8 +593,13 @@ where
 {
     let mut covers: Vec<_> = poset.cover_relations().into_iter().collect();
     covers.sort_unstable();
-    let mut coords =
-        ranked_layout_with_covers(poset.size(), &covers, options.x_spacing, options.y_spacing);
+    let mut coords = layout_with_covers(
+        poset.size(),
+        &covers,
+        options.x_spacing,
+        options.y_spacing,
+        options.layout_algorithm,
+    );
     for (&id, &coordinate) in &options.coordinate_overrides {
         if id < poset.size() {
             coords.insert(id, coordinate);
@@ -884,9 +905,9 @@ fn render_path_into(path: &TikzPath, out: &mut String, pad: &str) {
             path.to.render()
         )),
         TikzPathOperation::To => out.push_str(&format!(
-            "{pad}\\draw {} to{} {};\n",
-            path.from.render(),
+            "{pad}\\draw{} {} to {};\n",
             path.options.render_brackets(),
+            path.from.render(),
             path.to.render()
         )),
     }
@@ -901,9 +922,9 @@ fn render_path_inline_into(path: &TikzPath, out: &mut String) {
             path.to.render()
         )),
         TikzPathOperation::To => out.push_str(&format!(
-            "\\draw {} to{} {};",
-            path.from.render(),
+            "\\draw{} {} to {};",
             path.options.render_brackets(),
+            path.from.render(),
             path.to.render()
         )),
     }
@@ -919,89 +940,50 @@ fn render_raw_into(raw: &str, out: &mut String, indent: usize) {
 }
 
 #[cfg(test)]
-fn ranked_layout<A>(
+fn default_layout<A>(
     poset: &Poset<A>,
     x_spacing: f64,
     y_spacing: f64,
 ) -> HashMap<ElementId, (f64, f64)> {
     let mut covers: Vec<_> = poset.cover_relations().into_iter().collect();
     covers.sort_unstable();
-    ranked_layout_with_covers(poset.size(), &covers, x_spacing, y_spacing)
+    layout_with_covers(
+        poset.size(),
+        &covers,
+        x_spacing,
+        y_spacing,
+        PosetLayoutAlgorithm::default(),
+    )
 }
 
-fn ranked_layout_with_covers(
+fn layout_with_covers(
     size: usize,
     covers: &[Edge],
     x_spacing: f64,
     y_spacing: f64,
+    algorithm: PosetLayoutAlgorithm,
 ) -> HashMap<ElementId, (f64, f64)> {
     let vertical = vertical_levels(size, covers);
-    if !properization_has_linear_size(&vertical.centered, covers) {
-        return id_order_coordinates(&vertical.earliest, x_spacing, y_spacing);
-    }
-    let mut layout = LayeredCoverGraph::new(&vertical.centered, covers);
-    let improved_defects = layout.reduce_crossings();
-
-    // Crossing reduction is performed on a properized graph with temporary
-    // dummy vertices, but TikZ emits straight cover segments. Judge the real
-    // segments and keep the former layout when its unrounded cover geometry is
-    // better. Styling, manual overrides, and optional bends happen later.
-    let baseline_points = id_order_grid_points(&vertical.earliest);
-    if straight_geometry_defects(covers, &baseline_points) < improved_defects {
-        id_order_coordinates(&vertical.earliest, x_spacing, y_spacing)
-    } else {
-        layout.real_coordinates(x_spacing, y_spacing)
-    }
-}
-
-/// Bounds the properized graph by a linear expansion of the input cover graph
-/// and prevents invisible dummy vertices from making a visible layer wider
-/// than the real poset. Larger cases retain the inexpensive legacy layout.
-fn properization_has_linear_size(real_levels: &[usize], covers: &[Edge]) -> bool {
-    let Some(expansion_budget) = real_levels.len().checked_add(covers.len()) else {
-        return false;
-    };
-    let layer_count = real_levels
-        .iter()
-        .copied()
-        .max()
-        .map_or(0, |maximum| maximum + 1);
-    let mut starts = vec![0usize; layer_count];
-    let mut ends = vec![0usize; layer_count];
-    let mut dummy_count = 0usize;
-
-    for &edge in covers {
-        let from = real_levels[edge.from];
-        let to = real_levels[edge.to];
-        let Some(edge_dummies) = to.checked_sub(from + 1) else {
-            return false;
-        };
-        let Some(new_count) = dummy_count.checked_add(edge_dummies) else {
-            return false;
-        };
-        dummy_count = new_count;
-        if dummy_count > expansion_budget {
-            return false;
+    match algorithm {
+        PosetLayoutAlgorithm::Ranked => {
+            id_order_coordinates(&vertical.earliest, x_spacing, y_spacing)
         }
-        if edge_dummies > 0 {
-            starts[from + 1] += 1;
-            ends[to] += 1;
+        PosetLayoutAlgorithm::CrossingReduced => {
+            let mut layout = LayeredCoverGraph::new(&vertical.centered, covers);
+            let improved_defects = layout.reduce_crossings();
+
+            // Crossing reduction is performed on a properized graph with temporary
+            // dummy vertices, but TikZ emits straight cover segments. Judge the real
+            // segments and retain the candidate with better unrounded cover geometry.
+            // Styling, manual overrides, and optional bends happen later.
+            let baseline_points = id_order_grid_points(&vertical.earliest);
+            if straight_geometry_defects(covers, &baseline_points) < improved_defects {
+                id_order_coordinates(&vertical.earliest, x_spacing, y_spacing)
+            } else {
+                layout.real_coordinates(x_spacing, y_spacing)
+            }
         }
     }
-
-    let mut real_layer = vec![false; layer_count];
-    for &level in real_levels {
-        real_layer[level] = true;
-    }
-    let mut active_dummies = 0usize;
-    for level in 0..layer_count {
-        active_dummies -= ends[level];
-        active_dummies += starts[level];
-        if real_layer[level] && active_dummies > real_levels.len() {
-            return false;
-        }
-    }
-    true
 }
 
 /// Assigns twice the centered feasible rank of each element, following the
@@ -1901,11 +1883,12 @@ impl<'a, A> SuborderGlyphRenderer<'a, A> {
         };
         Self {
             lattice,
-            coordinates: ranked_layout_with_covers(
+            coordinates: layout_with_covers(
                 lattice.size(),
                 &covers,
                 options.x_spacing,
                 options.y_spacing,
+                options.layout_algorithm,
             ),
             proper_edges,
             ambient_edges,
@@ -1927,7 +1910,7 @@ impl<'a, A> SuborderGlyphRenderer<'a, A> {
             .copied()
             .map(&mut contains_relation)
             .collect::<Vec<_>>();
-        let highlighted_edges = match self.options.highlighted_relations {
+        let mut highlighted_edges = match self.options.highlighted_relations {
             RelationDisplay::Covers => {
                 selected_cover_relations(self.lattice.size(), &self.proper_edges, &selected)
             }
@@ -1939,9 +1922,11 @@ impl<'a, A> SuborderGlyphRenderer<'a, A> {
                 .filter_map(|(edge, is_selected)| is_selected.then_some(edge))
                 .collect(),
         };
+        highlighted_edges.sort_unstable();
+        highlighted_edges.dedup();
 
-        // Compute one decision per visible relation so that an ambient edge
-        // and its highlighted copy follow precisely the same curve.
+        // Compute one bend decision per relation in the union. Each relation
+        // is emitted once, with either its highlighted or dimmed style.
         let mut visible_edges = self.ambient_edges.clone();
         visible_edges.extend(highlighted_edges.iter().copied());
         visible_edges.sort_unstable();
@@ -1955,10 +1940,7 @@ impl<'a, A> SuborderGlyphRenderer<'a, A> {
         } else {
             vec![false; visible_edges.len()]
         };
-        let make_path = |edge: Edge, mut options: TikzOptions| {
-            let index = visible_edges
-                .binary_search(&edge)
-                .expect("visible glyph relation should have a bend decision");
+        let make_path = |index: usize, edge: Edge, mut options: TikzOptions| {
             let operation = if bend_edges[index] {
                 let direction = if index.is_multiple_of(2) {
                     "left"
@@ -1979,14 +1961,20 @@ impl<'a, A> SuborderGlyphRenderer<'a, A> {
         };
 
         let mut picture = TikzPicture::with_options(self.options.picture_options());
-        for &edge in &self.ambient_edges {
-            picture.push(make_path(edge, self.options.dim_edge_options.clone()));
-        }
-        for edge in highlighted_edges {
-            picture.push(make_path(
-                edge,
-                self.options.highlighted_edge_options.clone(),
-            ));
+        let mut highlighted_index = 0;
+        for (index, &edge) in visible_edges.iter().enumerate() {
+            while highlighted_index < highlighted_edges.len()
+                && highlighted_edges[highlighted_index] < edge
+            {
+                highlighted_index += 1;
+            }
+            let is_highlighted = highlighted_edges.get(highlighted_index) == Some(&edge);
+            let options = if is_highlighted {
+                self.options.highlighted_edge_options.clone()
+            } else {
+                self.options.dim_edge_options.clone()
+            };
+            picture.push(make_path(index, edge, options));
         }
         match &self.options.node_display {
             GlyphNodeDisplay::Dots => {
@@ -2123,7 +2111,7 @@ mod tests {
 
         assert_eq!(
             picture.render(),
-            "\\begin{tikzpicture}\n\\draw (a) to[bend left=18] (b);\n\\end{tikzpicture}\n"
+            "\\begin{tikzpicture}\n\\draw[bend left=18] (a) to (b);\n\\end{tikzpicture}\n"
         );
     }
 
@@ -2183,7 +2171,7 @@ mod tests {
             )
             .unwrap(),
         );
-        let containment = diamond.transfer_systems_containment().unwrap();
+        let containment = diamond.clone().transfer_systems_containment().unwrap();
         let top = containment
             .system(containment.top())
             .expect("the transfer-system lattice has a top element");
@@ -2191,7 +2179,16 @@ mod tests {
         let default =
             small_transfer_system_picture(&top, &TransferSystemGlyphOptions::default()).render();
         assert_eq!(default.matches("line width=.75pt, orange").count(), 5);
-        assert_eq!(default.matches("black!30").count(), 5);
+        assert_eq!(default.matches("black!30").count(), 0);
+        assert_eq!(default.matches("\\draw").count(), 5);
+
+        let glyph_options = TransferSystemGlyphOptions::default();
+        let mixed = SuborderGlyphRenderer::new(diamond.as_ref(), &glyph_options)
+            .render_with(|edge| edge == Edge::new(0, 1))
+            .render();
+        assert_eq!(mixed.matches("line width=.75pt, orange").count(), 1);
+        assert_eq!(mixed.matches("black!30").count(), 4);
+        assert_eq!(mixed.matches("\\draw").count(), 5);
 
         let bottom = containment
             .system(containment.bottom())
@@ -2204,12 +2201,15 @@ mod tests {
         );
         assert_eq!(bottom_default.matches("black!30").count(), 5);
 
-        let mut covers_only = TransferSystemGlyphOptions::default();
-        covers_only.ambient_relations = RelationDisplay::Covers;
-        covers_only.highlighted_relations = RelationDisplay::Covers;
+        let covers_only = TransferSystemGlyphOptions {
+            ambient_relations: RelationDisplay::Covers,
+            highlighted_relations: RelationDisplay::Covers,
+            ..TransferSystemGlyphOptions::default()
+        };
         let covers = small_transfer_system_picture(&top, &covers_only).render();
         assert_eq!(covers.matches("line width=.75pt, orange").count(), 4);
-        assert_eq!(covers.matches("black!30").count(), 4);
+        assert_eq!(covers.matches("black!30").count(), 0);
+        assert_eq!(covers.matches("\\draw").count(), 4);
     }
 
     #[test]
@@ -2227,9 +2227,9 @@ mod tests {
 
         let options = TransferSystemGlyphOptions::default();
         let rendered = small_transfer_system_picture(&top, &options).render();
-        assert_eq!(rendered.matches("bend right=18").count(), 2);
-        assert!(rendered.contains("to[black!30, bend right=18]"));
-        assert!(rendered.contains("to[line width=.75pt, orange, bend right=18]"));
+        assert_eq!(rendered.matches("bend right=18").count(), 1);
+        assert!(!rendered.contains("\\draw[black!30, bend right=18]"));
+        assert!(rendered.contains("\\draw[line width=.75pt, orange, bend right=18]"));
 
         let mut straight_options = options;
         straight_options.bend_colinear_edges = false;
@@ -2246,8 +2246,10 @@ mod tests {
         let top = containment
             .system(containment.top())
             .expect("the transfer-system lattice has a top element");
-        let mut options = TransferSystemGlyphOptions::default();
-        options.node_display = GlyphNodeDisplay::escaped(["bottom", "top"]);
+        let options = TransferSystemGlyphOptions {
+            node_display: GlyphNodeDisplay::escaped(["bottom", "top"]),
+            ..TransferSystemGlyphOptions::default()
+        };
 
         let rendered = small_transfer_system_picture(&top, &options).render();
         assert!(rendered.contains("{bottom}"));
@@ -2300,7 +2302,7 @@ mod tests {
         )
         .unwrap();
 
-        let coords = ranked_layout(&n5, 1.8, 1.4);
+        let coords = default_layout(&n5, 1.8, 1.4);
         let expected_heights = [0.0, 1.4, 2.1, 2.8, 4.2];
         for (id, expected) in expected_heights.into_iter().enumerate() {
             assert!(
@@ -2314,28 +2316,6 @@ mod tests {
             (coords[&1].0 - coords[&2].0) * (coords[&3].0 - coords[&2].0) > 0.0,
             "the short branch should be on the other side of the long branch: {coords:?}"
         );
-    }
-
-    #[test]
-    fn properization_budget_keeps_n5_but_rejects_superlinear_expansion() {
-        let n5_covers = [
-            Edge::new(0, 1),
-            Edge::new(0, 2),
-            Edge::new(1, 3),
-            Edge::new(2, 4),
-            Edge::new(3, 4),
-        ];
-        let vertical = vertical_levels(5, &n5_covers);
-        assert!(properization_has_linear_size(
-            &vertical.centered,
-            &n5_covers
-        ));
-
-        let widely_spanning_edges = [Edge::new(0, 3), Edge::new(1, 3)];
-        assert!(!properization_has_linear_size(
-            &[0, 2, 4, 6],
-            &widely_spanning_edges
-        ));
     }
 
     #[test]
@@ -2355,7 +2335,7 @@ mod tests {
         )
         .unwrap();
 
-        let coords = ranked_layout(&poset, 1.8, 1.4);
+        let coords = default_layout(&poset, 1.8, 1.4);
         assert!(
             (coords[&1].0 - coords[&2].0) * (coords[&4].0 - coords[&3].0) > 0.0,
             "the two middle cover edges should not cross: {coords:?}"
@@ -2382,7 +2362,7 @@ mod tests {
         let mut covers: Vec<_> = poset.cover_relations().into_iter().collect();
         covers.sort_unstable();
 
-        let coords = ranked_layout(&poset, 2.0, 2.0);
+        let coords = default_layout(&poset, 2.0, 2.0);
         assert!((coords[&1].0 - coords[&5].0).abs() < 1e-9);
         assert!((coords[&2].0 - coords[&3].0).abs() < 1e-9);
         assert!((coords[&3].0 - coords[&4].0).abs() < 1e-9);
@@ -2475,7 +2455,7 @@ mod tests {
         let mut covers: Vec<_> = poset.cover_relations().into_iter().collect();
         covers.sort_unstable();
 
-        let coords = ranked_layout(&poset, 2.0, 2.0);
+        let coords = default_layout(&poset, 2.0, 2.0);
         let points: Vec<_> = (0..poset.size())
             .map(|id| GridPoint {
                 x: coords[&id].0.round() as i64,
