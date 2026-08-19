@@ -1007,10 +1007,12 @@ fn compatibility_failure_for_raw<A>(
 }
 
 fn build_transfer_context<A>(lattice: &Lattice<A>, proper_edges: &[Edge]) -> TransferContext {
+    let mut attributes = proper_edges.to_vec();
+    attributes.sort_unstable_by_key(|edge| (edge.to, edge.from));
     let matrix = proper_edges
         .iter()
         .map(|edge1| {
-            proper_edges
+            attributes
                 .iter()
                 .map(|edge2| {
                     lattice.leq(edge2.to, edge1.from)
@@ -1020,7 +1022,7 @@ fn build_transfer_context<A>(lattice: &Lattice<A>, proper_edges: &[Edge]) -> Tra
                 .collect()
         })
         .collect();
-    FormalContext::new(proper_edges.to_vec(), proper_edges.to_vec(), matrix)
+    FormalContext::new(proper_edges.to_vec(), attributes, matrix)
 }
 
 impl<A> Clone for TransferSystem<A> {
@@ -1344,6 +1346,22 @@ fn model_structure_order<A>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transfer_context_uses_stable_objects_and_target_major_attributes() {
+        let lattice = Arc::new(Lattice::chain(3).expect("the finite chain is a lattice"));
+        let universe = lattice.transfer_universe();
+
+        assert_eq!(universe.context.objects, universe.proper_edges());
+        assert!(
+            universe
+                .context
+                .attributes
+                .windows(2)
+                .all(|edges| (edges[0].to, edges[0].from) <= (edges[1].to, edges[1].from))
+        );
+        assert_ne!(universe.context.objects, universe.context.attributes);
+    }
 
     #[test]
     fn generated_transfer_system_has_restriction_closure() {

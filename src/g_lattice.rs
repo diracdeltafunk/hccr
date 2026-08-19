@@ -854,14 +854,25 @@ impl<A> GLattice<A> {
     /// when the ordinary transfer-system lifting relation holds between `r`
     /// and every relation in `O`. Requiring incidence against a whole orbit is
     /// what builds `G`-invariance into the resulting closed sets.
+    ///
+    /// Object order is the stable relation-orbit coordinate order used by raw
+    /// G-transfer systems. Attributes are ordered by target and then source;
+    /// this target-major lectic order reduces PCbO search work without changing
+    /// the closed extents or their coordinates.
     pub fn transfer_context(&self) -> GTransferContext {
         let labels = self.non_identity_relation_orbit_labels();
+        let mut attribute_coordinates = (0..labels.len()).collect::<Vec<_>>();
+        attribute_coordinates.sort_unstable_by_key(|&coordinate| {
+            let relation = labels[coordinate].canonical_representative();
+            (relation.to, relation.from)
+        });
         let matrix = labels
             .iter()
             .map(|object| {
-                labels
+                attribute_coordinates
                     .iter()
-                    .map(|attribute| {
+                    .map(|&coordinate| {
+                        let attribute = labels[coordinate];
                         self.relation_orbits[attribute.orbit_id()]
                             .relations()
                             .iter()
@@ -876,7 +887,11 @@ impl<A> GLattice<A> {
                     .collect()
             })
             .collect();
-        FormalContext::new(labels.clone(), labels, matrix)
+        let attributes = attribute_coordinates
+            .into_iter()
+            .map(|coordinate| labels[coordinate])
+            .collect();
+        FormalContext::new(labels, attributes, matrix)
     }
 
     /// Builds the shared universe used to enumerate transfer systems on this G-lattice.
@@ -2030,12 +2045,18 @@ fn packed_g_transfer_context<A>(
     labels: Vec<RelationOrbitLabel>,
     relation_orbits: &[Vec<Edge>],
 ) -> GTransferContext {
+    let mut attribute_coordinates = (0..labels.len()).collect::<Vec<_>>();
+    attribute_coordinates.sort_unstable_by_key(|&coordinate| {
+        let relation = labels[coordinate].canonical_representative();
+        (relation.to, relation.from)
+    });
     let matrix = labels
         .iter()
         .map(|object| {
-            relation_orbits
+            attribute_coordinates
                 .iter()
-                .map(|attribute_orbit| {
+                .map(|&coordinate| {
+                    let attribute_orbit = &relation_orbits[coordinate];
                     attribute_orbit.iter().copied().all(|attribute| {
                         transfer_context_relation(
                             lattice,
@@ -2047,7 +2068,11 @@ fn packed_g_transfer_context<A>(
                 .collect()
         })
         .collect();
-    FormalContext::new(labels.clone(), labels, matrix)
+    let attributes = attribute_coordinates
+        .into_iter()
+        .map(|coordinate| labels[coordinate])
+        .collect();
+    FormalContext::new(labels, attributes, matrix)
 }
 
 fn reverse_edge(edge: Edge) -> Edge {

@@ -99,6 +99,11 @@ fn assert_transfer_context_quotients_by_non_identity_relation_orbits(
         g_lattice.non_identity_relation_orbit_labels(),
         expected_labels
     );
+    assert!(context.attributes.windows(2).all(|labels| {
+        let left = labels[0].canonical_representative();
+        let right = labels[1].canonical_representative();
+        (left.to, left.from) <= (right.to, right.from)
+    }));
 
     let lower_middle = expected_labels[0];
     let bottom_top = expected_labels[1];
