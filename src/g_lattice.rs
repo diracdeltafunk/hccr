@@ -165,6 +165,30 @@ pub struct GTransferLattice<A> {
     lattice: Lattice<RawGTransferSystem>,
 }
 
+/// A concrete obstruction to compatibility of two G-transfer systems.
+///
+/// Compatibility is oriented: the receiver is the additive transfer system
+/// and the argument is the multiplicative transfer system.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GCompatibilityFailure {
+    /// The two systems use different ambient G-transfer universes.
+    DifferentUniverses,
+    /// A multiplicative transfer is absent from the additive system.
+    MultiplicativeNotAdditive {
+        /// The multiplicative relation missing from the additive system.
+        relation: Edge,
+    },
+    /// The distributivity condition fails for the displayed relations.
+    Distributivity {
+        /// A multiplicative relation `K -> H`.
+        multiplicative: Edge,
+        /// The additive relation `(K /\ L) -> K`.
+        additive: Edge,
+        /// The required additive relation `L -> H`.
+        required: Edge,
+    },
+}
+
 /// Errors that can occur while constructing or using a G-lattice.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GLatticeError {
@@ -865,6 +889,31 @@ impl<A> GLattice<A> {
         self.transfer_universe().containment_lattice()
     }
 
+    /// Counts the G-transfer systems without storing them.
+    ///
+    /// This traverses the formal concepts of the orbit-level transfer context
+    /// but does not construct the transfer systems or their containment lattice.
+    pub fn transfer_system_count(&self) -> usize {
+        self.transfer_context().num_concepts()
+    }
+
+    /// Constructs the containment lattice of saturated G-transfer systems.
+    pub fn saturated_transfer_systems_containment(
+        &self,
+    ) -> Result<GTransferLattice<A>, GLatticeError> {
+        self.transfer_universe().saturated_containment_lattice()
+    }
+
+    /// Returns the maximum size of a minimal generating set of a G-transfer system.
+    pub fn transfer_system_complexity(&self) -> usize {
+        self.transfer_universe().complexity()
+    }
+
+    /// Returns the size of a minimal generating set of the complete G-transfer system.
+    pub fn transfer_system_width(&self) -> usize {
+        self.transfer_universe().width()
+    }
+
     fn from_parts(gap: &mut Gap, parts: GLatticeParts<A>) -> Result<Self, GLatticeError> {
         let point_orbits = group_theory::point_orbits(
             gap,
@@ -1062,6 +1111,29 @@ impl SubgroupGLattice {
     ) -> Result<GTransferLattice<GapSubgroup>, GLatticeError> {
         self.g_lattice.transfer_systems_containment()
     }
+
+    /// Counts the transfer systems for this group without storing them.
+    pub fn transfer_system_count(&self) -> usize {
+        self.g_lattice.transfer_system_count()
+    }
+
+    /// Constructs the containment lattice of saturated transfer systems for
+    /// this group.
+    pub fn saturated_transfer_systems_containment(
+        &self,
+    ) -> Result<GTransferLattice<GapSubgroup>, GLatticeError> {
+        self.g_lattice.saturated_transfer_systems_containment()
+    }
+
+    /// Returns the transfer-system complexity of this group.
+    pub fn transfer_system_complexity(&self) -> usize {
+        self.g_lattice.transfer_system_complexity()
+    }
+
+    /// Returns the transfer-system width of this group.
+    pub fn transfer_system_width(&self) -> usize {
+        self.g_lattice.transfer_system_width()
+    }
 }
 
 impl<A> GTransferUniverse<A> {
@@ -1074,8 +1146,6 @@ impl<A> GTransferUniverse<A> {
     /// transfer system without changing element coordinates.
     pub fn new(g_lattice: &GLattice<A>) -> Self {
         let context = g_lattice.transfer_context();
-        let underlying_transfer_universe =
-            Arc::new(TransferUniverse::new(Arc::clone(g_lattice.lattice())));
         let relation_orbits = context
             .objects
             .iter()
@@ -1085,8 +1155,84 @@ impl<A> GTransferUniverse<A> {
                     .to_vec()
             })
             .collect::<Vec<_>>();
-        let mut relation_to_orbit_label =
-            vec![vec![None; g_lattice.lattice().size()]; g_lattice.lattice().size()];
+        Self::from_packed_orbits(
+            Arc::clone(g_lattice.lattice()),
+            Arc::clone(g_lattice.action_coordinates()),
+            context,
+            relation_orbits,
+        )
+    }
+
+    /// Constructs the transfer universe for the induced action on `L^op`.
+    ///
+    /// Element ids and action coordinates are unchanged, while every relation
+    /// orbit is reversed. This is the internal coordinate bridge used by
+    /// G-cotransfer systems.
+    pub(crate) fn opposite(&self) -> GTransferUniverse<ElementId> {
+        let lattice = self.lattice();
+        let opposite_lattice = Arc::new(
+            Lattice::new(
+                Poset::from_relation(
+                    (0..lattice.size()).collect(),
+                    lattice.as_poset().relation_matrix_transpose().to_vec(),
+                )
+                .expect("the transpose of a partial order is a partial order"),
+            )
+            .expect("the opposite of a lattice is a lattice"),
+        );
+        let relation_orbits = self
+            .relation_orbits
+            .iter()
+            .map(|orbit| orbit.iter().copied().map(reverse_edge).collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+        let opposite_relations = opposite_lattice
+            .as_poset()
+            .all_relations_iter()
+            .collect::<Vec<_>>();
+        let opposite_relation_ids =
+            relation_id_matrix(opposite_lattice.size(), &opposite_relations);
+        let labels = self
+            .relation_orbit_labels()
+            .iter()
+            .enumerate()
+            .map(|(orbit_label_id, label)| {
+                let (canonical_relation_id, canonical_representative) = relation_orbits
+                    [orbit_label_id]
+                    .iter()
+                    .copied()
+                    .map(|relation| {
+                        (
+                            opposite_relation_ids[relation.from][relation.to]
+                                .expect("every reversed orbit arrow is an opposite relation"),
+                            relation,
+                        )
+                    })
+                    .min_by_key(|&(relation_id, _)| relation_id)
+                    .expect("every non-identity relation orbit is nonempty");
+                RelationOrbitLabel::new(
+                    label.orbit_id(),
+                    canonical_relation_id,
+                    canonical_representative,
+                )
+            })
+            .collect::<Vec<_>>();
+        let context = packed_g_transfer_context(&opposite_lattice, labels, &relation_orbits);
+
+        GTransferUniverse::from_packed_orbits(
+            opposite_lattice,
+            Arc::clone(&self.action_coordinates),
+            context,
+            relation_orbits,
+        )
+    }
+
+    fn from_packed_orbits(
+        lattice: Arc<Lattice<A>>,
+        action_coordinates: Arc<()>,
+        context: GTransferContext,
+        relation_orbits: Vec<Vec<Edge>>,
+    ) -> Self {
+        let mut relation_to_orbit_label = vec![vec![None; lattice.size()]; lattice.size()];
         for (orbit_label_id, relations) in relation_orbits.iter().enumerate() {
             for &relation in relations {
                 relation_to_orbit_label[relation.from][relation.to] = Some(orbit_label_id);
@@ -1094,8 +1240,8 @@ impl<A> GTransferUniverse<A> {
         }
 
         Self {
-            action_coordinates: Arc::clone(g_lattice.action_coordinates()),
-            underlying_transfer_universe,
+            action_coordinates,
+            underlying_transfer_universe: Arc::new(TransferUniverse::new(lattice)),
             context,
             relation_orbits,
             relation_to_orbit_label,
@@ -1157,6 +1303,16 @@ impl<A> GTransferUniverse<A> {
         I: IntoIterator<Item = E>,
         E: Into<Edge>,
     {
+        let orbit_arrows = self.generator_orbit_bits(generators)?;
+        let raw = RawGTransferSystem::new(self.close_orbit_arrows(&orbit_arrows));
+        Ok(GTransferSystem::new(raw, Arc::clone(self)))
+    }
+
+    fn generator_orbit_bits<I, E>(&self, generators: I) -> Result<BitVec, GTransferSystemError>
+    where
+        I: IntoIterator<Item = E>,
+        E: Into<Edge>,
+    {
         let lattice_size = self.lattice().size();
         let mut orbit_arrows = BitVec::repeat(false, self.relation_orbit_labels().len());
 
@@ -1175,8 +1331,7 @@ impl<A> GTransferUniverse<A> {
             orbit_arrows.set(orbit_label_id, true);
         }
 
-        let raw = RawGTransferSystem::new(self.close_orbit_arrows(&orbit_arrows));
-        Ok(GTransferSystem::new(raw, Arc::clone(self)))
+        Ok(orbit_arrows)
     }
 
     /// Validates raw relation-orbit data and pairs it with this universe.
@@ -1235,12 +1390,73 @@ impl<A> GTransferUniverse<A> {
             .collect()
     }
 
+    /// Counts all G-transfer systems without storing one value per system.
+    pub fn transfer_system_count(&self) -> usize {
+        self.context.num_concepts()
+    }
+
     /// Constructs the containment lattice of G-transfer systems.
     pub fn containment_lattice(self: &Arc<Self>) -> Result<GTransferLattice<A>, GLatticeError> {
         Ok(g_containment_lattice(
             Arc::clone(self),
             all_g_transfer_systems(self),
         )?)
+    }
+
+    /// Enumerates the saturated G-transfer systems in this universe.
+    ///
+    /// A transfer system is saturated when `K -> H` and `K <= L <= H`
+    /// imply `L -> H`. Equivalently, it has the 2-out-of-3 property.
+    pub fn saturated_transfer_systems(self: &Arc<Self>) -> Vec<GTransferSystem<A>> {
+        all_g_transfer_systems(self)
+            .into_iter()
+            .filter(|raw| raw_g_transfer_system_is_saturated(self, raw))
+            .map(|raw| GTransferSystem::new(raw, Arc::clone(self)))
+            .collect()
+    }
+
+    /// Constructs the containment lattice of saturated G-transfer systems.
+    ///
+    /// Its meet is intersection and its join is saturated closure of the
+    /// ordinary G-transfer-system join.
+    pub fn saturated_containment_lattice(
+        self: &Arc<Self>,
+    ) -> Result<GTransferLattice<A>, GLatticeError> {
+        let systems = all_g_transfer_systems(self)
+            .into_iter()
+            .filter(|raw| raw_g_transfer_system_is_saturated(self, raw))
+            .collect();
+        Ok(g_containment_lattice(Arc::clone(self), systems)?)
+    }
+
+    /// Enumerates compatible `(additive, multiplicative)` pairs.
+    pub fn compatible_pairs(self: &Arc<Self>) -> Vec<(GTransferSystem<A>, GTransferSystem<A>)> {
+        let systems = self.transfer_systems();
+        let mut pairs = Vec::new();
+        for additive in &systems {
+            for multiplicative in &systems {
+                if additive.is_compatible_with(multiplicative) {
+                    pairs.push((additive.clone(), multiplicative.clone()));
+                }
+            }
+        }
+        pairs
+    }
+
+    /// Returns the maximum generating complexity among all G-transfer systems.
+    pub fn complexity(self: &Arc<Self>) -> usize {
+        self.transfer_systems()
+            .iter()
+            .map(GTransferSystem::generator_complexity)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Returns the generating complexity of the complete G-transfer system.
+    pub fn width(self: &Arc<Self>) -> usize {
+        let mut all = BitVec::repeat(true, self.relation_orbit_labels().len());
+        all = self.close_orbit_arrows(&all);
+        GTransferSystem::new(RawGTransferSystem::new(all), Arc::clone(self)).generator_complexity()
     }
 }
 
@@ -1325,6 +1541,178 @@ impl<A> GTransferSystem<A> {
             self.universe.expanded_raw_transfer_system(&self.raw),
             Arc::clone(self.universe.underlying_transfer_universe()),
         )
+    }
+
+    /// Returns whether this G-transfer system is saturated.
+    ///
+    /// Saturation requires `K -> H` and `K <= L <= H` to imply `L -> H`.
+    #[must_use]
+    pub fn is_saturated(&self) -> bool {
+        raw_g_transfer_system_is_saturated(&self.universe, &self.raw)
+    }
+
+    /// Returns the least saturated G-transfer system containing this one.
+    pub fn saturated_closure(&self) -> GTransferSystem<A> {
+        let raw = saturated_g_transfer_closure(&self.universe, &self.raw);
+        GTransferSystem::new(raw, Arc::clone(&self.universe))
+    }
+
+    /// Returns whether this G-transfer system is cosaturated, or disklike.
+    ///
+    /// A disklike system is generated by its relations whose target is the
+    /// top element of the underlying lattice.
+    #[must_use]
+    pub fn is_cosaturated(&self) -> bool {
+        self.cosaturated_coclosure() == *self
+    }
+
+    /// Alias for [`GTransferSystem::is_cosaturated`].
+    #[must_use]
+    pub fn is_disklike(&self) -> bool {
+        self.is_cosaturated()
+    }
+
+    /// Returns the greatest cosaturated G-transfer system contained in this one.
+    ///
+    /// It is generated by all relations in this system with codomain the top
+    /// element, and is therefore also called the cosaturation coclosure.
+    pub fn cosaturated_coclosure(&self) -> GTransferSystem<A> {
+        let top = self.lattice().top();
+        let generators = (0..self.lattice().size())
+            .filter(|&source| self.contains_relation(Edge::new(source, top)))
+            .map(|source| Edge::new(source, top));
+        self.universe
+            .generated_by(generators)
+            .expect("relations already in a G-transfer system must be valid generators")
+    }
+
+    /// Returns whether the supplied relations generate this G-transfer system.
+    pub fn is_generated_by<I, E>(&self, generators: I) -> Result<bool, GTransferSystemError>
+    where
+        I: IntoIterator<Item = E>,
+        E: Into<Edge>,
+    {
+        Ok(self.universe.generated_by(generators)? == *self)
+    }
+
+    /// Returns whether the supplied relations are an irredundant generating set.
+    ///
+    /// Supplying identities, duplicate relations, or two relations in the same
+    /// G-orbit is redundant and therefore returns `false`.
+    pub fn is_minimal_generating_set<I, E>(
+        &self,
+        generators: I,
+    ) -> Result<bool, GTransferSystemError>
+    where
+        I: IntoIterator<Item = E>,
+        E: Into<Edge>,
+    {
+        let generators = generators.into_iter().map(Into::into).collect::<Vec<_>>();
+        if generators.iter().any(|edge| edge.is_identity()) {
+            return Ok(false);
+        }
+
+        let bits = self
+            .universe
+            .generator_orbit_bits(generators.iter().copied())?;
+        if bits.count_ones() != generators.len()
+            || self.universe.close_orbit_arrows(&bits) != *self.raw.orbit_arrows()
+        {
+            return Ok(false);
+        }
+
+        for orbit_id in bits.iter_ones() {
+            let mut smaller = bits.clone();
+            smaller.set(orbit_id, false);
+            if self.universe.close_orbit_arrows(&smaller) == *self.raw.orbit_arrows() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Returns a deterministic minimal set of relation-orbit generators.
+    ///
+    /// Each returned label represents its entire G-orbit. All minimal bases of
+    /// a transfer system have the same cardinality, though the basis itself
+    /// need not be unique.
+    pub fn minimal_generating_set(&self) -> Vec<RelationOrbitLabel> {
+        let mut basis = self.raw.orbit_arrows().clone();
+        let selected = basis.iter_ones().collect::<Vec<_>>();
+        for orbit_id in selected.into_iter().rev() {
+            basis.set(orbit_id, false);
+            if self.universe.close_orbit_arrows(&basis) != *self.raw.orbit_arrows() {
+                basis.set(orbit_id, true);
+            }
+        }
+        basis
+            .iter_ones()
+            .map(|orbit_id| self.universe.relation_orbit_labels()[orbit_id])
+            .collect()
+    }
+
+    /// Returns a minimum-cardinality relation-orbit generating set.
+    ///
+    /// This is an explicit alias for [`GTransferSystem::minimal_generating_set`]:
+    /// all irredundant bases of a transfer system have the same size.
+    pub fn minimum_generating_set(&self) -> Vec<RelationOrbitLabel> {
+        self.minimal_generating_set()
+    }
+
+    /// Returns the common cardinality of the minimal generating sets.
+    #[must_use]
+    pub fn generator_complexity(&self) -> usize {
+        self.minimal_generating_set().len()
+    }
+
+    /// Returns a witness when `(self, multiplicative)` is not compatible.
+    ///
+    /// The receiver is the additive transfer system. Compatibility requires
+    /// every multiplicative transfer to be additive and the distributivity
+    /// implication from compatible indexing systems.
+    pub fn compatibility_failure(
+        &self,
+        multiplicative: &GTransferSystem<A>,
+    ) -> Option<GCompatibilityFailure> {
+        if !Arc::ptr_eq(&self.universe, &multiplicative.universe) {
+            return Some(GCompatibilityFailure::DifferentUniverses);
+        }
+
+        for relation in multiplicative.relations(false) {
+            if !self.contains_relation(relation) {
+                return Some(GCompatibilityFailure::MultiplicativeNotAdditive { relation });
+            }
+        }
+
+        let lattice = self.lattice();
+        for multiplicative_relation in multiplicative.relations(true) {
+            let k = multiplicative_relation.from;
+            let h = multiplicative_relation.to;
+            for l in 0..lattice.size() {
+                if !lattice.leq(l, h) {
+                    continue;
+                }
+                let additive_relation = Edge::new(lattice.meet_id(k, l), k);
+                let required = Edge::new(l, h);
+                if self.contains_relation(additive_relation) && !self.contains_relation(required) {
+                    return Some(GCompatibilityFailure::Distributivity {
+                        multiplicative: multiplicative_relation,
+                        additive: additive_relation,
+                        required,
+                    });
+                }
+            }
+        }
+        None
+    }
+
+    /// Returns whether `(self, multiplicative)` is a compatible pair.
+    ///
+    /// The receiver is the additive transfer system and the argument is the
+    /// multiplicative transfer system.
+    #[must_use]
+    pub fn is_compatible_with(&self, multiplicative: &GTransferSystem<A>) -> bool {
+        self.compatibility_failure(multiplicative).is_none()
     }
 }
 
@@ -1637,6 +2025,35 @@ fn transfer_context_relation<A>(
         || !lattice.leq(attribute_relation.from, object_relation.from)
 }
 
+fn packed_g_transfer_context<A>(
+    lattice: &Lattice<A>,
+    labels: Vec<RelationOrbitLabel>,
+    relation_orbits: &[Vec<Edge>],
+) -> GTransferContext {
+    let matrix = labels
+        .iter()
+        .map(|object| {
+            relation_orbits
+                .iter()
+                .map(|attribute_orbit| {
+                    attribute_orbit.iter().copied().all(|attribute| {
+                        transfer_context_relation(
+                            lattice,
+                            attribute,
+                            object.canonical_representative(),
+                        )
+                    })
+                })
+                .collect()
+        })
+        .collect();
+    FormalContext::new(labels.clone(), labels, matrix)
+}
+
+fn reverse_edge(edge: Edge) -> Edge {
+    Edge::new(edge.to, edge.from)
+}
+
 fn all_g_transfer_systems<A>(universe: &GTransferUniverse<A>) -> Vec<RawGTransferSystem> {
     universe
         .context()
@@ -1644,6 +2061,66 @@ fn all_g_transfer_systems<A>(universe: &GTransferUniverse<A>) -> Vec<RawGTransfe
         .into_iter()
         .map(|concept| RawGTransferSystem::new(concept.extent))
         .collect()
+}
+
+fn raw_g_transfer_system_is_saturated<A>(
+    universe: &GTransferUniverse<A>,
+    raw: &RawGTransferSystem,
+) -> bool {
+    let lattice = universe.lattice();
+    for orbit_id in raw.orbit_arrows().iter_ones() {
+        for &relation in &universe.relation_orbits[orbit_id] {
+            for middle in 0..lattice.size() {
+                if lattice.leq(relation.from, middle)
+                    && lattice.leq(middle, relation.to)
+                    && middle != relation.to
+                {
+                    let required = Edge::new(middle, relation.to);
+                    let Some(required_orbit) = universe.relation_orbit_label_id(required) else {
+                        debug_assert!(required.is_identity());
+                        continue;
+                    };
+                    if !raw.orbit_arrows()[required_orbit] {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    true
+}
+
+fn saturated_g_transfer_closure<A>(
+    universe: &GTransferUniverse<A>,
+    raw: &RawGTransferSystem,
+) -> RawGTransferSystem {
+    let lattice = universe.lattice();
+    let mut current = raw.orbit_arrows().clone();
+
+    loop {
+        let mut generators = current.clone();
+        for orbit_id in current.iter_ones() {
+            for &relation in &universe.relation_orbits[orbit_id] {
+                for middle in 0..lattice.size() {
+                    if lattice.leq(relation.from, middle)
+                        && lattice.leq(middle, relation.to)
+                        && middle != relation.to
+                    {
+                        let required = Edge::new(middle, relation.to);
+                        if let Some(required_orbit) = universe.relation_orbit_label_id(required) {
+                            generators.set(required_orbit, true);
+                        }
+                    }
+                }
+            }
+        }
+
+        let next = universe.close_orbit_arrows(&generators);
+        if next == current {
+            return RawGTransferSystem::new(next);
+        }
+        current = next;
+    }
 }
 
 fn g_containment_lattice<A>(

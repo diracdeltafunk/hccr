@@ -26,5 +26,9 @@ name = "tr_C_4"
 required-features = ["groups"]
 
 [[example]]
+name = "count_tr_S_5"
+required-features = ["groups"]
+
+[[example]]
 name = "rubin_functors"
 required-features = ["groups"]

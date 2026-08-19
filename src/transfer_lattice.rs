@@ -104,12 +104,40 @@ pub struct TransferPoset<A> {
 
 /// A lattice of transfer systems on a fixed lattice.
 ///
-/// For the containment order, meet is intersection of transfer systems and join
-/// is the transfer-system closure of union.
+/// For the full containment lattice, meet is intersection and join is the
+/// transfer-system closure of union.  The same wrapper also represents the
+/// containment lattice of saturated systems, where join additionally takes
+/// saturated closure.
 #[derive(Debug, Clone)]
 pub struct TransferLattice<A> {
     universe: Arc<TransferUniverse<A>>,
     lattice: Lattice<RawTransferSystem>,
+}
+
+/// A concrete reason that an additive and multiplicative transfer system are
+/// not compatible.
+///
+/// Compatibility uses the convention that the first system is additive and
+/// the second is multiplicative.  In particular, every multiplicative
+/// transfer must also be additive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompatibilityFailure {
+    /// The two transfer systems do not share the same transfer universe.
+    DifferentUniverses,
+    /// A multiplicative transfer is absent from the additive system.
+    MultiplicativeNotAdditive {
+        /// The multiplicative relation missing from the additive system.
+        relation: Edge,
+    },
+    /// The distributivity condition fails for a triple of lattice elements.
+    Distributivity {
+        /// The multiplicative transfer `K -> H`.
+        multiplicative: Edge,
+        /// The additive transfer `(K /\ J) -> K`.
+        additive: Edge,
+        /// The required but absent additive transfer `J -> H`.
+        required: Edge,
+    },
 }
 
 /// Errors that can occur while constructing transfer-system orders.
@@ -216,6 +244,37 @@ impl<A> Lattice<A> {
         self: Arc<Self>,
     ) -> Result<TransferLattice<A>, TransferError> {
         self.transfer_universe().containment_lattice()
+    }
+
+    /// Counts the transfer systems on this lattice without storing them.
+    ///
+    /// This traverses the formal concepts of the transfer context but does not
+    /// construct the transfer systems or their containment lattice.
+    pub fn transfer_system_count(self: Arc<Self>) -> usize {
+        self.transfer_universe().transfer_system_count()
+    }
+
+    /// Constructs the lattice of saturated transfer systems under
+    /// containment.
+    pub fn saturated_transfer_systems_containment(
+        self: Arc<Self>,
+    ) -> Result<TransferLattice<A>, TransferError> {
+        self.transfer_universe().saturated_containment_lattice()
+    }
+
+    /// Returns the complexity of this lattice.
+    ///
+    /// This is the largest generator complexity among all transfer systems on
+    /// the lattice.
+    pub fn transfer_system_complexity(self: Arc<Self>) -> usize {
+        self.transfer_universe().complexity()
+    }
+
+    /// Returns the transfer-system width of this lattice.
+    ///
+    /// The width is the generator complexity of the complete transfer system.
+    pub fn transfer_system_width(self: Arc<Self>) -> usize {
+        self.transfer_universe().width()
     }
 
     /// Constructs the composition-closed order on transfer systems.
@@ -488,6 +547,65 @@ impl<A> TransferUniverse<A> {
             .collect()
     }
 
+    /// Counts all transfer systems without storing one value per system.
+    pub fn transfer_system_count(&self) -> usize {
+        self.context.num_concepts()
+    }
+
+    /// Enumerates all saturated transfer systems on the underlying lattice.
+    ///
+    /// A transfer system is saturated when `x -> z` and `x <= y <= z`
+    /// force `y -> z`.
+    pub fn saturated_transfer_systems(self: &Arc<Self>) -> Vec<TransferSystem<A>> {
+        all_saturated_transfer_systems(self)
+            .into_iter()
+            .map(|raw| TransferSystem::new(raw, Arc::clone(self)))
+            .collect()
+    }
+
+    /// Enumerates all compatible additive--multiplicative pairs.
+    ///
+    /// Each tuple is ordered `(additive, multiplicative)`.  The systems share
+    /// this universe and satisfy the containment and distributivity conditions
+    /// checked by [`TransferSystem::is_compatible_with`].
+    pub fn compatible_pairs(self: &Arc<Self>) -> Vec<(TransferSystem<A>, TransferSystem<A>)> {
+        let systems = all_transfer_systems(self);
+        let mut pairs = Vec::new();
+        for additive in &systems {
+            for multiplicative in &systems {
+                if compatibility_failure_for_raw(self, additive, multiplicative).is_none() {
+                    pairs.push((
+                        TransferSystem::new(additive.clone(), Arc::clone(self)),
+                        TransferSystem::new(multiplicative.clone(), Arc::clone(self)),
+                    ));
+                }
+            }
+        }
+        pairs
+    }
+
+    /// Returns the complexity of the underlying lattice.
+    ///
+    /// The complexity is the maximum size of a minimal generating set over
+    /// all transfer systems.  Minimal generating sets of a transfer system all
+    /// have the same cardinality.
+    pub fn complexity(self: &Arc<Self>) -> usize {
+        all_transfer_systems(self)
+            .iter()
+            .map(|raw| minimal_generator_bits(self, raw).count_ones())
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Returns the transfer-system width of the underlying lattice.
+    ///
+    /// This is the size of a minimal generating set of the complete transfer
+    /// system.
+    pub fn width(self: &Arc<Self>) -> usize {
+        let complete = RawTransferSystem::new(BitVec::repeat(true, self.proper_edges().len()));
+        minimal_generator_bits(self, &complete).count_ones()
+    }
+
     /// Constructs the lattice of transfer systems ordered by containment.
     ///
     /// Under this order, meet is intersection. Join starts with the union and
@@ -496,6 +614,20 @@ impl<A> TransferUniverse<A> {
         Ok(containment_lattice(
             Arc::clone(self),
             all_transfer_systems(self),
+        )?)
+    }
+
+    /// Constructs the lattice of saturated transfer systems under
+    /// containment.
+    ///
+    /// Meets are intersections.  Joins are obtained by taking ordinary
+    /// transfer-system closure of the union and then saturated closure.
+    pub fn saturated_containment_lattice(
+        self: &Arc<Self>,
+    ) -> Result<TransferLattice<A>, TransferError> {
+        Ok(containment_lattice(
+            Arc::clone(self),
+            all_saturated_transfer_systems(self),
         )?)
     }
 
@@ -534,6 +666,13 @@ fn all_transfer_systems<A>(universe: &TransferUniverse<A>) -> Vec<RawTransferSys
         .all_concepts_raw()
         .into_iter()
         .map(|concept| RawTransferSystem::new(concept.extent))
+        .collect()
+}
+
+fn all_saturated_transfer_systems<A>(universe: &TransferUniverse<A>) -> Vec<RawTransferSystem> {
+    all_transfer_systems(universe)
+        .into_iter()
+        .filter(|raw| is_saturated_raw(universe, raw))
         .collect()
 }
 
@@ -593,6 +732,278 @@ impl<A> TransferSystem<A> {
         );
         result
     }
+
+    /// Returns whether this transfer system is saturated.
+    ///
+    /// Saturation says that whenever `x -> z` belongs to the system and
+    /// `x <= y <= z`, the relation `y -> z` also belongs to the system.  The
+    /// other relation `x -> y` is already forced by restriction closure.
+    pub fn is_saturated(&self) -> bool {
+        is_saturated_raw(&self.universe, &self.raw)
+    }
+
+    /// Returns the least saturated transfer system containing this one.
+    pub fn saturated_closure(&self) -> TransferSystem<A> {
+        let raw = saturated_closure_raw(&self.universe, &self.raw);
+        TransferSystem::new(raw, Arc::clone(&self.universe))
+    }
+
+    /// Returns whether this transfer system is cosaturated.
+    ///
+    /// A cosaturated transfer system is generated by its relations whose
+    /// target is the top of the lattice.  Such systems are also called
+    /// *disklike* in the transfer-system literature.
+    pub fn is_cosaturated(&self) -> bool {
+        self.raw == cosaturated_coclosure_raw(&self.universe, &self.raw)
+    }
+
+    /// Returns whether this transfer system is disklike.
+    ///
+    /// This is an alias for [`TransferSystem::is_cosaturated`].
+    pub fn is_disklike(&self) -> bool {
+        self.is_cosaturated()
+    }
+
+    /// Returns the greatest cosaturated transfer system contained in this one.
+    ///
+    /// It is generated by all relations in this system whose target is the
+    /// top of the lattice.  Consequently this operation is contractive,
+    /// monotone, and idempotent.
+    pub fn cosaturated_coclosure(&self) -> TransferSystem<A> {
+        let raw = cosaturated_coclosure_raw(&self.universe, &self.raw);
+        TransferSystem::new(raw, Arc::clone(&self.universe))
+    }
+
+    /// Returns whether the supplied relations generate this transfer system.
+    ///
+    /// Identity relations may be supplied but are never needed.  Invalid
+    /// lattice relations produce the same errors as
+    /// [`TransferUniverse::generated_by`].
+    pub fn is_generated_by<I, E>(&self, generators: I) -> Result<bool, TransferSystemError>
+    where
+        I: IntoIterator<Item = E>,
+        E: Into<Edge>,
+    {
+        Ok(self.universe.generated_by(generators)?.raw.eq(&self.raw))
+    }
+
+    /// Returns whether the supplied relations form an inclusion-minimal
+    /// generating set for this transfer system.
+    ///
+    /// Repetitions and identity relations make a generating collection
+    /// non-minimal because deleting one of them does not change its closure.
+    pub fn is_minimal_generating_set<I, E>(
+        &self,
+        generators: I,
+    ) -> Result<bool, TransferSystemError>
+    where
+        I: IntoIterator<Item = E>,
+        E: Into<Edge>,
+    {
+        let generators = generators.into_iter().map(Into::into).collect::<Vec<_>>();
+        if !self.is_generated_by(generators.iter().copied())? {
+            return Ok(false);
+        }
+
+        for removed in 0..generators.len() {
+            let remainder = generators
+                .iter()
+                .enumerate()
+                .filter_map(|(index, &edge)| (index != removed).then_some(edge));
+            if self.is_generated_by(remainder)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Returns a deterministic inclusion-minimal generating set.
+    ///
+    /// Relations are considered in reverse order of the universe's stable
+    /// relation index and deleted whenever the remaining relations still
+    /// generate this system.
+    pub fn minimal_generating_set(&self) -> EdgeSet {
+        generator_edges_from_bits(
+            &self.universe,
+            &minimal_generator_bits(&self.universe, &self.raw),
+        )
+    }
+
+    /// Returns a minimum-cardinality generating set.
+    ///
+    /// Every inclusion-minimal generating set of a transfer system has the
+    /// same cardinality, so the deterministic set returned here is also
+    /// minimum.  This method is an explicitly named alias for
+    /// [`TransferSystem::minimal_generating_set`].
+    pub fn minimum_generating_set(&self) -> EdgeSet {
+        self.minimal_generating_set()
+    }
+
+    /// Returns the generator complexity of this transfer system.
+    ///
+    /// This is the common cardinality of its inclusion-minimal generating
+    /// sets.
+    pub fn generator_complexity(&self) -> usize {
+        minimal_generator_bits(&self.universe, &self.raw).count_ones()
+    }
+
+    /// Returns a concrete failure when this additive transfer system is not
+    /// compatible with `multiplicative`.
+    ///
+    /// Compatibility first requires every multiplicative relation to be
+    /// additive.  It then requires that, for `K, J <= H`, a multiplicative
+    /// `K -> H` and additive `(K /\ J) -> K` force additive `J -> H`.
+    pub fn compatibility_failure(
+        &self,
+        multiplicative: &TransferSystem<A>,
+    ) -> Option<CompatibilityFailure> {
+        if !Arc::ptr_eq(&self.universe, &multiplicative.universe) {
+            return Some(CompatibilityFailure::DifferentUniverses);
+        }
+        compatibility_failure_for_raw(&self.universe, &self.raw, &multiplicative.raw)
+    }
+
+    /// Returns whether this additive transfer system is compatible with the
+    /// supplied multiplicative transfer system.
+    pub fn is_compatible_with(&self, multiplicative: &TransferSystem<A>) -> bool {
+        self.compatibility_failure(multiplicative).is_none()
+    }
+}
+
+fn raw_contains_relation<A>(
+    universe: &TransferUniverse<A>,
+    raw: &RawTransferSystem,
+    relation: Edge,
+) -> bool {
+    if relation.is_identity() {
+        return relation.from < universe.lattice().size();
+    }
+    universe
+        .relation_index()
+        .proper_edge_id(relation)
+        .is_some_and(|edge_id| raw.arrows()[edge_id])
+}
+
+fn is_saturated_raw<A>(universe: &TransferUniverse<A>, raw: &RawTransferSystem) -> bool {
+    let lattice = universe.lattice();
+    for edge_id in raw.arrows().iter_ones() {
+        let edge = universe.proper_edges()[edge_id];
+        for middle in 0..lattice.size() {
+            if lattice.leq(edge.from, middle)
+                && lattice.leq(middle, edge.to)
+                && !raw_contains_relation(universe, raw, Edge::new(middle, edge.to))
+            {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn saturated_closure_raw<A>(
+    universe: &TransferUniverse<A>,
+    raw: &RawTransferSystem,
+) -> RawTransferSystem {
+    let lattice = universe.lattice();
+    let mut arrows = raw.arrows().clone();
+    loop {
+        let previous = arrows.clone();
+        for edge_id in previous.iter_ones() {
+            let edge = universe.proper_edges()[edge_id];
+            for middle in 0..lattice.size() {
+                let saturated_edge = Edge::new(middle, edge.to);
+                if lattice.leq(edge.from, middle)
+                    && lattice.leq(middle, edge.to)
+                    && !saturated_edge.is_identity()
+                {
+                    let saturated_id = universe
+                        .relation_index()
+                        .proper_edge_id(saturated_edge)
+                        .expect("a proper intermediate relation should be indexed");
+                    arrows.set(saturated_id, true);
+                }
+            }
+        }
+        arrows = universe.close_arrows(&arrows);
+        if arrows == previous {
+            return RawTransferSystem::new(arrows);
+        }
+    }
+}
+
+fn cosaturated_coclosure_raw<A>(
+    universe: &TransferUniverse<A>,
+    raw: &RawTransferSystem,
+) -> RawTransferSystem {
+    let top = universe.lattice().top();
+    let mut top_arrows = BitVec::repeat(false, universe.proper_edges().len());
+    for edge_id in raw.arrows().iter_ones() {
+        if universe.proper_edges()[edge_id].to == top {
+            top_arrows.set(edge_id, true);
+        }
+    }
+    RawTransferSystem::new(universe.close_arrows(&top_arrows))
+}
+
+fn minimal_generator_bits<A>(universe: &TransferUniverse<A>, raw: &RawTransferSystem) -> BitVec {
+    let mut generators = raw.arrows().clone();
+    for edge_id in (0..generators.len()).rev() {
+        if !generators[edge_id] {
+            continue;
+        }
+        generators.set(edge_id, false);
+        if universe.close_arrows(&generators) != *raw.arrows() {
+            generators.set(edge_id, true);
+        }
+    }
+    generators
+}
+
+fn generator_edges_from_bits<A>(universe: &TransferUniverse<A>, generators: &BitVec) -> EdgeSet {
+    generators
+        .iter_ones()
+        .map(|edge_id| universe.proper_edges()[edge_id])
+        .collect()
+}
+
+fn compatibility_failure_for_raw<A>(
+    universe: &TransferUniverse<A>,
+    additive: &RawTransferSystem,
+    multiplicative: &RawTransferSystem,
+) -> Option<CompatibilityFailure> {
+    if let Some(edge_id) = multiplicative
+        .arrows()
+        .iter_ones()
+        .find(|&edge_id| !additive.arrows()[edge_id])
+    {
+        return Some(CompatibilityFailure::MultiplicativeNotAdditive {
+            relation: universe.proper_edges()[edge_id],
+        });
+    }
+
+    let lattice = universe.lattice();
+    for edge_id in multiplicative.arrows().iter_ones() {
+        let multiplicative_edge = universe.proper_edges()[edge_id];
+        let k = multiplicative_edge.from;
+        let h = multiplicative_edge.to;
+        for j in 0..lattice.size() {
+            if !lattice.leq(j, h) {
+                continue;
+            }
+            let additive_edge = Edge::new(lattice.meet_id(k, j), k);
+            let required = Edge::new(j, h);
+            if raw_contains_relation(universe, additive, additive_edge)
+                && !raw_contains_relation(universe, additive, required)
+            {
+                return Some(CompatibilityFailure::Distributivity {
+                    multiplicative: multiplicative_edge,
+                    additive: additive_edge,
+                    required,
+                });
+            }
+        }
+    }
+    None
 }
 
 fn build_transfer_context<A>(lattice: &Lattice<A>, proper_edges: &[Edge]) -> TransferContext {

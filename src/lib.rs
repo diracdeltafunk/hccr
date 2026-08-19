@@ -4,8 +4,8 @@
 //! `hccr` is a library for finite order-theoretic calculations arising in
 //! homotopical combinatorics.
 //!
-//! The central objects are finite posets, finite lattices, and transfer
-//! systems.
+//! The central objects are finite posets, finite lattices, transfer systems,
+//! cotransfer systems, and model structures.
 //!
 //! A **poset** is a set with a reflexive, antisymmetric, transitive relation
 //! `<=`; a **lattice** is a nonempty poset in which every two elements have a
@@ -16,9 +16,12 @@
 //! A **transfer system** is an additional partial order on the elements of a
 //! lattice. It is contained in the lattice order and obeys a restriction
 //! axiom; [`transfer_lattice`] gives the precise definition and explains how
-//! the crate enumerates these systems. [`transfer_morphism`] constructs the
-//! pushforward and pullback operations induced by monotone maps. The optional
-//! `groups` feature adds finite group actions and invariant transfer systems,
+//! the crate enumerates these systems. [`cotransfer_lattice`] implements their
+//! pushout-closed duals through transfer systems on the opposite lattice, and
+//! [`model_structure`] constructs model structures from suitable intervals of
+//! transfer systems. [`transfer_morphism`] constructs the pushforward and
+//! pullback operations induced by monotone maps. The optional `groups` feature
+//! adds finite group actions and invariant transfer and cotransfer systems,
 //! using GAP for the group theory.
 //!
 mod bitvec_utils;
@@ -38,6 +41,10 @@ pub mod transfer_lattice;
 
 pub mod transfer_morphism;
 
+pub mod cotransfer_lattice;
+
+pub mod model_structure;
+
 #[cfg(feature = "groups")]
 pub mod g_lattice;
 
@@ -46,3 +53,6 @@ pub mod subgroup_morphism;
 
 #[cfg(feature = "groups")]
 pub mod g_transfer_morphism;
+
+#[cfg(feature = "groups")]
+pub mod g_cotransfer_lattice;
