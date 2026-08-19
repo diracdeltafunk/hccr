@@ -545,6 +545,35 @@ impl<A> Poset<A> {
         }
         result
     }
+
+    /// Returns whether a class of relations has the 2-out-of-3 property.
+    ///
+    /// For every composable pair `x <= y <= z`, if any two of `x <= y`,
+    /// `y <= z`, and their composite `x <= z` belong to `class`, then all
+    /// three must belong to it. Returns `false` if `class` contains an edge
+    /// that is not a relation of this poset.
+    #[must_use]
+    pub fn two_out_of_three(&self, class: &EdgeSet) -> bool {
+        if class.iter().any(|edge| {
+            edge.from >= self.size() || edge.to >= self.size() || !self.leq(edge.from, edge.to)
+        }) {
+            return false;
+        }
+
+        for middle in 0..self.size() {
+            for from in self.relation_transpose[middle].iter_ones() {
+                let first = class.contains(&Edge::new(from, middle));
+                for to in self.relation[middle].iter_ones() {
+                    let second = class.contains(&Edge::new(middle, to));
+                    let composite = class.contains(&Edge::new(from, to));
+                    if usize::from(first) + usize::from(second) + usize::from(composite) == 2 {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
 }
 
 /// Computes the composites of arrows in `class2` followed by arrows in `class1`.
@@ -580,6 +609,12 @@ pub fn composition_closed(class: &EdgeSet) -> bool {
                 .all(|&source| class.contains(&Edge::new(source, edge1.to)))
         })
     })
+}
+
+/// Returns whether a class of relations in `poset` has the 2-out-of-3 property.
+#[must_use]
+pub fn two_out_of_three<A>(poset: &Poset<A>, class: &EdgeSet) -> bool {
+    poset.two_out_of_three(class)
 }
 
 fn sources_by_target(class: &EdgeSet) -> HashMap<ElementId, Vec<ElementId>> {

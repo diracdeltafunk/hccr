@@ -1,5 +1,5 @@
 use hccr::lattice::Lattice;
-use hccr::poset::{self, Edge, EdgeSet, Poset, compose, composition_closed};
+use hccr::poset::{self, Edge, EdgeSet, Poset, compose, composition_closed, two_out_of_three};
 use std::sync::Arc;
 
 /// Verifies that `Lattice`'s precomputed meet/join tables agree with the
@@ -223,4 +223,60 @@ fn relation_composition_and_closure_satisfy_their_definitions() {
         assert_eq!(compose(&class, &class), expected);
         assert_eq!(composition_closed(&class), expected.is_subset(&class));
     }
+}
+
+fn direct_two_out_of_three(poset: &Poset<usize>, class: &EdgeSet) -> bool {
+    poset.all_relations_iter().all(|first| {
+        poset
+            .all_relations_iter()
+            .filter(|second| first.to == second.from)
+            .all(|second| {
+                let composite = Edge::new(first.from, second.to);
+                [first, second, composite]
+                    .into_iter()
+                    .filter(|edge| class.contains(edge))
+                    .count()
+                    != 2
+            })
+    })
+}
+
+/// Checks 2-out-of-3 against its defining condition for every relation class
+/// on representative finite posets.
+#[test]
+fn two_out_of_three_satisfies_its_defining_condition() {
+    let posets = [
+        Poset::chain(2).unwrap(),
+        Poset::from_edges(
+            (0..4).collect(),
+            [
+                Edge::new(0, 1),
+                Edge::new(0, 2),
+                Edge::new(1, 3),
+                Edge::new(2, 3),
+            ],
+        )
+        .unwrap(),
+    ];
+
+    for poset in posets {
+        let relations = poset.all_relations_iter().collect::<Vec<_>>();
+        for class_bits in 0usize..(1usize << relations.len()) {
+            let class = relations
+                .iter()
+                .copied()
+                .enumerate()
+                .filter_map(|(id, edge)| ((class_bits >> id) & 1 == 1).then_some(edge))
+                .collect::<EdgeSet>();
+            assert_eq!(
+                two_out_of_three(&poset, &class),
+                direct_two_out_of_three(&poset, &class),
+            );
+        }
+    }
+
+    assert!(!two_out_of_three(
+        &Poset::chain(1).unwrap(),
+        &EdgeSet::from([Edge::new(1, 0)]),
+    ));
 }

@@ -27,7 +27,7 @@
 
 use crate::bitvec_utils::{intersection, intersects, is_subset, set_partial_cmp};
 use crate::lattice::{Lattice, LatticeError};
-use crate::poset::{Edge, EdgeSet, ElementId, Poset, PosetError};
+use crate::poset::{Edge, EdgeSet, ElementId, Poset, PosetError, compose};
 use bitvec::prelude::*;
 use fcars::FormalContext;
 use std::fmt;
@@ -226,6 +226,16 @@ impl<A> Lattice<A> {
         self: Arc<Self>,
     ) -> Result<TransferPoset<A>, TransferError> {
         self.transfer_universe().composition_closed_order()
+    }
+
+    /// Constructs the model-structure order on transfer systems.
+    ///
+    /// An interval `R <= R'` belongs to this order precisely when the weak
+    /// equivalences `R ∘ llc(R')` have the 2-out-of-3 property.
+    pub fn transfer_systems_model_structure_order(
+        self: Arc<Self>,
+    ) -> Result<TransferPoset<A>, TransferError> {
+        self.transfer_universe().model_structure_order()
     }
 }
 
@@ -499,6 +509,19 @@ impl<A> TransferUniverse<A> {
     /// need not be a lattice.
     pub fn composition_closed_order(self: &Arc<Self>) -> Result<TransferPoset<A>, TransferError> {
         Ok(composition_closed_order(
+            Arc::clone(self),
+            all_transfer_systems(self),
+        )?)
+    }
+
+    /// Constructs the model-structure order on transfer systems.
+    ///
+    /// For transfer systems `R <= R'`, the corresponding premodel structure
+    /// has weak equivalences `R ∘ llc(R')`. The pair is included exactly when
+    /// those weak equivalences satisfy 2-out-of-3. Thus the intervals of this
+    /// order are precisely the model structures on the underlying lattice.
+    pub fn model_structure_order(self: &Arc<Self>) -> Result<TransferPoset<A>, TransferError> {
+        Ok(model_structure_order(
             Arc::clone(self),
             all_transfer_systems(self),
         )?)
@@ -867,6 +890,46 @@ fn composition_closed_order<A>(
     ))
 }
 
+fn model_structure_order<A>(
+    universe: Arc<TransferUniverse<A>>,
+    systems: Vec<RawTransferSystem>,
+) -> Result<TransferPoset<A>, PosetError> {
+    let ambient = universe.underlying_lattice().as_poset();
+    let right_classes = systems
+        .iter()
+        .map(|system| {
+            let mut edges = EdgeSet::from_iter(
+                system
+                    .arrows()
+                    .iter_ones()
+                    .map(|edge_id| universe.proper_edges()[edge_id]),
+            );
+            edges.extend((0..ambient.size()).map(|id| Edge::new(id, id)));
+            edges
+        })
+        .collect::<Vec<_>>();
+    let left_classes = right_classes
+        .iter()
+        .map(|right| ambient.llc(right))
+        .collect::<Vec<_>>();
+
+    let relation = (0..systems.len())
+        .map(|lower| {
+            (0..systems.len())
+                .map(|upper| {
+                    is_subset(systems[lower].arrows(), systems[upper].arrows())
+                        && ambient
+                            .two_out_of_three(&compose(&right_classes[lower], &left_classes[upper]))
+                })
+                .collect()
+        })
+        .collect();
+    Ok(TransferPoset::new(
+        universe,
+        Poset::from_relation(systems, relation)?,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -912,5 +975,29 @@ mod tests {
             &left_order,
             &left_order
         ));
+    }
+
+    #[test]
+    fn model_structure_order_has_the_expected_intervals_on_two_chain() {
+        let universe =
+            Arc::new(Lattice::chain(2).expect("the finite chain is a lattice")).transfer_universe();
+        let model_order = universe
+            .model_structure_order()
+            .expect("model structures define a partial order");
+        let composition_order = universe
+            .composition_closed_order()
+            .expect("composition-closed premodels define a partial order");
+
+        assert_eq!(
+            model_order.raw_poset().elements(),
+            composition_order.raw_poset().elements()
+        );
+        assert_eq!(model_order.raw_poset().all_relations_iter().count(), 10);
+        assert!(
+            model_order
+                .raw_poset()
+                .all_relations_iter()
+                .all(|edge| composition_order.raw_poset().leq(edge.from, edge.to))
+        );
     }
 }
