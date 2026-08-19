@@ -4,14 +4,13 @@
 //! `K <= G` to `f(K) <= H`, while inverse image sends `J <= H` to
 //! `f^-1(J) <= G`. Both operations preserve inclusion and hence define
 //! monotone maps between subgroup lattices. A
-//! [`SubgroupMaps`](crate::subgroup_morphism::SubgroupMaps) value asks GAP to
-//! compute both maps once, validates them, and retains their element-id vectors.
+//! [`SubgroupMaps`] value asks GAP to compute both maps once, validates them,
+//! and retains their element-id vectors.
 //!
 //! It also retains shared pointers to the precise
-//! [`SubgroupGLattice`](crate::g_lattice::SubgroupGLattice) endpoints. This
-//! matters because element ids depend on GAP's concrete subgroup enumeration
-//! and are not interchangeable merely because two subgroup lattices happen to
-//! be isomorphic.
+//! [`SubgroupGLattice`] endpoints. This matters because element ids depend on
+//! GAP's concrete subgroup enumeration and are not interchangeable merely
+//! because two subgroup lattices happen to be isomorphic.
 
 use crate::g_lattice::SubgroupGLattice;
 use crate::group_theory::{self, GapSubgroup, GroupTheoryError};

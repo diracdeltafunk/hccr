@@ -2,16 +2,16 @@
 //!
 //! A partial order is a relation `<=` that is reflexive (`x <= x`),
 //! antisymmetric (`x <= y` and `y <= x` imply `x = y`), and transitive. A
-//! [`Poset`](crate::poset::Poset) stores the whole relation and its transpose
+//! [`Poset`] stores the whole relation and its transpose
 //! as dense Boolean matrices: `relation[i][j]` means `i <= j`. Storing all
 //! comparable pairs, rather than only the edges of a Hasse diagram, makes tests
 //! such as comparability and the computation of upper and lower sets
 //! inexpensive for small finite posets.
 //!
 //! Labels are not required to be unique. Public APIs therefore refer to an
-//! element by its [`ElementId`](crate::poset::ElementId), a stable position in
-//! the label vector. An [`Edge`](crate::poset::Edge) is an ordered pair of ids,
-//! oriented from the smaller element to the larger one.
+//! element by its [`ElementId`], a stable position in the label vector. An
+//! [`Edge`] is an ordered pair of ids, oriented from the smaller element to the
+//! larger one.
 
 use crate::bitvec_utils::{difference_assign, intersection, is_subset, transpose, union_assign};
 use crate::morphism::{PosetMap, PosetMapError};

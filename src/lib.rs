@@ -21,47 +21,28 @@
 //! `groups` feature adds finite group actions and invariant transfer systems,
 //! using GAP for the group theory.
 //!
-//! # Element coordinates
-//!
-//! Elements are addressed by stable integer [`poset::ElementId`] values.
-//! User-supplied labels carry mathematical names or data, but labels need not
-//! be unique and therefore do not identify elements. Relations are oriented
-//! from smaller to larger: [`poset::Edge::new`]`(x, y)` denotes `x <= y`.
-
 mod bitvec_utils;
 
 #[cfg(feature = "groups")]
-/// GAP-backed finite-group data and permutation-action support.
 pub mod group_theory;
 
-/// Finite posets, relations, products, coproducts, and relation operations.
 pub mod poset;
 
-/// Finite lattices and lattice-theoretic constructions.
 pub mod lattice;
 
-/// Monotone maps of posets and homomorphisms of lattices.
 pub mod morphism;
 
-/// Rendering finite posets, lattices, and transfer systems as TikZ pictures.
 pub mod tikz;
 
-/// Transfer systems on finite lattices, including containment and
-/// composition-closed orders.
 pub mod transfer_lattice;
 
-/// Pushforwards, pullbacks, and induced order maps on transfer systems.
 pub mod transfer_morphism;
 
 #[cfg(feature = "groups")]
-/// GAP-backed finite group actions on lattices and G-equivariant transfer
-/// systems.
 pub mod g_lattice;
 
 #[cfg(feature = "groups")]
-/// GAP-backed maps between subgroup lattices induced by group homomorphisms.
 pub mod subgroup_morphism;
 
 #[cfg(feature = "groups")]
-/// Pushforwards and right-adjoint pullbacks of equivariant transfer systems.
 pub mod g_transfer_morphism;

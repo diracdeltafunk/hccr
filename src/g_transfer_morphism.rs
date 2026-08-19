@@ -2,11 +2,10 @@
 //!
 //! These are the action-invariant analogues of the operations in
 //! [`crate::transfer_morphism`]. For a monotone map `u: L -> M`,
-//! [`pushforward`](crate::g_transfer_morphism::pushforward) maps all arrows,
-//! closes under the transfer axioms, and adds their whole target orbits.
-//! [`pullback`](crate::g_transfer_morphism::pullback) is its right adjoint on
-//! invariant transfer systems: it returns the greatest invariant source system
-//! whose pushforward is contained in the given target system.
+//! [`pushforward`] maps all arrows, closes under the transfer axioms, and adds
+//! their whole target orbits. [`pullback`] is its right adjoint on invariant
+//! transfer systems: it returns the greatest invariant source system whose
+//! pushforward is contained in the given target system.
 //!
 //! A group homomorphism `f: G -> H` gives two monotone maps between subgroup
 //! lattices: direct image sends `K <= G` to `f(K) <= H`, and inverse image

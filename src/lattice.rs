@@ -1,15 +1,15 @@
 //! Finite lattices.
 //!
-//! A [`Lattice`](crate::lattice::Lattice) is a nonempty finite poset in which
+//! A [`Lattice`] is a nonempty finite poset in which
 //! every pair `x, y` has a **meet** `x /\ y` and a **join** `x \/ y`. The meet
 //! is the greatest element below both inputs; the join is the least element
 //! above both. In a finite lattice these operations also determine a unique
 //! bottom element, below everything, and a unique top element, above
 //! everything.
 //!
-//! This type stores the underlying [`Poset`](crate::poset::Poset) together with
-//! complete meet and join tables. Construction does the quadratic validation
-//! and precomputation; subsequent operations on element ids take constant time.
+//! This type stores the underlying [`Poset`] together with complete meet and
+//! join tables. Construction does the quadratic validation and precomputation;
+//! subsequent operations on element ids take constant time.
 
 use crate::morphism::LatticeMap;
 use crate::poset::{ElementId, Poset, PosetError};

@@ -12,10 +12,8 @@
 //!
 //! Computationally, identity relations are implicit and a system is a
 //! bitvector selecting proper lattice relations `x < y`. A
-//! [`RelationIndex`](crate::transfer_lattice::RelationIndex) specifies which
-//! relation each bit denotes, and a
-//! [`TransferUniverse`](crate::transfer_lattice::TransferUniverse) bundles that
-//! indexing with the closure machinery.
+//! [`RelationIndex`] specifies which relation each bit denotes, and a
+//! [`TransferUniverse`] bundles that indexing with the closure machinery.
 //!
 //! # Enumeration algorithm
 //!

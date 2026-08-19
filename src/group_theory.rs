@@ -3,9 +3,8 @@
 //! GAP is a computer algebra system specialized in discrete algebra. This
 //! module uses it to enumerate subgroups, compute conjugacy and orbits, and
 //! turn group actions into permutations of finite sets. The public
-//! [`GapSubgroup`](crate::group_theory::GapSubgroup) label identifies a
-//! subgroup in GAP's enumeration; the rest of the module supplies the
-//! group-theoretic computations used by
+//! [`GapSubgroup`] label identifies a subgroup in GAP's enumeration; the rest
+//! of the module supplies the group-theoretic computations used by
 //! [`crate::g_lattice`].
 //!
 //! GAP objects are represented by rooted [`gap_sys::GapValue`] handles. A

@@ -3,18 +3,16 @@
 //! A monotone map `f: L -> M` sends a relation `x <= y` to
 //! `f(x) <= f(y)`. Sending every arrow of a transfer system this way may lose
 //! restriction closure, so
-//! [`pushforward`](crate::transfer_morphism::pushforward) takes the least
-//! transfer system containing the image arrows. Its right adjoint
-//! [`pullback`](crate::transfer_morphism::pullback) takes the greatest transfer
-//! system contained in the pointwise inverse image. In
+//! [`pushforward`] takes the least transfer system containing the image arrows.
+//! Its right adjoint [`pullback`] takes the greatest transfer system contained
+//! in the pointwise inverse image. In
 //! symbols, for transfer systems `S` on `L` and `T` on `M`,
 //! `pushforward(S) <= T` exactly when `S <= pullback(T)`.
 //!
 //! There is also a superficially similar operation,
-//! [`generated_inverse_image`](crate::transfer_morphism::generated_inverse_image),
-//! which takes the *least* transfer system containing the pointwise inverse
-//! image. It is generally different from the pullback and is not right adjoint
-//! to pushforward.
+//! [`generated_inverse_image`], which takes the *least* transfer system
+//! containing the pointwise inverse image. It is generally different from the
+//! pullback and is not right adjoint to pushforward.
 //!
 //! For a meet-preserving map, including every
 //! [`crate::morphism::LatticeMap`], the raw inverse image is already a transfer
