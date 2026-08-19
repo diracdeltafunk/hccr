@@ -3,6 +3,7 @@ name = "hccr"
 version = "0.1.0"
 edition = "2024"
 authors = ["Ben Spitz <diracdeltafunk@users.noreply.github.com>"]
+license = "MIT"
 
 [lib]
 name = "hccr"

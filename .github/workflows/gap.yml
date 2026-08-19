@@ -10,12 +10,18 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
+permissions:
+  contents: read
+
 jobs:
   test-groups:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v7
+
+      - name: Install Rust components
+        run: rustup component add clippy
 
       - name: Install GAP and libgap
         run: |
@@ -64,8 +70,8 @@ jobs:
           echo "GAP_SYS_LIB_DIRS=$LIB_DIR"
           echo "libgap=$LIBGAP_FILE"
 
-      - name: Build with groups feature
-        run: cargo build --features groups --verbose
+      - name: Lint with groups feature
+        run: cargo clippy --features groups --all-targets -- -D warnings
 
-      - name: Run groups-specific tests
-        run: cargo test --features groups --test g_lattice --verbose
+      - name: Run tests with groups feature
+        run: cargo test --features groups --tests --verbose

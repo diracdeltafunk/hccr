@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata from this file."
+type: software
+title: "hccr: Homotopical Combinatorics Computations in Rust"
+abstract: >-
+  A Rust library for finite order-theoretic calculations arising in
+  homotopical combinatorics, including transfer systems, cotransfer systems,
+  and model structures.
+authors:
+  - family-names: Spitz
+    given-names: Ben
+version: 0.1.0
+repository-code: "https://github.com/diracdeltafunk/hccr"
+license: MIT
+keywords:
+  - homotopical combinatorics
+  - transfer systems
+  - model structures
+  - finite lattices
