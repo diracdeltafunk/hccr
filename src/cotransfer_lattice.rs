@@ -77,7 +77,8 @@ pub enum CotransferSystemError {
     },
     /// Raw arrows are not closed under the cotransfer-system axioms.
     RawNotClosed,
-    /// A lifting-class input uses different lattice coordinates.
+    /// A lifting or opposite-conversion input uses a different ambient
+    /// transfer universe.
     LatticeMismatch,
 }
 
@@ -105,7 +106,7 @@ impl fmt::Display for CotransferSystemError {
             Self::LatticeMismatch => {
                 write!(
                     f,
-                    "the transfer and cotransfer universes use different lattice coordinates"
+                    "the transfer and cotransfer systems use different ambient universes"
                 )
             }
         }
@@ -263,6 +264,8 @@ impl<A> CotransferUniverse<A> {
     /// Converts a transfer system on the coordinate-wise opposite lattice to
     /// its corresponding cotransfer system on `L`.
     ///
+    /// The input must belong to this cotransfer universe's associated
+    /// opposite transfer universe.
     pub fn from_opposite_transfer_system(
         self: &Arc<Self>,
         opposite: &TransferSystem<ElementId>,
