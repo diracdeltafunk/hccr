@@ -17,6 +17,14 @@ gap-sys = { git = "https://github.com/diracdeltafunk/gap-sys", branch = "codex/f
 [features]
 groups = ["dep:gap-sys"]
 
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "s5_context"
+harness = false
+required-features = ["groups"]
+
 [[example]]
 name = "tr_S_3"
 required-features = ["groups"]
