@@ -33,10 +33,25 @@ pub(crate) fn is_subset(left: &BitVec, right: &BitVec) -> bool {
 /// Returns whether two equally sized bit vectors have a common set bit.
 pub(crate) fn intersects(left: &BitVec, right: &BitVec) -> bool {
     debug_assert_eq!(left.len(), right.len());
-    left.as_raw_slice()
+    let bits_per_word = usize::BITS as usize;
+    let full_words = left.len() / bits_per_word;
+    let remainder = left.len() % bits_per_word;
+    let left_words = left.as_raw_slice();
+    let right_words = right.as_raw_slice();
+
+    if left_words[..full_words]
         .iter()
-        .zip(right.as_raw_slice())
+        .zip(&right_words[..full_words])
         .any(|(&left_word, &right_word)| left_word & right_word != 0)
+    {
+        return true;
+    }
+    if remainder == 0 {
+        return false;
+    }
+
+    let mask = (1usize << remainder) - 1;
+    left_words[full_words] & right_words[full_words] & mask != 0
 }
 
 /// Compares equally sized bit vectors by containment of their set bits.
