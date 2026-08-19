@@ -1,9 +1,15 @@
 //! Finite lattices.
 //!
-//! A [`crate::lattice::Lattice`] is a nonempty finite poset in which every pair of elements has
-//! a meet and a join.  The type stores the underlying [`crate::poset::Poset`] together with
-//! precomputed meet and join tables, so lattice operations by element id are
-//! constant-time after construction.
+//! A [`Lattice`](crate::lattice::Lattice) is a nonempty finite poset in which
+//! every pair `x, y` has a **meet** `x /\ y` and a **join** `x \/ y`. The meet
+//! is the greatest element below both inputs; the join is the least element
+//! above both. In a finite lattice these operations also determine a unique
+//! bottom element, below everything, and a unique top element, above
+//! everything.
+//!
+//! This type stores the underlying [`Poset`](crate::poset::Poset) together with
+//! complete meet and join tables. Construction does the quadratic validation
+//! and precomputation; subsequent operations on element ids take constant time.
 
 use crate::morphism::LatticeMap;
 use crate::poset::{ElementId, Poset, PosetError};
@@ -143,8 +149,9 @@ impl From<PosetError> for HorizontalJoinError {
 impl<A> Lattice<A> {
     /// Constructs a lattice from a finite poset.
     ///
-    /// This checks that the poset is nonempty, has bottom and top, and that
-    /// every pair of elements has both a meet and a join.
+    /// This checks every unordered pair for a meet and a join, stores the
+    /// results in symmetric lookup tables, and locates bottom and top. The
+    /// original element ids and labels are preserved.
     pub fn new(poset: Poset<A>) -> Result<Self, LatticeError> {
         Self::try_from(poset)
     }
@@ -245,13 +252,19 @@ impl<A> Lattice<A> {
 
 impl Lattice<usize> {
     /// Constructs the chain `[top] = {0, ..., top}` with its usual total order.
+    ///
+    /// The argument is the largest element, so the lattice has `top + 1`
+    /// elements. Meet is minimum and join is maximum.
     pub fn chain(top: usize) -> Result<Self, LatticeError> {
         Lattice::new(Poset::chain(top)?)
     }
 
     /// Constructs the Boolean lattice of subsets of `{0, ..., rank - 1}`.
     ///
-    /// Elements are encoded as bitmasks ordered by subset inclusion.
+    /// Elements are `usize` bitmasks ordered by subset inclusion: bit `i` is
+    /// set exactly when the subset contains `i`. Consequently meet is bitwise
+    /// intersection and join is bitwise union. For example, rank `3` produces
+    /// eight elements numbered `0` through `7`.
     pub fn boolean(rank: usize) -> Result<Self, LatticeError> {
         if rank >= usize::BITS as usize {
             return Err(LatticeError::BooleanRankTooLarge { rank });
@@ -349,7 +362,9 @@ impl<A> TryFrom<Poset<A>> for Lattice<A> {
 /// The resulting lattice contains a copy of each input lattice, except that the
 /// two bottom elements are identified and the two top elements are identified.
 /// No new comparabilities are added between the two factors beyond those forced
-/// by the common bottom and common top.
+/// by the common bottom and common top. The result is sometimes called the
+/// horizontal sum of the lattices. The returned embeddings record which
+/// element ids of the fused lattice represent the two inputs.
 pub fn horizontal_join<A: Clone, B: Clone>(
     left: Arc<Lattice<A>>,
     right: Arc<Lattice<B>>,

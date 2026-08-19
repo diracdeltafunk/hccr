@@ -1,10 +1,17 @@
 //! Transfer-system maps between finite lattices with group actions.
 //!
-//! For a monotone map `u: L -> M`, [`crate::g_transfer_morphism::pushforward`] produces the least
-//! target-invariant transfer system containing the image arrows, while
-//! [`crate::g_transfer_morphism::pullback`] produces its right adjoint on invariant transfer systems.
-//! Applying this pair to the subgroup-image and subgroup-preimage maps of a
-//! group homomorphism `f: G -> H` gives Rubin's four functors:
+//! These are the action-invariant analogues of the operations in
+//! [`crate::transfer_morphism`]. For a monotone map `u: L -> M`,
+//! [`pushforward`](crate::g_transfer_morphism::pushforward) maps all arrows,
+//! closes under the transfer axioms, and adds their whole target orbits.
+//! [`pullback`](crate::g_transfer_morphism::pullback) is its right adjoint on
+//! invariant transfer systems: it returns the greatest invariant source system
+//! whose pushforward is contained in the given target system.
+//!
+//! A group homomorphism `f: G -> H` gives two monotone maps between subgroup
+//! lattices: direct image sends `K <= G` to `f(K) <= H`, and inverse image
+//! sends `J <= H` to `f^-1(J) <= G`. Applying pushforward and pullback to these
+//! two maps gives Rubin's four functors:
 //!
 //! | subgroup map | pushforward | pullback |
 //! | --- | --- | --- |

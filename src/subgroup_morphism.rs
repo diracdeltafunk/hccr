@@ -1,10 +1,17 @@
 //! Maps of subgroup lattices induced by GAP group homomorphisms.
 //!
-//! A [`crate::subgroup_morphism::SubgroupMaps`] value performs the GAP work once and retains both the
-//! image map `Sub(G) -> Sub(H)` and the inverse-image map
-//! `Sub(H) -> Sub(G)` as validated monotone maps. It also owns shared pointers
-//! to the precise [`crate::g_lattice::SubgroupGLattice`] endpoints, including their conjugation
-//! actions and subgroup-coordinate choices.
+//! If `f: G -> H` is a group homomorphism, direct image sends a subgroup
+//! `K <= G` to `f(K) <= H`, while inverse image sends `J <= H` to
+//! `f^-1(J) <= G`. Both operations preserve inclusion and hence define
+//! monotone maps between subgroup lattices. A
+//! [`SubgroupMaps`](crate::subgroup_morphism::SubgroupMaps) value asks GAP to
+//! compute both maps once, validates them, and retains their element-id vectors.
+//!
+//! It also retains shared pointers to the precise
+//! [`SubgroupGLattice`](crate::g_lattice::SubgroupGLattice) endpoints. This
+//! matters because element ids depend on GAP's concrete subgroup enumeration
+//! and are not interchangeable merely because two subgroup lattices happen to
+//! be isomorphic.
 
 use crate::g_lattice::SubgroupGLattice;
 use crate::group_theory::{self, GapSubgroup, GroupTheoryError};

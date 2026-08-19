@@ -12,9 +12,20 @@ use layered::{LayeredCoverGraph, doubled_centered_slot};
 /// The algorithm used to assign coordinates to elements of a finite poset.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PosetLayoutAlgorithm {
-    /// Place elements at their earliest rank and order each rank by element id.
+    /// Place elements at their earliest possible height and order by element id.
+    ///
+    /// The height of `x` is the length of a longest chain from a minimal
+    /// element to `x`. This deterministic layout performs no crossing
+    /// optimization.
     Ranked,
-    /// Center feasible heights and reduce crossings in a proper layered graph.
+    /// Center feasible heights and heuristically reduce edge crossings.
+    ///
+    /// Elements of a non-graded poset may have vertical slack between their
+    /// earliest and latest feasible heights. The algorithm centers each one in
+    /// that interval, inserts temporary vertices where cover edges span
+    /// multiple layers, and repeatedly reorders layers to improve straight-line
+    /// geometry. Temporary vertices are used only for optimization and are not
+    /// rendered.
     #[default]
     CrossingReduced,
 }

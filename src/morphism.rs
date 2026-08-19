@@ -315,8 +315,9 @@ impl<A, B> LatticeMap<A, B> {
             });
         }
 
+        // Meet and join are commutative, and the diagonal laws are automatic.
         for i in 0..domain.size() {
-            for j in 0..domain.size() {
+            for j in (i + 1)..domain.size() {
                 let meet_image = map[domain.meet_id(i, j)];
                 let image_meet = codomain.meet_id(map[i], map[j]);
                 if meet_image != image_meet {

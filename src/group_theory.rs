@@ -1,10 +1,16 @@
 //! Finite-group and permutation-action operations backed by GAP.
 //!
-//! [`crate::group_theory::GapSubgroup`] is the public label used for subgroups
-//! in GAP's subgroup enumeration. The remaining implementation in this module
-//! composes `gap-sys` primitives for use by the crate's G-lattice
-//! constructions; `gap-sys` itself remains responsible for interpreter access,
-//! rooted values, generic calls, and Rust/GAP representation conversion.
+//! GAP is a computer algebra system specialized in discrete algebra. This
+//! module uses it to enumerate subgroups, compute conjugacy and orbits, and
+//! turn group actions into permutations of finite sets. The public
+//! [`GapSubgroup`](crate::group_theory::GapSubgroup) label identifies a
+//! subgroup in GAP's enumeration; the rest of the module supplies the
+//! group-theoretic computations used by
+//! [`crate::g_lattice`].
+//!
+//! GAP objects are represented by rooted [`gap_sys::GapValue`] handles. A
+//! handle keeps the corresponding object alive in GAP, while `gap-sys`
+//! manages interpreter access and conversion between GAP and Rust values.
 
 use bitvec::prelude::*;
 use gap_sys::{Gap, GapValue, GlobalGapGuard};
@@ -15,7 +21,9 @@ use std::fmt;
 ///
 /// GAP's `LatticeSubgroups` organizes subgroups into conjugacy classes. This
 /// label records a zero-based conjugacy class index and a zero-based element
-/// index within that class.
+/// index within that class. Two conjugate but unequal subgroups therefore have
+/// the same `conjugacy_class` coordinate and different `class_element`
+/// coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct GapSubgroup {
     conjugacy_class: usize,

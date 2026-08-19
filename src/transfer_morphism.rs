@@ -1,12 +1,20 @@
 //! Transfer-system maps induced by monotone maps between finite lattices.
 //!
-//! A monotone map `f: L -> L'` induces a pushforward on transfer systems by
-//! taking the transfer-system closure of its image arrows. Its right adjoint
-//! [`crate::transfer_morphism::pullback`] is the greatest transfer system
-//! contained in the raw inverse image. The separate
-//! [`crate::transfer_morphism::generated_inverse_image`] operation instead
-//! takes the least transfer system containing that raw inverse image; it is
-//! generally not right adjoint to pushforward.
+//! A monotone map `f: L -> M` sends a relation `x <= y` to
+//! `f(x) <= f(y)`. Sending every arrow of a transfer system this way may lose
+//! restriction closure, so
+//! [`pushforward`](crate::transfer_morphism::pushforward) takes the least
+//! transfer system containing the image arrows. Its right adjoint
+//! [`pullback`](crate::transfer_morphism::pullback) takes the greatest transfer
+//! system contained in the pointwise inverse image. In
+//! symbols, for transfer systems `S` on `L` and `T` on `M`,
+//! `pushforward(S) <= T` exactly when `S <= pullback(T)`.
+//!
+//! There is also a superficially similar operation,
+//! [`generated_inverse_image`](crate::transfer_morphism::generated_inverse_image),
+//! which takes the *least* transfer system containing the pointwise inverse
+//! image. It is generally different from the pullback and is not right adjoint
+//! to pushforward.
 //!
 //! For a meet-preserving map, including every
 //! [`crate::morphism::LatticeMap`], the raw inverse image is already a transfer
@@ -144,6 +152,10 @@ impl From<TransferMapError> for CompositionMapError {
 
 /// Computes the pushforward of one transfer system along a monotone map.
 ///
+/// Each selected arrow is mapped pointwise; identity images are discarded
+/// because identities are implicit, duplicate images collapse to one bit, and
+/// the resulting set is closed under the transfer-system axioms.
+///
 /// The supplied codomain universe determines the relation coordinates and
 /// ownership of the result. It must share order coordinates with the map's
 /// codomain. This operation does not enumerate either transfer-system order.
@@ -180,7 +192,8 @@ where
 /// Computes the right-adjoint pullback of one transfer system.
 ///
 /// A relation `x -> y` belongs to the result exactly when, for every `z <= y`,
-/// the relation `f(x /\ z) -> f(z)` belongs to `system`. This is the greatest
+/// the relation `f(x /\ z) -> f(z)` belongs to `system`. Checking every such
+/// restriction directly constructs the greatest
 /// transfer system contained in the raw inverse image, and it is right adjoint
 /// to [`pushforward`] under containment.
 ///
@@ -213,7 +226,8 @@ where
 /// Generates a transfer system from the raw inverse image of `system`.
 ///
 /// Unlike [`pullback`], this is the least transfer system containing every
-/// relation `x -> y` for which `f(x) -> f(y)` belongs to `system`. It is
+/// relation `x -> y` for which `f(x) -> f(y)` belongs to `system`, then applies
+/// transfer-system closure. It is
 /// containment-monotone but is generally not right adjoint to [`pushforward`].
 /// The two operations agree whenever the map is meet-preserving.
 /// For merely monotone maps this operation need not commute with composition;

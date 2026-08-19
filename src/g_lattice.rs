@@ -1,17 +1,25 @@
 //! GAP-backed finite group actions on finite lattices.
 //!
-//! A `G`-lattice is a finite lattice `L` equipped with an action of a finite
-//! GAP group `G` by lattice automorphisms.  The action is stored both as GAP
-//! homomorphisms to permutation groups and as validated Rust permutations of
-//! lattice element ids.  From the element action, this module induces an action
-//! on all lattice relations `x <= y`, including identity relations, and
-//! precomputes relation orbits, stabilizers, and transporter elements.
+//! A `G`-lattice is a finite lattice `L` together with an action of a finite
+//! group `G`: every `g` in `G` permutes the elements of `L`, preserving meets,
+//! joins, bottom, and top. Such a permutation is a lattice automorphism. Acting
+//! on both endpoints sends a relation `x <= y` to `g.x <= g.y`, so `G` also
+//! acts on the set of lattice relations.
+//!
+//! The **orbit** of a relation is the set of all its translates under `G`. Its
+//! **stabilizer** consists of the group elements that leave it fixed, and a
+//! **transporter** from `r` to `s` is a chosen group element satisfying
+//! `g.r = s`. This module precomputes those data. The action is stored both as
+//! GAP homomorphisms to permutation groups and as validated Rust permutations
+//! of lattice element ids.
 //! GAP values stored in these structures are [`gap_sys::GapValue`]s, so they
 //! retain their GAP GC roots for as long as the Rust structures remain alive.
 //!
-//! G-transfer systems are computed after passing from individual non-identity
-//! relations to their `G`-orbits.  Thus a G-transfer system is stored as a set
-//! of non-identity relation orbits.
+//! A **G-transfer system** is an ordinary transfer system invariant under this
+//! action: whenever it contains one relation, it contains the relation's whole
+//! orbit. It can therefore be stored compactly as a set of non-identity
+//! relation orbits. The same formal-concept closure used for ordinary transfer
+//! systems is applied at orbit level.
 
 use crate::bitvec_utils::{is_subset, set_partial_cmp};
 use crate::group_theory::{self, GapAction, GapSubgroup, GroupTheoryError, PointOrbitError};
@@ -44,9 +52,9 @@ pub struct RawGTransferSystem {
 /// A finite lattice equipped with an action of a finite GAP group.
 ///
 /// The action of `G` on lattice elements is required to be by lattice
-/// automorphisms.  The induced action on all relations of the lattice is
-/// precomputed, together with relation orbits and GAP stabilizer/transporter
-/// data for those orbits.
+/// automorphisms, so it preserves all order-theoretic structure. The induced
+/// action on all relations of the lattice is precomputed, together with
+/// relation orbits and GAP stabilizer/transporter data for those orbits.
 pub struct GLattice<A> {
     action_coordinates: Arc<()>,
     lattice: Arc<Lattice<A>>,
@@ -65,8 +73,10 @@ pub struct GLattice<A> {
 
 /// One orbit of the `G`-action on lattice relations.
 ///
-/// Relation orbits include identity relations.  The canonical representative is
-/// the relation with smallest deterministic relation id in the orbit.
+/// Relation orbits include identity relations. The canonical representative
+/// is simply the relation with smallest deterministic relation id in the
+/// orbit; this choice supplies stable output and is not an additional
+/// mathematical structure.
 pub struct RelationOrbit {
     canonical_relation_id: usize,
     canonical_representative: Edge,
@@ -101,8 +111,11 @@ pub struct RelationOrbitLabel {
 
 /// The subgroup lattice of a finite GAP group with the conjugation action.
 ///
-/// This wrapper keeps both the Rust [`GLattice`] and the GAP objects used to
-/// construct it alive.
+/// Its elements are all actual subgroups, ordered by inclusion. An element
+/// `g` acts by sending a subgroup `H` to the conjugate `g H g^-1`; conjugation
+/// preserves inclusion, intersections, and generated joins, hence acts by
+/// lattice automorphisms. This wrapper keeps both the Rust [`GLattice`] and the
+/// GAP objects used to construct it alive.
 pub struct SubgroupGLattice {
     g_lattice: GLattice<GapSubgroup>,
     gap_lattice: GapValue,
@@ -577,7 +590,9 @@ impl<A> GLattice<A> {
     /// ids `[1..n]` of the lattice, using GAP's one-based point convention.
     /// Each generator image is extracted, converted to zero-based Rust element
     /// ids, and validated as a lattice automorphism.  The induced action on
-    /// lattice relations is then built automatically.
+    /// lattice relations is then built automatically. Finally, GAP computes
+    /// relation orbits, stabilizers, and transporters, which are cached in the
+    /// result.
     pub fn from_gap_homomorphism(
         lattice: Arc<Lattice<A>>,
         group: &GapValue,
@@ -813,7 +828,8 @@ impl<A> GLattice<A> {
     /// Objects and attributes are non-identity relation orbits.  For an object
     /// orbit represented by `r` and an attribute orbit `O`, incidence holds
     /// when the ordinary transfer-system lifting relation holds between `r`
-    /// and every relation in `O`.
+    /// and every relation in `O`. Requiring incidence against a whole orbit is
+    /// what builds `G`-invariance into the resulting closed sets.
     pub fn transfer_context(&self) -> GTransferContext {
         let labels = self.non_identity_relation_orbit_labels();
         let matrix = labels
@@ -1050,6 +1066,12 @@ impl SubgroupGLattice {
 
 impl<A> GTransferUniverse<A> {
     /// Constructs the transfer-system universe for a G-lattice.
+    ///
+    /// The constructor builds the orbit-level formal context, records every
+    /// non-identity relation orbit, and creates an ordinary
+    /// [`TransferUniverse`] on the same underlying lattice. The latter permits
+    /// an invariant system to be expanded into its underlying ordinary
+    /// transfer system without changing element coordinates.
     pub fn new(g_lattice: &GLattice<A>) -> Self {
         let context = g_lattice.transfer_context();
         let underlying_transfer_universe =
@@ -1203,6 +1225,9 @@ impl<A> GTransferUniverse<A> {
     }
 
     /// Enumerates all G-transfer systems in this universe.
+    ///
+    /// Formal concepts of the orbit-level context are enumerated; each concept
+    /// extent is a closed set of non-identity relation orbits.
     pub fn transfer_systems(self: &Arc<Self>) -> Vec<GTransferSystem<A>> {
         all_g_transfer_systems(self)
             .into_iter()

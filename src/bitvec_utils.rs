@@ -30,6 +30,15 @@ pub(crate) fn is_subset(left: &BitVec, right: &BitVec) -> bool {
     left_words[full_words] & !right_words[full_words] & mask == 0
 }
 
+/// Returns whether two equally sized bit vectors have a common set bit.
+pub(crate) fn intersects(left: &BitVec, right: &BitVec) -> bool {
+    debug_assert_eq!(left.len(), right.len());
+    left.as_raw_slice()
+        .iter()
+        .zip(right.as_raw_slice())
+        .any(|(&left_word, &right_word)| left_word & right_word != 0)
+}
+
 /// Compares equally sized bit vectors by containment of their set bits.
 pub(crate) fn set_partial_cmp(left: &BitVec, right: &BitVec) -> Option<Ordering> {
     if left == right {

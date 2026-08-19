@@ -1,17 +1,33 @@
 //! Transfer systems on finite lattices.
 //!
-//! For a finite lattice `L`, a transfer system is represented here as a
-//! reflexive partial order on the elements of `L` that is contained in the
-//! lattice order and satisfies the usual restriction/factorization closure
-//! condition.  Computationally, the identity relations are implicit and a
-//! transfer system is stored as a bitvector of selected non-identity relations
-//! `x < y`.
+//! Let `L` be a finite lattice. A **transfer system** is a partial order `R`
+//! on the elements of `L` with two extra requirements:
 //!
-//! The enumeration uses formal concept analysis: the proper relations of `L`
-//! are used as both objects and attributes in a formal context, and formal
-//! concepts of this context correspond to transfer systems.
+//! 1. `x R y` implies `x <= y` in the lattice; and
+//! 2. if `x R y` and `z <= y`, then `(x /\ z) R z`.
+//!
+//! The second condition is called restriction closure. Together with
+//! transitivity, it says that a permitted arrow remains permitted after
+//! restricting its target to a smaller element.
+//!
+//! Computationally, identity relations are implicit and a system is a
+//! bitvector selecting proper lattice relations `x < y`. A
+//! [`RelationIndex`](crate::transfer_lattice::RelationIndex) specifies which
+//! relation each bit denotes, and a
+//! [`TransferUniverse`](crate::transfer_lattice::TransferUniverse) bundles that
+//! indexing with the closure machinery.
+//!
+//! # Enumeration algorithm
+//!
+//! The crate encodes restriction and transitivity as a formal context from
+//! formal concept analysis (FCA), using the proper relations of `L` as both
+//! objects and attributes. In FCA, applying derivation twice to a set of
+//! objects gives a closure operator. For this particular context, the closed
+//! object sets are exactly the transfer systems. Thus generation is one
+//! double-derivation and enumeration uses the formal concepts of the context,
+//! rather than testing all subsets of lattice relations independently.
 
-use crate::bitvec_utils::{is_subset, set_partial_cmp};
+use crate::bitvec_utils::{intersection, intersects, is_subset, set_partial_cmp};
 use crate::lattice::{Lattice, LatticeError};
 use crate::poset::{Edge, EdgeSet, ElementId, Poset, PosetError};
 use bitvec::prelude::*;
@@ -23,7 +39,8 @@ type TransferContext = FormalContext<Edge, Edge>;
 
 /// A transfer system stored as a bitvector of non-identity lattice relations.
 ///
-/// The ambient lattice and the ordering of proper relations live in
+/// This raw form has no self-contained mathematical meaning: the ambient
+/// lattice and the ordering of proper relations live in
 /// [`TransferUniverse`].  Identity relations `x <= x` are not stored in the
 /// bitvector; they are mathematically part of every transfer system.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -57,8 +74,8 @@ pub struct RelationIndex<A> {
 ///
 /// A universe fixes the lattice `L`, a shared [`RelationIndex`], and the
 /// formal context whose concepts enumerate transfer systems.  Constructing a
-/// universe eagerly prepares that formal context, so the universe is always a
-/// complete ambient object for formal-concept calculations.
+/// universe eagerly prepares that formal context, so generation, validation,
+/// and enumeration reuse the same relation coordinates and closure operator.
 #[derive(Debug)]
 pub struct TransferUniverse<A> {
     relation_index: Arc<RelationIndex<A>>,
@@ -205,8 +222,8 @@ impl<A> Lattice<A> {
 
     /// Constructs the composition-closed order on transfer systems.
     ///
-    /// This order refines containment by the factorization condition used in
-    /// the transfer-system literature.
+    /// This order requires both containment and the factorization condition
+    /// described by [`TransferUniverse::composition_closed_order`].
     pub fn transfer_systems_composition_closed(
         self: Arc<Self>,
     ) -> Result<TransferPoset<A>, TransferError> {
@@ -223,6 +240,33 @@ impl<A> Lattice<A> {
 struct PartialOrder {
     pairs: Vec<Edge>,
     matrix_transpose: Vec<BitVec>,
+}
+
+/// Ambient intervals reused by every transfer-system factorization check.
+struct FactorizationGeometry {
+    intervals: Vec<Vec<BitVec>>,
+}
+
+impl FactorizationGeometry {
+    fn new<A>(lattice: &Lattice<A>) -> Self {
+        let poset = lattice.as_poset();
+        let intervals = poset
+            .relation_matrix()
+            .iter()
+            .map(|upper_set| {
+                poset
+                    .relation_matrix_transpose()
+                    .iter()
+                    .map(|lower_set| intersection(upper_set, lower_set))
+                    .collect()
+            })
+            .collect();
+        Self { intervals }
+    }
+
+    fn interval(&self, lower: ElementId, upper: ElementId) -> &BitVec {
+        &self.intervals[lower][upper]
+    }
 }
 
 impl RawTransferSystem {
@@ -305,6 +349,10 @@ impl<A> RelationIndex<A> {
 
 impl<A> TransferUniverse<A> {
     /// Constructs the transfer-system universe for a lattice.
+    ///
+    /// This indexes every proper relation and builds the FCA incidence matrix
+    /// used for closure and enumeration. The potentially substantial setup is
+    /// therefore paid once and shared by all systems in the universe.
     pub fn new(underlying_lattice: Arc<Lattice<A>>) -> Self {
         Self::from_relation_index(Arc::new(RelationIndex::new(underlying_lattice)))
     }
@@ -422,7 +470,9 @@ impl<A> TransferUniverse<A> {
     /// Enumerates all transfer systems on the underlying lattice.
     ///
     /// Each result shares this universe, so its raw bitvector can be decoded
-    /// using [`TransferUniverse::proper_edges`].
+    /// using [`TransferUniverse::proper_edges`]. Enumeration delegates to the
+    /// formal-context concept algorithm; each concept extent is one closed
+    /// relation set.
     pub fn transfer_systems(self: &Arc<Self>) -> Vec<TransferSystem<A>> {
         all_transfer_systems(self)
             .into_iter()
@@ -431,6 +481,9 @@ impl<A> TransferUniverse<A> {
     }
 
     /// Constructs the lattice of transfer systems ordered by containment.
+    ///
+    /// Under this order, meet is intersection. Join starts with the union and
+    /// then adds all relations forced by transitivity and restriction closure.
     pub fn containment_lattice(self: &Arc<Self>) -> Result<TransferLattice<A>, TransferError> {
         Ok(containment_lattice(
             Arc::clone(self),
@@ -439,6 +492,13 @@ impl<A> TransferUniverse<A> {
     }
 
     /// Constructs the composition-closed order on transfer systems.
+    ///
+    /// The algorithm first enumerates the systems, then compares every ordered
+    /// pair. A comparison requires ordinary containment and the factorization
+    /// condition: each relevant square formed by one arrow from the smaller
+    /// system and one from the larger must admit an intermediate
+    /// factorization using those two systems. Unlike containment, this order
+    /// need not be a lattice.
     pub fn composition_closed_order(self: &Arc<Self>) -> Result<TransferPoset<A>, TransferError> {
         Ok(composition_closed_order(
             Arc::clone(self),
@@ -686,12 +746,18 @@ pub(crate) struct FactorizationFailure {
     pub(crate) second: Edge,
 }
 
-fn factorization_condition(order: &[BitVec], left: &PartialOrder, right: &PartialOrder) -> bool {
-    factorization_failure(order, left, right).is_none()
+fn factorization_condition(
+    order: &[BitVec],
+    geometry: &FactorizationGeometry,
+    left: &PartialOrder,
+    right: &PartialOrder,
+) -> bool {
+    factorization_failure(order, geometry, left, right).is_none()
 }
 
 fn factorization_failure(
     order: &[BitVec],
+    geometry: &FactorizationGeometry,
     left: &PartialOrder,
     right: &PartialOrder,
 ) -> Option<FactorizationFailure> {
@@ -699,7 +765,7 @@ fn factorization_failure(
         for &second in &right.pairs {
             if order[first.from][second.from]
                 && order[first.to][second.to]
-                && !has_factorization_witness(order, left, right, first, second)
+                && !has_factorization_witness(order, geometry, left, right, first, second)
             {
                 return Some(FactorizationFailure { first, second });
             }
@@ -719,8 +785,10 @@ pub(crate) fn factorization_failure_for_raw<A>(
 ) -> Option<FactorizationFailure> {
     let left = left.as_partial_order(universe);
     let right = right.as_partial_order(universe);
+    let geometry = FactorizationGeometry::new(universe.underlying_lattice());
     factorization_failure(
         universe.underlying_lattice().as_poset().relation_matrix(),
+        &geometry,
         &left,
         &right,
     )
@@ -728,19 +796,18 @@ pub(crate) fn factorization_failure_for_raw<A>(
 
 fn has_factorization_witness(
     order: &[BitVec],
+    geometry: &FactorizationGeometry,
     left: &PartialOrder,
     right: &PartialOrder,
     first: Edge,
     second: Edge,
 ) -> bool {
+    let possible_z_primes = geometry.interval(first.from, second.from);
     for w_prime in right.matrix_transpose[second.to].iter_ones() {
-        if !order[first.to][w_prime] {
-            continue;
-        }
-        for z_prime in left.matrix_transpose[w_prime].iter_ones() {
-            if order[first.from][z_prime] && order[z_prime][second.from] {
-                return true;
-            }
+        if order[first.to][w_prime]
+            && intersects(&left.matrix_transpose[w_prime], possible_z_primes)
+        {
+            return true;
         }
     }
     false
@@ -774,11 +841,8 @@ fn composition_closed_order<A>(
     universe: Arc<TransferUniverse<A>>,
     systems: Vec<RawTransferSystem>,
 ) -> Result<TransferPoset<A>, PosetError> {
-    let order = universe
-        .underlying_lattice()
-        .as_poset()
-        .relation_matrix()
-        .to_vec();
+    let order = universe.underlying_lattice().as_poset().relation_matrix();
+    let geometry = FactorizationGeometry::new(universe.underlying_lattice());
     let partial_orders = systems
         .iter()
         .map(|raw| raw.as_partial_order(&universe))
@@ -790,7 +854,8 @@ fn composition_closed_order<A>(
                 .map(|right| {
                     is_subset(systems[left].arrows(), systems[right].arrows())
                         && factorization_condition(
-                            &order,
+                            order,
+                            &geometry,
                             &partial_orders[left],
                             &partial_orders[right],
                         )
@@ -834,9 +899,20 @@ mod tests {
             .expect("the generators are lattice relations");
 
         let order = universe.lattice().as_poset().relation_matrix();
+        let geometry = FactorizationGeometry::new(universe.lattice());
         let left_order = left.raw().as_partial_order(&universe);
         let right_order = right.raw().as_partial_order(&universe);
-        assert!(!factorization_condition(order, &left_order, &right_order));
-        assert!(factorization_condition(order, &left_order, &left_order));
+        assert!(!factorization_condition(
+            order,
+            &geometry,
+            &left_order,
+            &right_order
+        ));
+        assert!(factorization_condition(
+            order,
+            &geometry,
+            &left_order,
+            &left_order
+        ));
     }
 }
