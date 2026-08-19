@@ -35,7 +35,7 @@ pub type GTransferContext = FormalContext<RelationOrbitLabel, RelationOrbitLabel
 ///
 /// Identity relations are implicit.  Each set bit corresponds to one
 /// non-identity relation orbit in the ambient [`GTransferUniverse`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RawGTransferSystem {
     /// Bitmask of the non-identity relation orbits in the transfer system.
     orbit_arrows: BitVec,
@@ -48,6 +48,7 @@ pub struct RawGTransferSystem {
 /// precomputed, together with relation orbits and GAP stabilizer/transporter
 /// data for those orbits.
 pub struct GLattice<A> {
+    action_coordinates: Arc<()>,
     lattice: Arc<Lattice<A>>,
     group: GapValue,
     element_action_homomorphism: GapValue,
@@ -124,6 +125,7 @@ pub struct SubgroupGLattice {
 /// transfer systems.
 #[derive(Debug)]
 pub struct GTransferUniverse<A> {
+    action_coordinates: Arc<()>,
     underlying_transfer_universe: Arc<TransferUniverse<A>>,
     context: GTransferContext,
     relation_orbits: Vec<Vec<Edge>>,
@@ -240,6 +242,32 @@ pub enum GLatticeError {
         /// The subgroup whose conjugate was not found.
         subgroup: GapSubgroup,
     },
+}
+
+/// Errors that can occur while constructing an individual G-transfer system.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GTransferSystemError {
+    /// A generating relation references an element outside the lattice.
+    EdgeOutOfBounds {
+        /// The invalid generating relation.
+        edge: Edge,
+        /// The number of elements in the lattice.
+        lattice_size: usize,
+    },
+    /// A non-identity generating relation is not present in the lattice order.
+    NotLatticeRelation {
+        /// The invalid generating relation.
+        edge: Edge,
+    },
+    /// A raw bitvector does not have one bit for every proper relation orbit.
+    WrongOrbitCount {
+        /// The number of non-identity relation orbits in the universe.
+        expected: usize,
+        /// The number of bits in the raw representation.
+        actual: usize,
+    },
+    /// A raw bitvector is not closed under the G-transfer-system axioms.
+    RawNotClosed,
 }
 
 struct GLatticeParts<A> {
@@ -387,6 +415,35 @@ impl fmt::Display for GLatticeError {
 
 impl std::error::Error for GLatticeError {}
 
+impl fmt::Display for GTransferSystemError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GTransferSystemError::EdgeOutOfBounds { edge, lattice_size } => write!(
+                f,
+                "generator {} <= {} is out of bounds for a lattice with {lattice_size} elements",
+                edge.from, edge.to
+            ),
+            GTransferSystemError::NotLatticeRelation { edge } => write!(
+                f,
+                "generator {} <= {} is not a relation in the lattice order",
+                edge.from, edge.to
+            ),
+            GTransferSystemError::WrongOrbitCount { expected, actual } => write!(
+                f,
+                "raw G-transfer system has {actual} relation-orbit bits, expected {expected}"
+            ),
+            GTransferSystemError::RawNotClosed => {
+                write!(
+                    f,
+                    "raw relation-orbit set is not closed under the G-transfer-system axioms"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for GTransferSystemError {}
+
 impl From<PosetError> for GLatticeError {
     fn from(error: PosetError) -> Self {
         Self::Poset(error)
@@ -405,6 +462,18 @@ impl From<GroupTheoryError> for GLatticeError {
             GroupTheoryError::Gap(error) => Self::Gap(error),
             GroupTheoryError::GroupIsNotFinite => Self::GroupIsNotFinite,
             GroupTheoryError::NotAGroupHomomorphism => Self::NotAGroupHomomorphism,
+            GroupTheoryError::HomomorphismSourceMismatch => {
+                Self::Gap("group homomorphism has the wrong source".to_owned())
+            }
+            GroupTheoryError::HomomorphismRangeMismatch => {
+                Self::Gap("group homomorphism has the wrong range".to_owned())
+            }
+            GroupTheoryError::SubgroupImageNotFound { subgroup } => Self::Gap(format!(
+                "GAP did not find the image of subgroup {subgroup} in the codomain subgroup list"
+            )),
+            GroupTheoryError::SubgroupPreimageNotFound { subgroup } => Self::Gap(format!(
+                "GAP did not find the preimage of subgroup {subgroup} in the domain subgroup list"
+            )),
             GroupTheoryError::GeneratorCountMismatch { expected, actual } => {
                 Self::GeneratorCountMismatch { expected, actual }
             }
@@ -458,7 +527,7 @@ impl PartialOrd for RawGTransferSystem {
 }
 
 impl RawGTransferSystem {
-    fn new(orbit_arrows: BitVec) -> Self {
+    pub(crate) fn new(orbit_arrows: BitVec) -> Self {
         Self { orbit_arrows }
     }
 
@@ -633,6 +702,11 @@ impl<A> GLattice<A> {
     /// Returns the underlying lattice.
     pub fn lattice(&self) -> &Arc<Lattice<A>> {
         &self.lattice
+    }
+
+    /// Returns the opaque identity of this concrete group-action presentation.
+    pub(crate) fn action_coordinates(&self) -> &Arc<()> {
+        &self.action_coordinates
     }
 
     /// Returns the GAP group acting on the lattice.
@@ -817,6 +891,7 @@ impl<A> GLattice<A> {
             .collect();
 
         Ok(Self {
+            action_coordinates: Arc::new(()),
             lattice: parts.lattice,
             group: parts.group,
             element_action_homomorphism: parts.element_action_homomorphism,
@@ -997,6 +1072,7 @@ impl<A> GTransferUniverse<A> {
         }
 
         Self {
+            action_coordinates: Arc::clone(g_lattice.action_coordinates()),
             underlying_transfer_universe,
             context,
             relation_orbits,
@@ -1007,6 +1083,11 @@ impl<A> GTransferUniverse<A> {
     /// Returns the underlying lattice, forgetting the group action.
     pub fn lattice(&self) -> &Arc<Lattice<A>> {
         self.underlying_transfer_universe.lattice()
+    }
+
+    /// Returns the opaque identity of the group action defining these orbit coordinates.
+    pub(crate) fn action_coordinates(&self) -> &Arc<()> {
+        &self.action_coordinates
     }
 
     /// Returns the ordinary transfer-system universe for the underlying lattice.
@@ -1032,12 +1113,75 @@ impl<A> GTransferUniverse<A> {
         self.relation_orbits.get(orbit_label_id).map(Vec::as_slice)
     }
 
-    fn relation_orbit_label_id(&self, relation: Edge) -> Option<usize> {
+    pub(crate) fn relation_orbit_label_id(&self, relation: Edge) -> Option<usize> {
         self.relation_to_orbit_label
             .get(relation.from)
             .and_then(|row| row.get(relation.to))
             .copied()
             .flatten()
+    }
+
+    /// Constructs the G-transfer system generated by the supplied relations.
+    ///
+    /// Identity relations may be supplied but need not be. A proper relation
+    /// selects its entire G-orbit, and the returned system is then closed under
+    /// all G-transfer-system axioms. Every non-identity generator must be a
+    /// relation in the underlying lattice order.
+    pub fn generated_by<I, E>(
+        self: &Arc<Self>,
+        generators: I,
+    ) -> Result<GTransferSystem<A>, GTransferSystemError>
+    where
+        I: IntoIterator<Item = E>,
+        E: Into<Edge>,
+    {
+        let lattice_size = self.lattice().size();
+        let mut orbit_arrows = BitVec::repeat(false, self.relation_orbit_labels().len());
+
+        for generator in generators {
+            let edge = generator.into();
+            if edge.from >= lattice_size || edge.to >= lattice_size {
+                return Err(GTransferSystemError::EdgeOutOfBounds { edge, lattice_size });
+            }
+            if edge.is_identity() {
+                continue;
+            }
+
+            let Some(orbit_label_id) = self.relation_orbit_label_id(edge) else {
+                return Err(GTransferSystemError::NotLatticeRelation { edge });
+            };
+            orbit_arrows.set(orbit_label_id, true);
+        }
+
+        let raw = RawGTransferSystem::new(self.close_orbit_arrows(&orbit_arrows));
+        Ok(GTransferSystem::new(raw, Arc::clone(self)))
+    }
+
+    /// Validates raw relation-orbit data and pairs it with this universe.
+    ///
+    /// The bitvector must have one bit for each non-identity relation orbit and
+    /// must already be closed under the G-transfer-system axioms. Use
+    /// [`GTransferUniverse::generated_by`] when closure should be added.
+    pub fn try_from_raw(
+        self: &Arc<Self>,
+        raw: RawGTransferSystem,
+    ) -> Result<GTransferSystem<A>, GTransferSystemError> {
+        let expected = self.relation_orbit_labels().len();
+        let actual = raw.orbit_arrows().len();
+        if actual != expected {
+            return Err(GTransferSystemError::WrongOrbitCount { expected, actual });
+        }
+        if self.close_orbit_arrows(raw.orbit_arrows()) != *raw.orbit_arrows() {
+            return Err(GTransferSystemError::RawNotClosed);
+        }
+
+        Ok(GTransferSystem::new(raw, Arc::clone(self)))
+    }
+
+    /// Closes a correctly sized orbit bitvector under the G-transfer-system axioms.
+    pub(crate) fn close_orbit_arrows(&self, orbit_arrows: &BitVec) -> BitVec {
+        debug_assert_eq!(orbit_arrows.len(), self.relation_orbit_labels().len());
+        self.context.induce_l(&self.context.induce_r(orbit_arrows))
     }
 
     fn expanded_raw_transfer_system(&self, raw: &RawGTransferSystem) -> RawTransferSystem {
@@ -1077,7 +1221,7 @@ impl<A> GTransferUniverse<A> {
 
 impl<A> GTransferSystem<A> {
     /// Pairs raw G-transfer-system data with its ambient universe.
-    pub fn new(raw: RawGTransferSystem, universe: Arc<GTransferUniverse<A>>) -> Self {
+    pub(crate) fn new(raw: RawGTransferSystem, universe: Arc<GTransferUniverse<A>>) -> Self {
         Self { raw, universe }
     }
 
@@ -1241,6 +1385,16 @@ impl<A> GTransferLattice<A> {
     /// Relabels the raw lattice by user-facing [`GTransferSystem`] values.
     pub fn to_system_lattice(&self) -> Lattice<GTransferSystem<A>> {
         self.lattice
+            .relabelled(|raw| GTransferSystem::new(raw.clone(), Arc::clone(&self.universe)))
+    }
+
+    /// Relabels the underlying containment poset by user-facing
+    /// [`GTransferSystem`] values.
+    ///
+    /// This avoids copying the lattice's meet and join tables when only its
+    /// order is needed.
+    pub fn to_system_poset(&self) -> Poset<GTransferSystem<A>> {
+        self.as_poset()
             .relabelled(|raw| GTransferSystem::new(raw.clone(), Arc::clone(&self.universe)))
     }
 }
@@ -1504,5 +1658,137 @@ fn relation_orbit_error(error: PointOrbitError, relations: &[Edge]) -> GLatticeE
             canonical: relations[canonical],
             target: relations[target],
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    fn diamond_lattice() -> Arc<Lattice<&'static str>> {
+        Arc::new(
+            Lattice::new(
+                Poset::from_edges(
+                    vec!["0", "a", "b", "1"],
+                    [
+                        Edge::new(0, 1),
+                        Edge::new(0, 2),
+                        Edge::new(1, 3),
+                        Edge::new(2, 3),
+                    ],
+                )
+                .expect("the diamond order is a poset"),
+            )
+            .expect("the diamond order is a lattice"),
+        )
+    }
+
+    fn swapping_diamond_action(lattice: Arc<Lattice<&'static str>>) -> GLattice<&'static str> {
+        let group = gap_sys::eval("Group((1,2));").expect("GAP constructs the cyclic group");
+        GLattice::from_generator_images(lattice, &group, vec![vec![0, 2, 1, 3]])
+            .expect("swapping the middle elements is a lattice action")
+    }
+
+    #[test]
+    fn generated_by_validates_relations_and_closes_orbits() {
+        let g_lattice = swapping_diamond_action(diamond_lattice());
+        let universe = g_lattice.transfer_universe();
+
+        let generated = universe
+            .generated_by([Edge::new(0, 3), Edge::new(2, 2), Edge::new(0, 3)])
+            .expect("all generators are lattice relations");
+        assert_eq!(
+            generated.relations(false),
+            EdgeSet::from([Edge::new(0, 1), Edge::new(0, 2), Edge::new(0, 3),])
+        );
+
+        assert_eq!(
+            universe.generated_by([Edge::new(4, 4)]).unwrap_err(),
+            GTransferSystemError::EdgeOutOfBounds {
+                edge: Edge::new(4, 4),
+                lattice_size: 4,
+            }
+        );
+        assert_eq!(
+            universe.generated_by([Edge::new(3, 0)]).unwrap_err(),
+            GTransferSystemError::NotLatticeRelation {
+                edge: Edge::new(3, 0),
+            }
+        );
+    }
+
+    #[test]
+    fn checked_raw_construction_rejects_wrong_width_and_missing_closure() {
+        let g_lattice = swapping_diamond_action(diamond_lattice());
+        let universe = g_lattice.transfer_universe();
+        assert_eq!(universe.relation_orbit_labels().len(), 3);
+
+        let wrong_width = RawGTransferSystem::new(BitVec::repeat(false, 2));
+        assert_eq!(
+            universe.try_from_raw(wrong_width).unwrap_err(),
+            GTransferSystemError::WrongOrbitCount {
+                expected: 3,
+                actual: 2,
+            }
+        );
+
+        let mut missing_closure = BitVec::repeat(false, 3);
+        let bottom_to_top = universe
+            .relation_orbit_label_id(Edge::new(0, 3))
+            .expect("0 < 1 is a proper relation orbit");
+        missing_closure.set(bottom_to_top, true);
+        assert_eq!(
+            universe
+                .try_from_raw(RawGTransferSystem::new(missing_closure))
+                .unwrap_err(),
+            GTransferSystemError::RawNotClosed
+        );
+
+        let generated = universe
+            .generated_by([Edge::new(0, 3)])
+            .expect("the generator is a lattice relation");
+        let checked = universe
+            .try_from_raw(generated.raw().clone())
+            .expect("generated G-transfer systems are closed");
+        assert_eq!(checked.raw(), generated.raw());
+
+        let mut raw_systems = HashSet::new();
+        assert!(raw_systems.insert(checked.raw().clone()));
+        assert!(!raw_systems.insert(generated.raw().clone()));
+    }
+
+    #[test]
+    fn action_and_order_coordinate_identity_survive_derived_views() {
+        let lattice = diamond_lattice();
+        let first_action = swapping_diamond_action(Arc::clone(&lattice));
+        let second_action = swapping_diamond_action(lattice);
+        let first_universe = first_action.transfer_universe();
+        let sibling_universe = first_action.transfer_universe();
+        let independent_universe = second_action.transfer_universe();
+
+        assert!(Arc::ptr_eq(
+            first_universe.action_coordinates(),
+            sibling_universe.action_coordinates()
+        ));
+        assert!(!Arc::ptr_eq(
+            first_universe.action_coordinates(),
+            independent_universe.action_coordinates()
+        ));
+
+        let containment = first_universe
+            .containment_lattice()
+            .expect("G-transfer systems form a containment lattice");
+        let system_poset = containment.to_system_poset();
+        assert!(
+            system_poset.shares_order_coordinates_with(containment.as_poset()),
+            "relabeling should preserve element ids and share the order matrices"
+        );
+        assert!(
+            system_poset
+                .elements()
+                .iter()
+                .all(|system| Arc::ptr_eq(system.universe(), containment.universe()))
+        );
     }
 }

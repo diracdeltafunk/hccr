@@ -1,17 +1,29 @@
-//! Transfer-system maps induced by lattice homomorphisms.
+//! Transfer-system maps induced by monotone maps between finite lattices.
 //!
-//! A lattice homomorphism `f: L -> L'` induces two functions on transfer
-//! systems.  The pushforward sends a transfer system to the transfer-system
-//! closure of its image arrows, while the pullback tests membership after
-//! applying `f`.  Both functions are monotone for containment and form an
-//! adjoint pair.  For the composition-closed order, monotonicity is checked
-//! separately in each direction.
+//! A monotone map `f: L -> L'` induces a pushforward on transfer systems by
+//! taking the transfer-system closure of its image arrows. Its right adjoint
+//! [`crate::transfer_morphism::pullback`] is the greatest transfer system
+//! contained in the raw inverse image. The separate
+//! [`crate::transfer_morphism::generated_inverse_image`] operation instead
+//! takes the least transfer system containing that raw inverse image; it is
+//! generally not right adjoint to pushforward.
 //!
-//! Universes and enumerated orders must reuse the exact `Arc<Lattice<_>>`
-//! stored by the [`crate::morphism::LatticeMap`]. A separately allocated,
-//! structurally equal lattice does not share its element-coordinate identity.
+//! For a meet-preserving map, including every
+//! [`crate::morphism::LatticeMap`], the raw inverse image is already a transfer
+//! system, so the two inverse-image operations agree. For the
+//! composition-closed order, monotonicity is checked separately for every
+//! operation.
+//!
+//! For merely monotone maps, these constructions need not respect
+//! composition: transfer closure at an intermediate lattice can change the
+//! result. They are functorial when the maps are lattice homomorphisms.
+//!
+//! Map endpoints, universes, and enumerated orders must share the same order
+//! coordinates. An independently reconstructed, structurally equal lattice
+//! does not share that concrete presentation identity.
 
-use crate::morphism::{LatticeMap, PosetMap};
+use crate::bitvec_utils::is_subset;
+use crate::morphism::{MonotoneMap, PosetMap};
 use crate::poset::{Edge, ElementId};
 use crate::transfer_lattice::{
     RawTransferSystem, TransferLattice, TransferPoset, TransferSystem, TransferUniverse,
@@ -25,9 +37,9 @@ use std::sync::Arc;
 /// Errors produced while applying or materializing an induced transfer-system map.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransferMapError {
-    /// The input expected to lie over the lattice homomorphism's domain does not.
+    /// The input expected to lie over the monotone map's domain does not.
     DomainMismatch,
-    /// The input expected to lie over the lattice homomorphism's codomain does not.
+    /// The input expected to lie over the monotone map's codomain does not.
     CodomainMismatch,
     /// A proper source relation did not map to an indexed codomain relation.
     InvalidImageRelation {
@@ -40,6 +52,8 @@ pub enum TransferMapError {
     PushforwardImageMissing,
     /// A computed pullback was absent from an enumerated codomain order.
     PullbackImageMissing,
+    /// A computed generated inverse image was absent from an enumerated order.
+    GeneratedInverseImageMissing,
 }
 
 impl fmt::Display for TransferMapError {
@@ -47,11 +61,11 @@ impl fmt::Display for TransferMapError {
         match self {
             TransferMapError::DomainMismatch => write!(
                 formatter,
-                "the supplied transfer-system data does not use the lattice homomorphism's domain"
+                "the supplied transfer-system data does not use the monotone map's domain coordinates"
             ),
             TransferMapError::CodomainMismatch => write!(
                 formatter,
-                "the supplied transfer-system data does not use the lattice homomorphism's codomain"
+                "the supplied transfer-system data does not use the monotone map's codomain coordinates"
             ),
             TransferMapError::InvalidImageRelation { source, image } => write!(
                 formatter,
@@ -65,6 +79,10 @@ impl fmt::Display for TransferMapError {
             TransferMapError::PullbackImageMissing => write!(
                 formatter,
                 "the computed pullback is absent from the enumerated codomain order"
+            ),
+            TransferMapError::GeneratedInverseImageMissing => write!(
+                formatter,
+                "the computed generated inverse image is absent from the enumerated codomain order"
             ),
         }
     }
@@ -124,24 +142,28 @@ impl From<TransferMapError> for CompositionMapError {
     }
 }
 
-/// Computes the pushforward of one transfer system.
+/// Computes the pushforward of one transfer system along a monotone map.
 ///
 /// The supplied codomain universe determines the relation coordinates and
-/// ownership of the result. It must use the same codomain lattice `Arc` as
-/// `homomorphism`. This operation does not enumerate either transfer-system
-/// order.
-pub fn pushforward<A, B>(
-    homomorphism: &LatticeMap<A, B>,
+/// ownership of the result. It must share order coordinates with the map's
+/// codomain. This operation does not enumerate either transfer-system order.
+/// For merely monotone maps it need not commute with composition; it does for
+/// lattice homomorphisms.
+pub fn pushforward<A, B, M>(
+    map: &M,
     system: &TransferSystem<A>,
     codomain: &Arc<TransferUniverse<B>>,
-) -> Result<TransferSystem<B>, TransferMapError> {
-    validate_domain_lattice(homomorphism, system.universe())?;
-    validate_codomain_lattice(homomorphism, codomain)?;
+) -> Result<TransferSystem<B>, TransferMapError>
+where
+    M: MonotoneMap<A, B> + ?Sized,
+{
+    validate_domain_lattice(map, system.universe())?;
+    validate_codomain_lattice(map, codomain)?;
 
     let mut generators = BitVec::repeat(false, codomain.proper_edges().len());
     for source_edge_id in system.raw().arrows().iter_ones() {
         let source = system.universe().proper_edges()[source_edge_id];
-        let image = image_edge(homomorphism, source);
+        let image = image_edge(map, source);
         if image.is_identity() {
             continue;
         }
@@ -155,51 +177,84 @@ pub fn pushforward<A, B>(
     Ok(TransferSystem::new(raw, Arc::clone(codomain)))
 }
 
-/// Computes the pullback of one transfer system.
+/// Computes the right-adjoint pullback of one transfer system.
 ///
-/// The supplied domain universe determines the relation coordinates and
-/// ownership of the result. It must use the same domain lattice `Arc` as
-/// `homomorphism`. This operation does not enumerate either transfer-system
-/// order.
-pub fn pullback<A, B>(
-    homomorphism: &LatticeMap<A, B>,
+/// A relation `x -> y` belongs to the result exactly when, for every `z <= y`,
+/// the relation `f(x /\ z) -> f(z)` belongs to `system`. This is the greatest
+/// transfer system contained in the raw inverse image, and it is right adjoint
+/// to [`pushforward`] under containment.
+///
+/// The supplied domain universe determines the result's coordinates and
+/// ownership and must share order coordinates with the map's domain. This
+/// operation does not enumerate either transfer-system order.
+/// For merely monotone maps it need not commute with composition, despite
+/// being right adjoint for each individual map; it does for lattice
+/// homomorphisms.
+pub fn pullback<A, B, M>(
+    map: &M,
     system: &TransferSystem<B>,
     domain: &Arc<TransferUniverse<A>>,
-) -> Result<TransferSystem<A>, TransferMapError> {
-    validate_codomain_lattice(homomorphism, system.universe())?;
-    validate_domain_lattice(homomorphism, domain)?;
+) -> Result<TransferSystem<A>, TransferMapError>
+where
+    M: MonotoneMap<A, B> + ?Sized,
+{
+    validate_codomain_lattice(map, system.universe())?;
+    validate_domain_lattice(map, domain)?;
 
-    let mut arrows = BitVec::repeat(false, domain.proper_edges().len());
-    for (source_edge_id, source) in domain.proper_edges().iter().copied().enumerate() {
-        let image = image_edge(homomorphism, source);
-        let belongs_to_pullback = if image.is_identity() {
-            true
-        } else {
-            let Some(target_edge_id) = system.universe().relation_index().proper_edge_id(image)
-            else {
-                return Err(TransferMapError::InvalidImageRelation { source, image });
-            };
-            system.raw().arrows()[target_edge_id]
-        };
-        arrows.set(source_edge_id, belongs_to_pullback);
-    }
-    let raw = RawTransferSystem::new(arrows);
+    let raw = if map.is_known_meet_preserving() {
+        pointwise_raw_inverse_image(map, system.raw(), domain, system.universe())?
+    } else {
+        pointwise_right_adjoint(map, system.raw(), domain, system.universe())?
+    };
     debug_assert_eq!(domain.close_arrows(raw.arrows()), raw.arrows().clone());
     Ok(TransferSystem::new(raw, Arc::clone(domain)))
 }
 
-/// Constructs the pushforward poset homomorphism for the containment orders.
+/// Generates a transfer system from the raw inverse image of `system`.
+///
+/// Unlike [`pullback`], this is the least transfer system containing every
+/// relation `x -> y` for which `f(x) -> f(y)` belongs to `system`. It is
+/// containment-monotone but is generally not right adjoint to [`pushforward`].
+/// The two operations agree whenever the map is meet-preserving.
+/// For merely monotone maps this operation need not commute with composition;
+/// it does for lattice homomorphisms.
+pub fn generated_inverse_image<A, B, M>(
+    map: &M,
+    system: &TransferSystem<B>,
+    domain: &Arc<TransferUniverse<A>>,
+) -> Result<TransferSystem<A>, TransferMapError>
+where
+    M: MonotoneMap<A, B> + ?Sized,
+{
+    validate_codomain_lattice(map, system.universe())?;
+    validate_domain_lattice(map, domain)?;
+
+    let inverse_image = pointwise_raw_inverse_image(map, system.raw(), domain, system.universe())?;
+    let raw = if map.is_known_meet_preserving() {
+        inverse_image
+    } else {
+        RawTransferSystem::new(domain.close_arrows(inverse_image.arrows()))
+    };
+    debug_assert_eq!(domain.close_arrows(raw.arrows()), raw.arrows().clone());
+    Ok(TransferSystem::new(raw, Arc::clone(domain)))
+}
+
+/// Constructs the pushforward poset map for the containment orders.
 ///
 /// Together with [`pullback_containment_map`], the returned map is the left
-/// adjoint. Its endpoint labels are user-facing [`TransferSystem`] values.
-pub fn pushforward_containment_map<A, B>(
-    homomorphism: &LatticeMap<A, B>,
+/// adjoint. This materializes [`pushforward`] and inherits its composition
+/// caveat. Its endpoint labels are user-facing [`TransferSystem`] values.
+pub fn pushforward_containment_map<A, B, M>(
+    map: &M,
     domain: &TransferLattice<A>,
     codomain: &TransferLattice<B>,
-) -> Result<PosetMap<TransferSystem<A>, TransferSystem<B>>, TransferMapError> {
-    validate_containment_orders(homomorphism, domain, codomain)?;
+) -> Result<PosetMap<TransferSystem<A>, TransferSystem<B>>, TransferMapError>
+where
+    M: MonotoneMap<A, B> + ?Sized,
+{
+    validate_containment_orders(map, domain, codomain)?;
     let images = materialize_pushforwards(
-        homomorphism,
+        map,
         domain.universe(),
         codomain.universe(),
         domain.raw_lattice().elements(),
@@ -213,20 +268,55 @@ pub fn pushforward_containment_map<A, B>(
     ))
 }
 
-/// Constructs the pullback poset homomorphism for the containment orders.
+/// Constructs the pullback poset map for the containment orders.
 ///
-/// The first order is on the homomorphism's codomain and is therefore the
+/// The first order is on the map's codomain and is therefore the
 /// domain of the returned map. Together with [`pushforward_containment_map`],
 /// the returned map is the right adjoint. Its endpoint labels are user-facing
-/// [`TransferSystem`] values.
-pub fn pullback_containment_map<A, B>(
-    homomorphism: &LatticeMap<A, B>,
+/// [`TransferSystem`] values. This materializes [`pullback`] and inherits its
+/// composition caveat.
+pub fn pullback_containment_map<A, B, M>(
+    map: &M,
     codomain: &TransferLattice<B>,
     domain: &TransferLattice<A>,
-) -> Result<PosetMap<TransferSystem<B>, TransferSystem<A>>, TransferMapError> {
-    validate_containment_orders(homomorphism, domain, codomain)?;
+) -> Result<PosetMap<TransferSystem<B>, TransferSystem<A>>, TransferMapError>
+where
+    M: MonotoneMap<A, B> + ?Sized,
+{
+    validate_containment_orders(map, domain, codomain)?;
     let images = materialize_pullbacks(
-        homomorphism,
+        map,
+        domain.universe(),
+        codomain.universe(),
+        codomain.raw_lattice().elements(),
+        domain.raw_lattice().elements(),
+    )?;
+
+    Ok(PosetMap::from_validated(
+        Arc::new(codomain.to_system_poset()),
+        Arc::new(domain.to_system_poset()),
+        images,
+    ))
+}
+
+/// Constructs the generated inverse-image map for the containment orders.
+///
+/// The first order is on the monotone map's codomain and is therefore the
+/// domain of the returned map. This operation is always containment-monotone,
+/// but unlike [`pullback_containment_map`] it is not generally right adjoint to
+/// [`pushforward_containment_map`]. It materializes
+/// [`generated_inverse_image`] and inherits its composition caveat.
+pub fn generated_inverse_image_containment_map<A, B, M>(
+    map: &M,
+    codomain: &TransferLattice<B>,
+    domain: &TransferLattice<A>,
+) -> Result<PosetMap<TransferSystem<B>, TransferSystem<A>>, TransferMapError>
+where
+    M: MonotoneMap<A, B> + ?Sized,
+{
+    validate_containment_orders(map, domain, codomain)?;
+    let images = materialize_generated_inverse_images(
+        map,
         domain.universe(),
         codomain.universe(),
         codomain.raw_lattice().elements(),
@@ -245,14 +335,18 @@ pub fn pullback_containment_map<A, B>(
 /// Failure includes a source cover whose images are not comparable and an
 /// unsplittable target square witnessing the failure. Every source cover is
 /// checked, so success is equivalent to monotonicity, not a heuristic.
-pub fn try_pushforward_composition_map<A, B>(
-    homomorphism: &LatticeMap<A, B>,
+/// This materializes [`pushforward`] and inherits its composition caveat.
+pub fn try_pushforward_composition_map<A, B, M>(
+    map: &M,
     domain: &TransferPoset<A>,
     codomain: &TransferPoset<B>,
-) -> Result<PosetMap<TransferSystem<A>, TransferSystem<B>>, CompositionMapError> {
-    validate_composition_orders(homomorphism, domain, codomain)?;
+) -> Result<PosetMap<TransferSystem<A>, TransferSystem<B>>, CompositionMapError>
+where
+    M: MonotoneMap<A, B> + ?Sized,
+{
+    validate_composition_orders(map, domain, codomain)?;
     let images = materialize_pushforwards(
-        homomorphism,
+        map,
         domain.universe(),
         codomain.universe(),
         domain.raw_poset().elements(),
@@ -269,17 +363,21 @@ pub fn try_pushforward_composition_map<A, B>(
 
 /// Attempts to construct the pullback map for the composition-closed orders.
 ///
-/// The first order is on the homomorphism's codomain and is therefore the
+/// The first order is on the map's codomain and is therefore the
 /// domain of the returned map. Every source cover is checked, so success is
 /// equivalent to monotonicity, not a heuristic.
-pub fn try_pullback_composition_map<A, B>(
-    homomorphism: &LatticeMap<A, B>,
+/// This materializes [`pullback`] and inherits its composition caveat.
+pub fn try_pullback_composition_map<A, B, M>(
+    map: &M,
     codomain: &TransferPoset<B>,
     domain: &TransferPoset<A>,
-) -> Result<PosetMap<TransferSystem<B>, TransferSystem<A>>, CompositionMapError> {
-    validate_composition_orders(homomorphism, domain, codomain)?;
+) -> Result<PosetMap<TransferSystem<B>, TransferSystem<A>>, CompositionMapError>
+where
+    M: MonotoneMap<A, B> + ?Sized,
+{
+    validate_composition_orders(map, domain, codomain)?;
     let images = materialize_pullbacks(
-        homomorphism,
+        map,
         domain.universe(),
         codomain.universe(),
         codomain.raw_poset().elements(),
@@ -294,21 +392,60 @@ pub fn try_pullback_composition_map<A, B>(
     ))
 }
 
-fn image_edge<A, B>(homomorphism: &LatticeMap<A, B>, edge: Edge) -> Edge {
-    Edge::new(homomorphism.map()[edge.from], homomorphism.map()[edge.to])
+/// Attempts to construct the generated inverse-image map for the
+/// composition-closed orders.
+///
+/// The first order is on the monotone map's codomain and is therefore the
+/// domain of the returned map. Every source cover is checked, so success is
+/// equivalent to monotonicity, not a heuristic.
+/// This materializes [`generated_inverse_image`] and inherits its composition
+/// caveat.
+pub fn try_generated_inverse_image_composition_map<A, B, M>(
+    map: &M,
+    codomain: &TransferPoset<B>,
+    domain: &TransferPoset<A>,
+) -> Result<PosetMap<TransferSystem<B>, TransferSystem<A>>, CompositionMapError>
+where
+    M: MonotoneMap<A, B> + ?Sized,
+{
+    validate_composition_orders(map, domain, codomain)?;
+    let images = materialize_generated_inverse_images(
+        map,
+        domain.universe(),
+        codomain.universe(),
+        codomain.raw_poset().elements(),
+        domain.raw_poset().elements(),
+    )?;
+    validate_composition_images(codomain, domain, &images)?;
+
+    Ok(PosetMap::from_validated(
+        Arc::new(codomain.to_system_poset()),
+        Arc::new(domain.to_system_poset()),
+        images,
+    ))
 }
 
-fn edge_images<A, B>(
-    homomorphism: &LatticeMap<A, B>,
+fn image_edge<A, B, M>(map: &M, edge: Edge) -> Edge
+where
+    M: MonotoneMap<A, B> + ?Sized,
+{
+    Edge::new(map.images()[edge.from], map.images()[edge.to])
+}
+
+fn edge_images<A, B, M>(
+    map: &M,
     domain: &TransferUniverse<A>,
     codomain: &TransferUniverse<B>,
-) -> Result<Vec<Option<usize>>, TransferMapError> {
+) -> Result<Vec<Option<usize>>, TransferMapError>
+where
+    M: MonotoneMap<A, B> + ?Sized,
+{
     domain
         .proper_edges()
         .iter()
         .copied()
         .map(|source| {
-            let image = image_edge(homomorphism, source);
+            let image = image_edge(map, source);
             if image.is_identity() {
                 Ok(None)
             } else {
@@ -322,7 +459,75 @@ fn edge_images<A, B>(
         .collect()
 }
 
-fn pullback_raw<A>(
+fn pointwise_raw_inverse_image<A, B, M>(
+    map: &M,
+    source: &RawTransferSystem,
+    domain: &TransferUniverse<A>,
+    codomain: &TransferUniverse<B>,
+) -> Result<RawTransferSystem, TransferMapError>
+where
+    M: MonotoneMap<A, B> + ?Sized,
+{
+    let mut arrows = BitVec::repeat(false, domain.proper_edges().len());
+    for (source_edge_id, source_edge) in domain.proper_edges().iter().copied().enumerate() {
+        let image = image_edge(map, source_edge);
+        let belongs = if image.is_identity() {
+            true
+        } else {
+            let Some(target_edge_id) = codomain.relation_index().proper_edge_id(image) else {
+                return Err(TransferMapError::InvalidImageRelation {
+                    source: source_edge,
+                    image,
+                });
+            };
+            source.arrows()[target_edge_id]
+        };
+        arrows.set(source_edge_id, belongs);
+    }
+    Ok(RawTransferSystem::new(arrows))
+}
+
+fn pointwise_right_adjoint<A, B, M>(
+    map: &M,
+    source: &RawTransferSystem,
+    domain: &TransferUniverse<A>,
+    codomain: &TransferUniverse<B>,
+) -> Result<RawTransferSystem, TransferMapError>
+where
+    M: MonotoneMap<A, B> + ?Sized,
+{
+    let lattice = domain.lattice();
+    let mut arrows = BitVec::repeat(false, domain.proper_edges().len());
+
+    for (source_edge_id, edge) in domain.proper_edges().iter().copied().enumerate() {
+        let mut belongs = true;
+        for restriction_target in
+            lattice.as_poset().relation_matrix_transpose()[edge.to].iter_ones()
+        {
+            let restriction_source = lattice.meet_id(edge.from, restriction_target);
+            let restricted = Edge::new(restriction_source, restriction_target);
+            let image = image_edge(map, restricted);
+            if image.is_identity() {
+                continue;
+            }
+            let Some(target_edge_id) = codomain.relation_index().proper_edge_id(image) else {
+                return Err(TransferMapError::InvalidImageRelation {
+                    source: restricted,
+                    image,
+                });
+            };
+            if !source.arrows()[target_edge_id] {
+                belongs = false;
+                break;
+            }
+        }
+        arrows.set(source_edge_id, belongs);
+    }
+
+    Ok(RawTransferSystem::new(arrows))
+}
+
+fn raw_inverse_image<A>(
     source: &RawTransferSystem,
     domain: &TransferUniverse<A>,
     edge_images: &[Option<usize>],
@@ -336,14 +541,68 @@ fn pullback_raw<A>(
     RawTransferSystem::new(arrows)
 }
 
-fn materialize_pushforwards<A, B>(
-    homomorphism: &LatticeMap<A, B>,
+fn pullback_requirements<A, B, M>(
+    map: &M,
+    domain: &TransferUniverse<A>,
+    codomain: &TransferUniverse<B>,
+) -> Result<Vec<BitVec>, TransferMapError>
+where
+    M: MonotoneMap<A, B> + ?Sized,
+{
+    let lattice = domain.lattice();
+    domain
+        .proper_edges()
+        .iter()
+        .copied()
+        .map(|source| {
+            let mut requirements = BitVec::repeat(false, codomain.proper_edges().len());
+            for restriction_target in
+                lattice.as_poset().relation_matrix_transpose()[source.to].iter_ones()
+            {
+                let restriction_source = lattice.meet_id(source.from, restriction_target);
+                let restricted = Edge::new(restriction_source, restriction_target);
+                let image = image_edge(map, restricted);
+                if image.is_identity() {
+                    continue;
+                }
+                let Some(target_edge_id) = codomain.relation_index().proper_edge_id(image) else {
+                    return Err(TransferMapError::InvalidImageRelation {
+                        source: restricted,
+                        image,
+                    });
+                };
+                requirements.set(target_edge_id, true);
+            }
+            Ok(requirements)
+        })
+        .collect()
+}
+
+fn right_adjoint_raw<A>(
+    source: &RawTransferSystem,
+    domain: &TransferUniverse<A>,
+    requirements: &[BitVec],
+) -> RawTransferSystem {
+    let mut arrows = BitVec::repeat(false, domain.proper_edges().len());
+    for (source_edge_id, required_arrows) in requirements.iter().enumerate() {
+        if is_subset(required_arrows, source.arrows()) {
+            arrows.set(source_edge_id, true);
+        }
+    }
+    RawTransferSystem::new(arrows)
+}
+
+fn materialize_pushforwards<A, B, M>(
+    map: &M,
     domain: &TransferUniverse<A>,
     codomain: &TransferUniverse<B>,
     source_systems: &[RawTransferSystem],
     target_systems: &[RawTransferSystem],
-) -> Result<Vec<ElementId>, TransferMapError> {
-    let edge_images = edge_images(homomorphism, domain, codomain)?;
+) -> Result<Vec<ElementId>, TransferMapError>
+where
+    M: MonotoneMap<A, B> + ?Sized,
+{
+    let edge_images = edge_images(map, domain, codomain)?;
     let target_ids = target_system_ids(target_systems);
     let mut closure_cache = HashMap::<BitVec, RawTransferSystem>::new();
     let mut result = Vec::with_capacity(source_systems.len());
@@ -368,23 +627,74 @@ fn materialize_pushforwards<A, B>(
     Ok(result)
 }
 
-fn materialize_pullbacks<A, B>(
-    homomorphism: &LatticeMap<A, B>,
+fn materialize_pullbacks<A, B, M>(
+    map: &M,
     domain: &TransferUniverse<A>,
     codomain: &TransferUniverse<B>,
     source_systems: &[RawTransferSystem],
     target_systems: &[RawTransferSystem],
-) -> Result<Vec<ElementId>, TransferMapError> {
-    let edge_images = edge_images(homomorphism, domain, codomain)?;
+) -> Result<Vec<ElementId>, TransferMapError>
+where
+    M: MonotoneMap<A, B> + ?Sized,
+{
     let target_ids = target_system_ids(target_systems);
+    let edge_images = map
+        .is_known_meet_preserving()
+        .then(|| edge_images(map, domain, codomain))
+        .transpose()?;
+    let requirements = edge_images
+        .is_none()
+        .then(|| pullback_requirements(map, domain, codomain))
+        .transpose()?;
+
     source_systems
         .iter()
         .map(|source| {
-            let image = pullback_raw(source, domain, &edge_images);
+            let image = match (&edge_images, &requirements) {
+                (Some(edge_images), None) => raw_inverse_image(source, domain, edge_images),
+                (None, Some(requirements)) => right_adjoint_raw(source, domain, requirements),
+                _ => unreachable!("exactly one pullback strategy is selected"),
+            };
             target_ids
                 .get(&image)
                 .copied()
                 .ok_or(TransferMapError::PullbackImageMissing)
+        })
+        .collect()
+}
+
+fn materialize_generated_inverse_images<A, B, M>(
+    map: &M,
+    domain: &TransferUniverse<A>,
+    codomain: &TransferUniverse<B>,
+    source_systems: &[RawTransferSystem],
+    target_systems: &[RawTransferSystem],
+) -> Result<Vec<ElementId>, TransferMapError>
+where
+    M: MonotoneMap<A, B> + ?Sized,
+{
+    let edge_images = edge_images(map, domain, codomain)?;
+    let target_ids = target_system_ids(target_systems);
+    let mut closure_cache = HashMap::<RawTransferSystem, RawTransferSystem>::new();
+    let raw_inverse_is_closed = map.is_known_meet_preserving();
+
+    source_systems
+        .iter()
+        .map(|source| {
+            let inverse_image = raw_inverse_image(source, domain, &edge_images);
+            let image = if raw_inverse_is_closed {
+                &inverse_image
+            } else {
+                closure_cache
+                    .entry(inverse_image.clone())
+                    .or_insert_with(|| {
+                        RawTransferSystem::new(domain.close_arrows(inverse_image.arrows()))
+                    })
+            };
+            target_ids
+                .get(image)
+                .copied()
+                .ok_or(TransferMapError::GeneratedInverseImageMissing)
         })
         .collect()
 }
@@ -432,42 +742,60 @@ fn validate_composition_images<A, B>(
     Ok(())
 }
 
-fn validate_domain_lattice<A, B>(
-    homomorphism: &LatticeMap<A, B>,
+fn validate_domain_lattice<A, B, M>(
+    map: &M,
     universe: &TransferUniverse<A>,
-) -> Result<(), TransferMapError> {
-    if Arc::ptr_eq(homomorphism.domain(), universe.lattice()) {
+) -> Result<(), TransferMapError>
+where
+    M: MonotoneMap<A, B> + ?Sized,
+{
+    if map
+        .domain_poset()
+        .shares_order_coordinates_with(universe.lattice().as_poset())
+    {
         Ok(())
     } else {
         Err(TransferMapError::DomainMismatch)
     }
 }
 
-fn validate_codomain_lattice<A, B>(
-    homomorphism: &LatticeMap<A, B>,
+fn validate_codomain_lattice<A, B, M>(
+    map: &M,
     universe: &TransferUniverse<B>,
-) -> Result<(), TransferMapError> {
-    if Arc::ptr_eq(homomorphism.codomain(), universe.lattice()) {
+) -> Result<(), TransferMapError>
+where
+    M: MonotoneMap<A, B> + ?Sized,
+{
+    if map
+        .codomain_poset()
+        .shares_order_coordinates_with(universe.lattice().as_poset())
+    {
         Ok(())
     } else {
         Err(TransferMapError::CodomainMismatch)
     }
 }
 
-fn validate_containment_orders<A, B>(
-    homomorphism: &LatticeMap<A, B>,
+fn validate_containment_orders<A, B, M>(
+    map: &M,
     domain: &TransferLattice<A>,
     codomain: &TransferLattice<B>,
-) -> Result<(), TransferMapError> {
-    validate_domain_lattice(homomorphism, domain.universe())?;
-    validate_codomain_lattice(homomorphism, codomain.universe())
+) -> Result<(), TransferMapError>
+where
+    M: MonotoneMap<A, B> + ?Sized,
+{
+    validate_domain_lattice(map, domain.universe())?;
+    validate_codomain_lattice(map, codomain.universe())
 }
 
-fn validate_composition_orders<A, B>(
-    homomorphism: &LatticeMap<A, B>,
+fn validate_composition_orders<A, B, M>(
+    map: &M,
     domain: &TransferPoset<A>,
     codomain: &TransferPoset<B>,
-) -> Result<(), TransferMapError> {
-    validate_domain_lattice(homomorphism, domain.universe())?;
-    validate_codomain_lattice(homomorphism, codomain.universe())
+) -> Result<(), TransferMapError>
+where
+    M: MonotoneMap<A, B> + ?Sized,
+{
+    validate_domain_lattice(map, domain.universe())?;
+    validate_codomain_lattice(map, codomain.universe())
 }

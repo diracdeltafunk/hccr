@@ -135,6 +135,40 @@ impl From<PosetMapError> for LatticeMapError {
     }
 }
 
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// Read-only access to the data defining a monotone map of finite posets.
+///
+/// Both [`PosetMap`] and [`LatticeMap`] implement this trait, so algorithms
+/// that require only monotonicity can accept either kind of map without
+/// discarding the stronger lattice structure. This trait is sealed; construct
+/// one of those validated map types rather than implementing it directly.
+pub trait MonotoneMap<A, B>: sealed::Sealed {
+    /// Returns the domain's underlying poset.
+    fn domain_poset(&self) -> &Poset<A>;
+
+    /// Returns the codomain's underlying poset.
+    fn codomain_poset(&self) -> &Poset<B>;
+
+    /// Returns the image vector of the underlying function.
+    ///
+    /// Entry `i` is the element id to which domain element `i` is sent.
+    fn images(&self) -> &[ElementId];
+
+    /// Reports whether this map is guaranteed to preserve every binary meet.
+    ///
+    /// This is a conservative optimization capability: algorithms may use a
+    /// faster path whose correctness depends on meet preservation when this
+    /// method returns `true`. Implementations must therefore return `true`
+    /// only when they guarantee that property. The default makes no such
+    /// guarantee.
+    fn is_known_meet_preserving(&self) -> bool {
+        false
+    }
+}
+
 /// A monotone map between finite posets.
 ///
 /// The domain and codomain are reference-counted so maps can be returned
@@ -163,6 +197,28 @@ impl<A, B> PosetMap<A, B> {
             codomain,
             map,
         })
+    }
+
+    /// Constructs a monotone map between the underlying posets of two lattices.
+    ///
+    /// The endpoint labels are cloned, while their immutable dense order
+    /// matrices remain shared with the lattices. This lets algorithms retain
+    /// the lattices' element-coordinate identity without copying quadratic
+    /// relation data.
+    pub fn between_lattices(
+        domain: &Lattice<A>,
+        codomain: &Lattice<B>,
+        map: Vec<ElementId>,
+    ) -> Result<Self, PosetMapError>
+    where
+        A: Clone,
+        B: Clone,
+    {
+        Self::new(
+            Arc::new(domain.as_poset().clone()),
+            Arc::new(codomain.as_poset().clone()),
+            map,
+        )
     }
 
     /// Returns the domain poset.
@@ -200,6 +256,22 @@ impl<A, B> PosetMap<A, B> {
             codomain,
             map,
         }
+    }
+}
+
+impl<A, B> sealed::Sealed for PosetMap<A, B> {}
+
+impl<A, B> MonotoneMap<A, B> for PosetMap<A, B> {
+    fn domain_poset(&self) -> &Poset<A> {
+        self.domain.as_ref()
+    }
+
+    fn codomain_poset(&self) -> &Poset<B> {
+        self.codomain.as_ref()
+    }
+
+    fn images(&self) -> &[ElementId] {
+        &self.map
     }
 }
 
@@ -304,6 +376,26 @@ impl<A, B> LatticeMap<A, B> {
     }
 }
 
+impl<A, B> sealed::Sealed for LatticeMap<A, B> {}
+
+impl<A, B> MonotoneMap<A, B> for LatticeMap<A, B> {
+    fn domain_poset(&self) -> &Poset<A> {
+        self.domain.as_poset()
+    }
+
+    fn codomain_poset(&self) -> &Poset<B> {
+        self.codomain.as_poset()
+    }
+
+    fn images(&self) -> &[ElementId] {
+        &self.map
+    }
+
+    fn is_known_meet_preserving(&self) -> bool {
+        true
+    }
+}
+
 fn validate_poset_map<A, B>(
     domain: &Poset<A>,
     codomain: &Poset<B>,
@@ -337,4 +429,48 @@ fn validate_poset_map<A, B>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_monotone_map_view<M>(map: &M, expected_images: &[ElementId])
+    where
+        M: MonotoneMap<usize, usize>,
+    {
+        assert_eq!(map.domain_poset().size(), expected_images.len());
+        assert_eq!(map.images(), expected_images);
+    }
+
+    #[test]
+    fn constructs_poset_maps_between_lattice_presentations() {
+        let domain = Lattice::chain(2).expect("a finite chain is a lattice");
+        let codomain = Lattice::chain(1).expect("a finite chain is a lattice");
+        let map = PosetMap::between_lattices(&domain, &codomain, vec![0, 0, 1])
+            .expect("the supplied map is monotone");
+
+        assert!(
+            map.domain()
+                .shares_order_coordinates_with(domain.as_poset())
+        );
+        assert!(
+            map.codomain()
+                .shares_order_coordinates_with(codomain.as_poset())
+        );
+        assert_monotone_map_view(&map, &[0, 0, 1]);
+        assert!(!map.is_known_meet_preserving());
+    }
+
+    #[test]
+    fn lattice_maps_have_a_monotone_map_view() {
+        let lattice = Arc::new(Lattice::chain(1).expect("a finite chain is a lattice"));
+        let identity = LatticeMap::new(Arc::clone(&lattice), Arc::clone(&lattice), vec![0, 1])
+            .expect("the identity is a lattice homomorphism");
+
+        assert_monotone_map_view(&identity, &[0, 1]);
+        assert!(Arc::ptr_eq(identity.domain(), &lattice));
+        assert!(Arc::ptr_eq(identity.codomain(), &lattice));
+        assert!(identity.is_known_meet_preserving());
+    }
 }

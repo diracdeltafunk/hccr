@@ -38,3 +38,11 @@ pub mod transfer_morphism;
 /// GAP-backed finite group actions on lattices and G-equivariant transfer
 /// systems.
 pub mod g_lattice;
+
+#[cfg(feature = "groups")]
+/// GAP-backed maps between subgroup lattices induced by group homomorphisms.
+pub mod subgroup_morphism;
+
+#[cfg(feature = "groups")]
+/// Pushforwards and right-adjoint pullbacks of equivariant transfer systems.
+pub mod g_transfer_morphism;

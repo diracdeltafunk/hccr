@@ -9,6 +9,7 @@
 use bitvec::prelude::*;
 use gap_sys::{Gap, GapValue, GlobalGapGuard};
 use std::collections::VecDeque;
+use std::fmt;
 
 /// A label for a subgroup in GAP's subgroup-lattice enumeration.
 ///
@@ -39,6 +40,21 @@ pub(crate) struct SubgroupLatticeData {
     pub(crate) conjugation_generator_images: Vec<Vec<usize>>,
 }
 
+/// GAP-computed maps between two enumerated subgroup lattices.
+pub(crate) struct SubgroupMapsData {
+    pub(crate) image_map: Vec<usize>,
+    pub(crate) preimage_map: Vec<usize>,
+    pub(crate) is_injective: bool,
+    pub(crate) is_surjective: bool,
+}
+
+/// Borrowed GAP data for one enumerated subgroup-lattice endpoint.
+pub(crate) struct SubgroupLatticeView<'a> {
+    pub(crate) group: &'a GapValue,
+    pub(crate) subgroups: &'a [GapValue],
+    pub(crate) subgroup_list: &'a GapValue,
+}
+
 /// Orbits and orbit membership for a finite permutation action.
 pub(crate) struct PointOrbits {
     pub(crate) point_to_orbit: Vec<usize>,
@@ -64,6 +80,14 @@ pub(crate) enum GroupTheoryError {
     Gap(String),
     GroupIsNotFinite,
     NotAGroupHomomorphism,
+    HomomorphismSourceMismatch,
+    HomomorphismRangeMismatch,
+    SubgroupImageNotFound {
+        subgroup: usize,
+    },
+    SubgroupPreimageNotFound {
+        subgroup: usize,
+    },
     GeneratorCountMismatch {
         expected: usize,
         actual: usize,
@@ -97,6 +121,71 @@ pub(crate) enum PointOrbitError {
     Group(GroupTheoryError),
     MissingTransporter { canonical: usize, target: usize },
     MissingPreimage { canonical: usize, target: usize },
+}
+
+impl fmt::Display for GroupTheoryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Gap(error) => write!(f, "{error}"),
+            Self::GroupIsNotFinite => write!(f, "group is not finite"),
+            Self::NotAGroupHomomorphism => write!(f, "GAP object is not a group homomorphism"),
+            Self::HomomorphismSourceMismatch => {
+                write!(f, "group homomorphism has the wrong source")
+            }
+            Self::HomomorphismRangeMismatch => {
+                write!(f, "group homomorphism has the wrong range")
+            }
+            Self::SubgroupImageNotFound { subgroup } => write!(
+                f,
+                "GAP did not find the image of subgroup {subgroup} in the codomain subgroup list"
+            ),
+            Self::SubgroupPreimageNotFound { subgroup } => write!(
+                f,
+                "GAP did not find the preimage of subgroup {subgroup} in the domain subgroup list"
+            ),
+            Self::GeneratorCountMismatch { expected, actual } => {
+                write!(f, "received {actual} generator images, expected {expected}")
+            }
+            Self::WrongPermutationLength {
+                generator,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "generator image {generator} has length {actual}, expected {expected}"
+            ),
+            Self::PermutationImageOutOfBounds {
+                generator,
+                element,
+                image,
+                len,
+            } => write!(
+                f,
+                "generator image {generator} sends element {element} to {image}, out of bounds for {len} elements"
+            ),
+            Self::DuplicatePermutationImage {
+                generator,
+                first_element,
+                second_element,
+                image,
+            } => write!(
+                f,
+                "generator image {generator} sends both {first_element} and {second_element} to {image}"
+            ),
+            Self::HomomorphismByImagesFailed => {
+                write!(f, "GAP could not construct the group homomorphism")
+            }
+            Self::SubgroupConjugateNotFound {
+                generator,
+                subgroup,
+            } => write!(
+                f,
+                "GAP did not find the conjugate of subgroup class {}, element {} under generator {generator}",
+                subgroup.conjugacy_class(),
+                subgroup.class_element()
+            ),
+        }
+    }
 }
 
 impl GapSubgroup {
@@ -155,6 +244,77 @@ pub(crate) fn validate_group_homomorphism(
     } else {
         Err(GroupTheoryError::NotAGroupHomomorphism)
     }
+}
+
+/// Computes image and inverse-image maps in the stored subgroup coordinates.
+///
+/// Source and range are checked by GAP object identity. This deliberately
+/// rejects a homomorphism built from separately constructed (even isomorphic
+/// or equal) group objects: the subgroup lists and conjugation actions retained
+/// by `SubgroupGLattice` belong to the concrete endpoint objects supplied by
+/// the caller.
+pub(crate) fn subgroup_maps_data(
+    gap: &mut Gap,
+    homomorphism: &GapValue,
+    domain: SubgroupLatticeView<'_>,
+    codomain: SubgroupLatticeView<'_>,
+) -> Result<SubgroupMapsData, GroupTheoryError> {
+    validate_group_homomorphism(gap, homomorphism)?;
+
+    let source = call_global(gap, "Source", &[homomorphism])?;
+    let source_matches = call_global(gap, "IsIdenticalObj", &[&source, domain.group])?;
+    if !boolean(gap, &source_matches)? {
+        return Err(GroupTheoryError::HomomorphismSourceMismatch);
+    }
+
+    let range = call_global(gap, "Range", &[homomorphism])?;
+    let range_matches = call_global(gap, "IsIdenticalObj", &[&range, codomain.group])?;
+    if !boolean(gap, &range_matches)? {
+        return Err(GroupTheoryError::HomomorphismRangeMismatch);
+    }
+
+    let image_map = domain
+        .subgroups
+        .iter()
+        .enumerate()
+        .map(|(subgroup, domain_subgroup)| {
+            let image = call_global(gap, "Image", &[homomorphism, domain_subgroup])?;
+            let position = call_global(gap, "Position", &[codomain.subgroup_list, &image])?;
+            subgroup_position(gap, &position)?
+                .ok_or(GroupTheoryError::SubgroupImageNotFound { subgroup })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // GAP's `PreImage(mapping, subgroup)` requires `subgroup` to lie inside
+    // `Image(mapping)`. Mathematically f^{-1}(B) = f^{-1}(B intersect im(f)),
+    // so intersect first to handle nonsurjective homomorphisms.
+    let homomorphism_image = call_global(gap, "Image", &[homomorphism])?;
+    let preimage_map = codomain
+        .subgroups
+        .iter()
+        .enumerate()
+        .map(|(subgroup, codomain_subgroup)| {
+            let subgroup_in_image = call_global(
+                gap,
+                "Intersection",
+                &[codomain_subgroup, &homomorphism_image],
+            )?;
+            let preimage = call_global(gap, "PreImage", &[homomorphism, &subgroup_in_image])?;
+            let position = call_global(gap, "Position", &[domain.subgroup_list, &preimage])?;
+            subgroup_position(gap, &position)?
+                .ok_or(GroupTheoryError::SubgroupPreimageNotFound { subgroup })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let is_injective = call_global(gap, "IsInjective", &[homomorphism])?;
+    let is_surjective = call_global(gap, "IsSurjective", &[homomorphism])?;
+
+    Ok(SubgroupMapsData {
+        image_map,
+        preimage_map,
+        is_injective: boolean(gap, &is_injective)?,
+        is_surjective: boolean(gap, &is_surjective)?,
+    })
 }
 
 pub(crate) fn generators_of_group(
@@ -538,6 +698,16 @@ fn get_list_elem(gap: &mut Gap, list: &GapValue, idx: usize) -> Result<GapValue,
 
 fn integer_usize(gap: &mut Gap, element: &GapValue) -> Result<usize, GroupTheoryError> {
     gap.to_usize(element).map_err(gap_error)
+}
+
+fn subgroup_position(
+    gap: &mut Gap,
+    position: &GapValue,
+) -> Result<Option<usize>, GroupTheoryError> {
+    if gap.is_fail(position) {
+        return Ok(None);
+    }
+    Ok(integer_usize(gap, position)?.checked_sub(1))
 }
 
 fn boolean(gap: &mut Gap, element: &GapValue) -> Result<bool, GroupTheoryError> {

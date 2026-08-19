@@ -1,8 +1,9 @@
 use hccr::lattice::Lattice;
-use hccr::morphism::LatticeMap;
+use hccr::morphism::{LatticeMap, PosetMap};
 use hccr::poset::Edge;
 use hccr::transfer_morphism::{
-    pullback, pullback_containment_map, pushforward, pushforward_containment_map,
+    generated_inverse_image, pullback, pullback_containment_map, pushforward,
+    pushforward_containment_map,
 };
 use std::sync::Arc;
 
@@ -46,6 +47,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
     }
+
+    // A merely monotone map uses the same API. Here the atoms and top of B2
+    // all map to the top of C2, so the map does not preserve meets.
+    let b2 = Arc::new(Lattice::boolean(2)?);
+    let monotone = PosetMap::between_lattices(&b2, &c2, vec![0, 1, 1, 1])?;
+    let b2_transfers = Arc::clone(&b2).transfer_universe();
+    let target_bottom = c2_transfers.generated_by(std::iter::empty::<Edge>())?;
+
+    // `pullback` is the greatest transfer system inside the raw inverse image
+    // and remains right adjoint to pushforward.
+    let right_adjoint = pullback(&monotone, &target_bottom, &b2_transfers)?;
+    assert!(right_adjoint.edges(false).is_empty());
+
+    // The separately named operation closes above the raw inverse image.
+    let generated = generated_inverse_image(&monotone, &target_bottom, &b2_transfers)?;
+    assert_eq!(generated.edges(false).len(), 5);
 
     Ok(())
 }
