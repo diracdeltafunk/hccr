@@ -470,11 +470,3 @@ fn selected_cover_relations(
         })
         .collect()
 }
-
-#[cfg(test)]
-pub(in crate::tikz) fn small_transfer_system_picture<A>(
-    system: &TransferSystem<A>,
-    options: &TransferSystemGlyphOptions,
-) -> TikzPicture {
-    SuborderGlyphRenderer::new(system.lattice().as_ref(), options).render_transfer_system(system)
-}

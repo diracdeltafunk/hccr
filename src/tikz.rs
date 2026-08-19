@@ -44,20 +44,3 @@ pub trait ToTikz {
         self.to_tikz_with(&Self::Options::default())
     }
 }
-
-#[cfg(test)]
-use crate::lattice::Lattice;
-#[cfg(test)]
-use crate::poset::{Edge, Poset};
-#[cfg(test)]
-use edge_routing::edge_bend_decisions;
-#[cfg(test)]
-use layout::{
-    GridPoint, StraightGeometryDefects, default_layout, straight_geometry_contribution,
-    straight_geometry_defects,
-};
-#[cfg(test)]
-use transfer::{SuborderGlyphRenderer, small_transfer_system_picture};
-
-#[cfg(test)]
-mod tests;

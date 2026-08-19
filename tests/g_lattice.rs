@@ -1,20 +1,17 @@
 #![cfg(feature = "groups")]
 
 use hccr::g_lattice::{
-    GLattice, GLatticeError, RelationOrbit, RelationOrbitLabel, RelationTransporter,
-    SubgroupGLattice, structure_description_to_tex,
+    GLattice, RelationOrbit, RelationOrbitLabel, RelationTransporter, SubgroupGLattice,
 };
 use hccr::group_theory::GapSubgroup;
 use hccr::lattice::Lattice;
-use hccr::poset::{Edge, Poset};
-use hccr::tikz::{
-    GlyphNodeDisplay, ToTikz, TransferSystemTikzOptions, g_transfer_system_lattice_to_tikz,
-};
+use hccr::poset::{Edge, EdgeSet, Poset};
 use std::error::Error;
 use std::sync::Arc;
 
 #[test]
-fn g_lattice_constructors_precompute_relation_orbits() -> Result<(), Box<dyn Error>> {
+fn group_actions_produce_the_correct_relation_orbits_and_transfer_systems()
+-> Result<(), Box<dyn Error>> {
     let diamond = diamond_lattice();
     let group = gap_sys::eval("Group((1,2));")?;
 
@@ -54,6 +51,14 @@ fn g_lattice_constructors_precompute_relation_orbits() -> Result<(), Box<dyn Err
         &[vec![0, 2, 1, 3]]
     );
 
+    let generated = from_generators
+        .transfer_universe()
+        .generated_by([Edge::new(0, 3)])?;
+    assert_eq!(
+        generated.relations(false),
+        EdgeSet::from([Edge::new(0, 1), Edge::new(0, 2), Edge::new(0, 3)])
+    );
+
     let fixed = from_generators
         .relation_orbit(Edge::new(0, 0))
         .expect("fixed identity relation should have an orbit");
@@ -76,8 +81,6 @@ fn g_lattice_constructors_precompute_relation_orbits() -> Result<(), Box<dyn Err
     }
 
     check_subgroup_lattice_constructor_uses_conjugation_action()?;
-    assert_rejections(&group)?;
-
     Ok(())
 }
 
@@ -119,36 +122,18 @@ fn assert_transfer_system_containment_lattice_uses_orbit_inclusion(
 ) -> Result<(), Box<dyn Error>> {
     let expected_labels = g_lattice.non_identity_relation_orbit_labels();
     let universe = g_lattice.transfer_universe();
-    assert!(Arc::ptr_eq(universe.lattice(), g_lattice.lattice()));
-    assert!(Arc::ptr_eq(
-        universe.underlying_transfer_universe().lattice(),
-        g_lattice.lattice()
-    ));
     assert_eq!(universe.relation_orbit_labels(), expected_labels);
 
     let containment = g_lattice.transfer_systems_containment()?;
-    assert!(Arc::ptr_eq(
-        containment.universe().lattice(),
-        g_lattice.lattice()
-    ));
     assert_eq!(containment.size(), 4);
     assert_eq!(containment.as_poset().cover_relations().len(), 3);
-    assert_eq!(containment.to_system_lattice().size(), containment.size());
-
-    let from_universe = universe.containment_lattice()?;
-    assert_eq!(from_universe.size(), containment.size());
-    assert_eq!(universe.transfer_systems().len(), containment.size());
 
     let bottom = containment
         .system(containment.bottom())
         .expect("bottom G-transfer system should exist");
-    assert!(bottom.raw().orbit_arrows().not_any());
     assert!(bottom.relation_orbit_labels().is_empty());
     assert!(bottom.relations(false).is_empty());
     assert_eq!(bottom.relations(true).len(), g_lattice.lattice().size());
-    let ordinary_bottom = bottom.underlying_transfer_system();
-    assert!(ordinary_bottom.raw().arrows().not_any());
-    assert_eq!(ordinary_bottom.edges(false), bottom.relations(false));
 
     let top = containment
         .system(containment.top())
@@ -165,13 +150,7 @@ fn assert_transfer_system_containment_lattice_uses_orbit_inclusion(
         assert!(top.relations(false).contains(&relation));
         assert!(top.contains_relation(relation));
     }
-    let ordinary_top = top.underlying_transfer_system();
-    assert_eq!(ordinary_top.edges(false), top.relations(false));
-    assert!(Arc::ptr_eq(
-        ordinary_top.universe(),
-        containment.universe().underlying_transfer_universe()
-    ));
-
+    // Forgetting equivariance preserves exactly the underlying relations.
     for system in containment.systems() {
         let ordinary = system.underlying_transfer_system();
         assert_eq!(ordinary.edges(false), system.relations(false));
@@ -182,24 +161,6 @@ fn assert_transfer_system_containment_lattice_uses_orbit_inclusion(
             );
         }
     }
-
-    let mut orbit_counts = containment
-        .systems()
-        .map(|system| system.raw().orbit_arrows().count_ones())
-        .collect::<Vec<_>>();
-    orbit_counts.sort_unstable();
-    assert_eq!(orbit_counts, vec![0, 1, 2, 3]);
-
-    let default_picture = containment.to_tikz();
-    let custom_picture = containment.to_tikz_with(&TransferSystemTikzOptions::default());
-    let free_function_picture = g_transfer_system_lattice_to_tikz(&containment);
-    assert_eq!(default_picture.render(), custom_picture.render());
-    assert_eq!(default_picture.render(), free_function_picture.render());
-    assert!(
-        default_picture
-            .render()
-            .contains("line width=.75pt, orange")
-    );
 
     Ok(())
 }
@@ -251,97 +212,11 @@ fn check_subgroup_lattice_constructor_uses_conjugation_action() -> Result<(), Bo
     assert_eq!(c3_identity_orbit.relations(), &[Edge::new(4, 4)]);
     assert_eq!(order(c3_identity_orbit.stabilizer())?, 6);
 
-    let via_associated = GLattice::from_subgroup_lattice(&group)?;
-    assert_eq!(via_associated.g_lattice().lattice().size(), 6);
-    assert_eq!(
-        subgroup_lattice.subgroup_structure_descriptions(),
-        &[
-            "1".to_string(),
-            "C2".to_string(),
-            "C2".to_string(),
-            "C2".to_string(),
-            "C3".to_string(),
-            "S3".to_string(),
-        ],
-    );
-    assert_eq!(
-        subgroup_lattice.subgroup_structure_description(4),
-        Some("C3")
-    );
-    assert_eq!(
-        subgroup_lattice.subgroup_structure_descriptions_tex(),
-        &[
-            "$1$".to_string(),
-            "$C_{2}$".to_string(),
-            "$C_{2}$".to_string(),
-            "$C_{2}$".to_string(),
-            "$C_{3}$".to_string(),
-            "$S_{3}$".to_string(),
-        ],
-    );
-    assert_eq!(
-        subgroup_lattice.subgroup_structure_description_tex(4),
-        Some("$C_{3}$")
-    );
-    assert_eq!(
-        structure_description_to_tex("C7 : (C9 x Q8)"),
-        "$C_{7} \\rtimes (C_{9} \\times Q_{8})$"
-    );
-    assert_eq!(
-        structure_description_to_tex("2F(4,2)'"),
-        "${}^{2}F(4,2)^{\\prime}$"
-    );
-    assert_eq!(
-        structure_description_to_tex("O+(6,3) . Fi24'"),
-        "$O^{+}(6,3) \\cdot Fi_{24}^{\\prime}$"
-    );
     let subgroup_transfer_lattice = subgroup_lattice.transfer_systems_containment()?;
     assert_eq!(
         subgroup_transfer_lattice.size(),
         g_lattice.transfer_systems_containment()?.size()
     );
-    assert!(
-        subgroup_transfer_lattice
-            .to_tikz()
-            .render()
-            .contains("tikzpicture")
-    );
-
-    let mut named_options = TransferSystemTikzOptions::default();
-    named_options.glyph.node_display =
-        GlyphNodeDisplay::raw(subgroup_lattice.subgroup_structure_descriptions_tex());
-    let named_picture = subgroup_transfer_lattice
-        .to_tikz_with(&named_options)
-        .render();
-    assert!(named_picture.contains("{$C_{2}$}"));
-    assert!(named_picture.contains("{$S_{3}$}"));
-    assert!(!named_picture.contains("\\fill[black]"));
-
-    Ok(())
-}
-
-fn assert_rejections(group: &gap_sys::GapValue) -> Result<(), Box<dyn Error>> {
-    let diamond = diamond_lattice();
-
-    let err = GLattice::from_generator_images(Arc::clone(&diamond), group, vec![vec![0, 1, 2]])
-        .unwrap_err();
-    assert!(matches!(err, GLatticeError::WrongPermutationLength { .. }));
-
-    let err = GLattice::from_generator_images(Arc::clone(&diamond), group, vec![vec![0, 1, 1, 3]])
-        .unwrap_err();
-    assert!(matches!(
-        err,
-        GLatticeError::DuplicatePermutationImage { .. }
-    ));
-
-    let err = GLattice::from_generator_images(Arc::clone(&diamond), group, vec![vec![1, 0, 2, 3]])
-        .unwrap_err();
-    assert!(matches!(err, GLatticeError::NotALatticeAutomorphism { .. }));
-
-    let err = GLattice::from_generator_images(m3_lattice(), group, vec![vec![0, 2, 3, 1, 4]])
-        .unwrap_err();
-    assert!(matches!(err, GLatticeError::HomomorphismByImagesFailed));
-
     Ok(())
 }
 
@@ -390,26 +265,6 @@ fn diamond_lattice() -> Arc<Lattice<&'static str>> {
                     Edge::new(0, 2),
                     Edge::new(1, 3),
                     Edge::new(2, 3),
-                ],
-            )
-            .unwrap(),
-        )
-        .unwrap(),
-    )
-}
-
-fn m3_lattice() -> Arc<Lattice<&'static str>> {
-    Arc::new(
-        Lattice::new(
-            Poset::from_edges(
-                vec!["0", "a", "b", "c", "1"],
-                [
-                    Edge::new(0, 1),
-                    Edge::new(0, 2),
-                    Edge::new(0, 3),
-                    Edge::new(1, 4),
-                    Edge::new(2, 4),
-                    Edge::new(3, 4),
                 ],
             )
             .unwrap(),

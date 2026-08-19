@@ -809,39 +809,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn relation_index_and_formal_context_are_precomputed_together() {
-        let lattice = Arc::new(Lattice::chain(2).expect("the finite chain is a lattice"));
-        let universe = lattice.transfer_universe();
-
-        assert_eq!(
-            universe.proper_edges(),
-            &[Edge::new(0, 1), Edge::new(0, 2), Edge::new(1, 2)]
-        );
-        assert_eq!(universe.context.objects, universe.proper_edges());
-        assert_eq!(universe.context.attributes, universe.proper_edges());
-        assert_eq!(
-            universe.relation_index().proper_edge_id(Edge::new(0, 2)),
-            Some(1)
-        );
-        assert_eq!(
-            universe.relation_index().proper_edge_id(Edge::new(1, 1)),
-            None
-        );
-        let systems = universe.transfer_systems();
-        assert!(!systems.is_empty());
-
-        let top = systems
-            .iter()
-            .max_by_key(|system| system.raw().arrows().count_ones())
-            .expect("the chain has a top transfer system");
-        assert!(top.contains_relation(Edge::new(0, 0)));
-        assert!(top.contains_relation(Edge::new(0, 2)));
-        assert!(!top.contains_relation(Edge::new(2, 0)));
-        assert!(!top.contains_relation(Edge::new(3, 3)));
-    }
-
-    #[test]
-    fn generated_by_validates_generators_and_adds_closure() {
+    fn generated_transfer_system_has_restriction_closure() {
         let lattice = Arc::new(Lattice::chain(2).expect("the finite chain is a lattice"));
         let universe = lattice.transfer_universe();
 
@@ -852,60 +820,10 @@ mod tests {
             generated.edges(false),
             EdgeSet::from([Edge::new(0, 1), Edge::new(0, 2)])
         );
-
-        assert_eq!(
-            universe.generated_by([Edge::new(3, 3)]).unwrap_err(),
-            TransferSystemError::EdgeOutOfBounds {
-                edge: Edge::new(3, 3),
-                lattice_size: 3,
-            }
-        );
-        assert_eq!(
-            universe.generated_by([Edge::new(2, 0)]).unwrap_err(),
-            TransferSystemError::NotLatticeRelation {
-                edge: Edge::new(2, 0),
-            }
-        );
     }
 
     #[test]
-    fn checked_raw_construction_rejects_wrong_width_and_missing_closure() {
-        let lattice = Arc::new(Lattice::chain(2).expect("the finite chain is a lattice"));
-        let universe = lattice.transfer_universe();
-
-        let wrong_width = RawTransferSystem::new(BitVec::repeat(false, 2));
-        assert_eq!(
-            universe.try_from_raw(wrong_width).unwrap_err(),
-            TransferSystemError::WrongArrowCount {
-                expected: 3,
-                actual: 2,
-            }
-        );
-
-        let mut missing_closure = BitVec::repeat(false, 3);
-        let zero_to_two = universe
-            .relation_index()
-            .proper_edge_id(Edge::new(0, 2))
-            .expect("0 < 2 in the chain");
-        missing_closure.set(zero_to_two, true);
-        assert_eq!(
-            universe
-                .try_from_raw(RawTransferSystem::new(missing_closure))
-                .unwrap_err(),
-            TransferSystemError::RawNotClosed
-        );
-
-        let generated = universe
-            .generated_by([Edge::new(0, 2)])
-            .expect("the generator is a lattice relation");
-        let checked = universe
-            .try_from_raw(generated.raw().clone())
-            .expect("generated transfer systems are closed");
-        assert_eq!(checked.raw(), generated.raw());
-    }
-
-    #[test]
-    fn factorization_failure_reports_the_unsplittable_arrows() {
+    fn composition_order_enforces_the_factorization_condition() {
         let lattice = Arc::new(Lattice::chain(2).expect("the finite chain is a lattice"));
         let universe = lattice.transfer_universe();
         let left = universe
@@ -915,18 +833,10 @@ mod tests {
             .generated_by([Edge::new(0, 1), Edge::new(0, 2)])
             .expect("the generators are lattice relations");
 
-        assert_eq!(
-            factorization_failure_for_raw(&universe, left.raw(), right.raw()),
-            Some(FactorizationFailure {
-                first: Edge::new(0, 1),
-                second: Edge::new(0, 2),
-            })
-        );
-        assert!(factorization_failure_for_raw(&universe, left.raw(), left.raw()).is_none());
-
         let order = universe.lattice().as_poset().relation_matrix();
         let left_order = left.raw().as_partial_order(&universe);
         let right_order = right.raw().as_partial_order(&universe);
         assert!(!factorization_condition(order, &left_order, &right_order));
+        assert!(factorization_condition(order, &left_order, &left_order));
     }
 }

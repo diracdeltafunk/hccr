@@ -1,8 +1,6 @@
 mod geometry;
 mod layered;
 
-#[cfg(test)]
-use crate::poset::Poset;
 use crate::poset::{Edge, ElementId};
 use std::collections::{BTreeSet, HashMap};
 
@@ -19,23 +17,6 @@ pub enum PosetLayoutAlgorithm {
     /// Center feasible heights and reduce crossings in a proper layered graph.
     #[default]
     CrossingReduced,
-}
-
-#[cfg(test)]
-pub(in crate::tikz) fn default_layout<A>(
-    poset: &Poset<A>,
-    x_spacing: f64,
-    y_spacing: f64,
-) -> HashMap<ElementId, (f64, f64)> {
-    let mut covers: Vec<_> = poset.cover_relations().into_iter().collect();
-    covers.sort_unstable();
-    layout_with_covers(
-        poset.size(),
-        &covers,
-        x_spacing,
-        y_spacing,
-        PosetLayoutAlgorithm::default(),
-    )
 }
 
 pub(super) fn layout_with_covers(

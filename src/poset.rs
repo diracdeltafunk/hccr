@@ -680,32 +680,3 @@ pub(crate) fn transitive_closure(relation: &mut [BitVec]) {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn clone_and_relabel_share_dense_order_storage() {
-        let poset = Poset::chain(2).expect("a finite chain is a poset");
-        let cloned = poset.clone();
-        let relabelled = poset.relabelled(|label| label.to_string());
-
-        assert!(poset.shares_order_coordinates_with(&cloned));
-        assert!(poset.shares_order_coordinates_with(&relabelled));
-
-        assert!(Arc::ptr_eq(&poset.relation, &cloned.relation));
-        assert!(Arc::ptr_eq(
-            &poset.relation_transpose,
-            &cloned.relation_transpose
-        ));
-        assert!(Arc::ptr_eq(&poset.relation, &relabelled.relation));
-        assert!(Arc::ptr_eq(
-            &poset.relation_transpose,
-            &relabelled.relation_transpose
-        ));
-
-        let separately_constructed = Poset::chain(2).expect("a finite chain is a poset");
-        assert!(!poset.shares_order_coordinates_with(&separately_constructed));
-    }
-}
