@@ -90,6 +90,52 @@ fn assert_composition_pullback_agrees(
     }
 }
 
+/// Checks that `error` exhibits a genuine failure of monotonicity for the
+/// map of composition-closed orders induced by `image`: a cover `R < S` in
+/// `source` whose images are incomparable in `target`, together with a square
+/// formed by an arrow `x -> y` of `image(R)` and an arrow `x' -> y'` of
+/// `image(S)`, with `x <= x'` and `y <= y'`, that has no factorization
+/// `x <= z <= x'`, `y <= w` with `z -> w` in `image(R)` and `w -> y'` in
+/// `image(S)`.
+fn assert_is_a_monotonicity_failure(
+    error: &CompositionMapError,
+    source: &TransferPoset,
+    target: &TransferPoset,
+    image: impl Fn(&TransferSystem) -> TransferSystem,
+) {
+    let CompositionMapError::NotMonotone {
+        source_cover,
+        lower_image,
+        upper_image,
+        failed_square: (first, second),
+    } = *error
+    else {
+        panic!("expected a monotonicity failure, got {error:?}")
+    };
+
+    assert!(source.cover_relations().contains(&source_cover));
+    let lower = image(source.system(source_cover.from));
+    let upper = image(source.system(source_cover.to));
+    assert_eq!(target.system(lower_image), &lower);
+    assert_eq!(target.system(upper_image), &upper);
+    assert!(!target.leq(lower_image, upper_image));
+
+    let lattice = target.base_lattice();
+    assert!(lower.contains_relation(first));
+    assert!(upper.contains_relation(second));
+    assert!(lattice.leq(first.from, second.from) && lattice.leq(first.to, second.to));
+    let has_witness = lattice.ids().any(|z| {
+        lattice.leq(first.from, z)
+            && lattice.leq(z, second.from)
+            && lattice.ids().any(|w| {
+                lattice.leq(first.to, w)
+                    && lower.contains_relation(Edge::new(z, w))
+                    && upper.contains_relation(Edge::new(w, second.to))
+            })
+    });
+    assert!(!has_witness, "the reported square has a factorization");
+}
+
 #[test]
 fn pointwise_maps_close_images_and_handle_collapsed_and_duplicate_arrows() {
     let domain_lattice = chain(2);
@@ -212,10 +258,9 @@ fn composition_monotonicity_is_checked_independently_in_each_direction() {
         composition_id(&cc_b2, &image_s)
     ));
     let push_error = try_pushforward_composition_map(&into_b2, &cc_c3, &cc_b2).unwrap_err();
-    let CompositionMapError::NotMonotone { failed_square, .. } = push_error else {
-        panic!("the pushforward should fail the composition-order check")
-    };
-    assert_eq!(failed_square, (Edge::new(0, 2), Edge::new(0, 3)));
+    assert_is_a_monotonicity_failure(&push_error, &cc_c3, &cc_b2, |system| {
+        pushforward(&into_b2, system).unwrap()
+    });
     assert_composition_pullback_agrees(&into_b2, &cc_b2, &cc_c3);
 
     // C3 -> C4 has monotone pushforward but non-monotone pullback.
@@ -240,10 +285,9 @@ fn composition_monotonicity_is_checked_independently_in_each_direction() {
     ));
     assert_composition_pushforward_agrees(&into_c4, &cc_c3, &cc_c4);
     let pull_error = try_pullback_composition_map(&into_c4, &cc_c4, &cc_c3).unwrap_err();
-    let CompositionMapError::NotMonotone { failed_square, .. } = pull_error else {
-        panic!("the pullback should fail the composition-order check")
-    };
-    assert_eq!(failed_square, (Edge::new(0, 1), Edge::new(0, 2)));
+    assert_is_a_monotonicity_failure(&pull_error, &cc_c4, &cc_c3, |system| {
+        pullback(&into_c4, system).unwrap()
+    });
 }
 
 #[test]
