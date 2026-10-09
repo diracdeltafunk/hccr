@@ -15,12 +15,11 @@
 //! a genuine model structure rather than merely a pair of weak factorization
 //! systems.
 
-use crate::cotransfer_lattice::{CotransferSystem, CotransferSystemError, CotransferUniverse};
+use crate::cotransfer_lattice::CotransferSystem;
 use crate::lattice::Lattice;
-use crate::poset::{Edge, EdgeSet, ElementId, compose};
-use crate::transfer_lattice::{TransferSystem, TransferUniverse};
+use crate::poset::{Edge, EdgeSet, ElementId, Poset, compose};
+use crate::transfer_lattice::TransferSystem;
 use std::fmt;
-use std::sync::Arc;
 
 /// A composable triangle witnessing failure of the 2-out-of-3 property.
 ///
@@ -57,8 +56,8 @@ impl FactorizationWitness {
 /// Errors that can occur while constructing a model structure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelStructureError {
-    /// The two transfer systems do not belong to the same universe.
-    DifferentUniverses,
+    /// The two transfer systems are on different lattices.
+    DifferentLattices,
     /// An acyclic fibration is not a fibration.
     AcyclicFibrationsNotContained {
         /// A relation belonging to the acyclic fibrations but not the
@@ -70,15 +69,13 @@ pub enum ModelStructureError {
         /// A composable triangle witnessing the failure.
         witness: TwoOutOfThreeFailure,
     },
-    /// Construction of one of the cotransfer systems failed.
-    Cotransfer(CotransferSystemError),
 }
 
 impl fmt::Display for ModelStructureError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::DifferentUniverses => {
-                write!(f, "the two transfer systems belong to different universes")
+            Self::DifferentLattices => {
+                write!(f, "the two transfer systems are on different lattices")
             }
             Self::AcyclicFibrationsNotContained { relation } => write!(
                 f,
@@ -94,25 +91,11 @@ impl fmt::Display for ModelStructureError {
                 witness.missing.from,
                 witness.missing.to
             ),
-            Self::Cotransfer(error) => write!(f, "could not construct cofibrations: {error}"),
         }
     }
 }
 
-impl std::error::Error for ModelStructureError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Cotransfer(error) => Some(error),
-            _ => None,
-        }
-    }
-}
-
-impl From<CotransferSystemError> for ModelStructureError {
-    fn from(error: CotransferSystemError) -> Self {
-        Self::Cotransfer(error)
-    }
-}
+impl std::error::Error for ModelStructureError {}
 
 /// A model structure on a finite lattice.
 ///
@@ -120,38 +103,33 @@ impl From<CotransferSystemError> for ModelStructureError {
 /// fibrations, the cotransfer systems of cofibrations and acyclic
 /// cofibrations, and the resulting class of weak equivalences.  It can only be
 /// constructed after containment and 2-out-of-3 have been checked.
-#[derive(Debug, Clone)]
-pub struct ModelStructure<A> {
-    acyclic_fibrations: TransferSystem<A>,
-    fibrations: TransferSystem<A>,
-    cofibrations: CotransferSystem<A>,
-    acyclic_cofibrations: CotransferSystem<A>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelStructure {
+    acyclic_fibrations: TransferSystem,
+    fibrations: TransferSystem,
+    cofibrations: CotransferSystem,
+    acyclic_cofibrations: CotransferSystem,
     weak_equivalences: EdgeSet,
 }
 
-impl<A> ModelStructure<A> {
+impl ModelStructure {
     /// Constructs the model structure represented by `R <= R'`.
     ///
     /// Here `R` is `acyclic_fibrations` and `R'` is `fibrations`.  The two
-    /// systems must share one transfer universe, `R` must be contained in
-    /// `R'`, and `R ∘ llc(R')` must satisfy 2-out-of-3.
+    /// systems must be on the same lattice, `R` must be contained in `R'`,
+    /// and `R ∘ llc(R')` must satisfy 2-out-of-3.
     pub fn new(
-        acyclic_fibrations: TransferSystem<A>,
-        fibrations: TransferSystem<A>,
+        acyclic_fibrations: TransferSystem,
+        fibrations: TransferSystem,
     ) -> Result<Self, ModelStructureError> {
-        if !Arc::ptr_eq(acyclic_fibrations.universe(), fibrations.universe()) {
-            return Err(ModelStructureError::DifferentUniverses);
+        if acyclic_fibrations.lattice() != fibrations.lattice() {
+            return Err(ModelStructureError::DifferentLattices);
         }
 
         if let Some(relation) = acyclic_fibrations
-            .universe()
-            .proper_edges()
-            .iter()
-            .copied()
-            .find(|&relation| {
-                acyclic_fibrations.contains_relation(relation)
-                    && !fibrations.contains_relation(relation)
-            })
+            .sorted_proper_edges()
+            .into_iter()
+            .find(|&relation| !fibrations.contains_relation(relation))
         {
             return Err(ModelStructureError::AcyclicFibrationsNotContained { relation });
         }
@@ -165,11 +143,8 @@ impl<A> ModelStructure<A> {
             return Err(ModelStructureError::WeakEquivalencesFailTwoOutOfThree { witness });
         }
 
-        let cotransfer_universe = Arc::new(CotransferUniverse::from_transfer_universe(Arc::clone(
-            acyclic_fibrations.universe(),
-        )));
-        let cofibrations = cotransfer_universe.left_lifting_of(&acyclic_fibrations)?;
-        let acyclic_cofibrations = cotransfer_universe.left_lifting_of(&fibrations)?;
+        let cofibrations = acyclic_fibrations.left_lifting_cotransfer();
+        let acyclic_cofibrations = fibrations.left_lifting_cotransfer();
 
         Ok(Self {
             acyclic_fibrations,
@@ -181,37 +156,27 @@ impl<A> ModelStructure<A> {
     }
 
     /// Returns the underlying lattice.
-    pub fn lattice(&self) -> &Arc<Lattice<A>> {
+    pub fn lattice(&self) -> &Lattice {
         self.fibrations.lattice()
     }
 
-    /// Returns the shared universe of the two transfer systems.
-    pub fn transfer_universe(&self) -> &Arc<TransferUniverse<A>> {
-        self.fibrations.universe()
-    }
-
-    /// Returns the shared universe of the two cotransfer systems.
-    pub fn cotransfer_universe(&self) -> &Arc<CotransferUniverse<A>> {
-        self.cofibrations.universe()
-    }
-
     /// Returns the transfer system of fibrations.
-    pub fn fibrations(&self) -> &TransferSystem<A> {
+    pub fn fibrations(&self) -> &TransferSystem {
         &self.fibrations
     }
 
     /// Returns the transfer system of acyclic fibrations.
-    pub fn acyclic_fibrations(&self) -> &TransferSystem<A> {
+    pub fn acyclic_fibrations(&self) -> &TransferSystem {
         &self.acyclic_fibrations
     }
 
     /// Returns the cotransfer system of cofibrations.
-    pub fn cofibrations(&self) -> &CotransferSystem<A> {
+    pub fn cofibrations(&self) -> &CotransferSystem {
         &self.cofibrations
     }
 
     /// Returns the cotransfer system of acyclic cofibrations.
-    pub fn acyclic_cofibrations(&self) -> &CotransferSystem<A> {
+    pub fn acyclic_cofibrations(&self) -> &CotransferSystem {
         &self.acyclic_cofibrations
     }
 
@@ -322,20 +287,48 @@ impl<A> ModelStructure<A> {
     }
 }
 
-impl<A> TryFrom<(TransferSystem<A>, TransferSystem<A>)> for ModelStructure<A> {
+impl TryFrom<(TransferSystem, TransferSystem)> for ModelStructure {
     type Error = ModelStructureError;
 
     fn try_from(
-        (acyclic_fibrations, fibrations): (TransferSystem<A>, TransferSystem<A>),
+        (acyclic_fibrations, fibrations): (TransferSystem, TransferSystem),
     ) -> Result<Self, Self::Error> {
         Self::new(acyclic_fibrations, fibrations)
     }
 }
 
-fn two_out_of_three_failure<A>(
-    ambient: &crate::poset::Poset<A>,
-    class: &EdgeSet,
-) -> Option<TwoOutOfThreeFailure> {
+impl Lattice {
+    /// Enumerates all model structures on this lattice.
+    ///
+    /// They correspond to the intervals `R <= R'` of the model-structure order
+    /// on transfer systems; see
+    /// [`Lattice::transfer_systems_model_structure_order`].
+    pub fn model_structures(&self) -> Vec<ModelStructure> {
+        let order = self.transfer_systems_model_structure_order();
+        order
+            .all_relations_iter()
+            .map(|edge| {
+                ModelStructure::new(
+                    order.system(edge.from).clone(),
+                    order.system(edge.to).clone(),
+                )
+                .expect("intervals of the model-structure order are model structures")
+            })
+            .collect()
+    }
+}
+
+impl fmt::Display for ModelStructure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "model structure with acyclic fibrations {} and fibrations {}",
+            self.acyclic_fibrations, self.fibrations
+        )
+    }
+}
+
+fn two_out_of_three_failure(ambient: &Poset, class: &EdgeSet) -> Option<TwoOutOfThreeFailure> {
     for middle in 0..ambient.size() {
         for lower in ambient.relation_matrix_transpose()[middle].iter_ones() {
             let first = Edge::new(lower, middle);
@@ -366,8 +359,8 @@ fn two_out_of_three_failure<A>(
     None
 }
 
-fn factorization_witness<A, L, R>(
-    lattice: &Lattice<A>,
+fn factorization_witness<L, R>(
+    lattice: &Lattice,
     relation: Edge,
     in_left: L,
     in_right: R,

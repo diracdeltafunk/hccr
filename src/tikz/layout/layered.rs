@@ -352,7 +352,7 @@ impl FenwickTree {
         let mut index = index + 1;
         while index < self.entries.len() {
             self.entries[index] += value;
-            index += index & index.wrapping_neg();
+            index += index.isolate_lowest_one();
         }
     }
 

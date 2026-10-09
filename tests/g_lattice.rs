@@ -4,10 +4,10 @@ use hccr::g_lattice::{
     GLattice, RelationOrbit, RelationOrbitLabel, RelationTransporter, SubgroupGLattice,
 };
 use hccr::group_theory::GapSubgroup;
+use hccr::label::Label;
 use hccr::lattice::Lattice;
-use hccr::poset::{Edge, EdgeSet, Poset};
+use hccr::poset::{Edge, EdgeSet};
 use std::error::Error;
-use std::sync::Arc;
 
 #[test]
 fn group_actions_produce_the_correct_relation_orbits_and_transfer_systems()
@@ -16,11 +16,11 @@ fn group_actions_produce_the_correct_relation_orbits_and_transfer_systems()
     let group = gap_sys::eval("Group((1,2));")?;
 
     let from_generators =
-        GLattice::from_generator_images(Arc::clone(&diamond), &group, vec![vec![0, 2, 1, 3]])?;
+        GLattice::from_generator_images(&diamond, &group, vec![vec![0, 2, 1, 3]])?;
 
     let homomorphism =
         gap_sys::eval("GroupHomomorphismByImages(Group((1,2)), Group((2,3)), [(1,2)], [(2,3)]);")?;
-    let from_gap = GLattice::from_gap_homomorphism(Arc::clone(&diamond), &group, &homomorphism)?;
+    let from_gap = GLattice::from_gap_homomorphism(&diamond, &group, &homomorphism)?;
 
     let expected_relations = vec![
         Edge::new(0, 0),
@@ -51,9 +51,7 @@ fn group_actions_produce_the_correct_relation_orbits_and_transfer_systems()
         &[vec![0, 2, 1, 3]]
     );
 
-    let generated = from_generators
-        .transfer_universe()
-        .generated_by([Edge::new(0, 3)])?;
+    let generated = from_generators.transfer_system_generated_by([Edge::new(0, 3)])?;
     assert_eq!(
         generated.relations(false),
         EdgeSet::from([Edge::new(0, 1), Edge::new(0, 2), Edge::new(0, 3)])
@@ -84,9 +82,7 @@ fn group_actions_produce_the_correct_relation_orbits_and_transfer_systems()
     Ok(())
 }
 
-fn assert_transfer_context_quotients_by_non_identity_relation_orbits(
-    g_lattice: &GLattice<&'static str>,
-) {
+fn assert_transfer_context_quotients_by_non_identity_relation_orbits(g_lattice: &GLattice) {
     let context = g_lattice.transfer_context();
     let expected_labels = vec![
         RelationOrbitLabel::new(1, 1, Edge::new(0, 1)),
@@ -123,26 +119,22 @@ fn assert_transfer_context_quotients_by_non_identity_relation_orbits(
 }
 
 fn assert_transfer_system_containment_lattice_uses_orbit_inclusion(
-    g_lattice: &GLattice<&'static str>,
+    g_lattice: &GLattice,
 ) -> Result<(), Box<dyn Error>> {
     let expected_labels = g_lattice.non_identity_relation_orbit_labels();
-    let universe = g_lattice.transfer_universe();
-    assert_eq!(universe.relation_orbit_labels(), expected_labels);
 
-    let containment = g_lattice.transfer_systems_containment()?;
+    let containment = g_lattice.transfer_systems();
     assert_eq!(containment.size(), 4);
-    assert_eq!(containment.as_poset().cover_relations().len(), 3);
+    assert_eq!(containment.cover_relations().len(), 3);
 
-    let bottom = containment
-        .system(containment.bottom())
-        .expect("bottom G-transfer system should exist");
+    let bottom = containment.system(containment.bottom());
+    assert_eq!(bottom, &g_lattice.trivial_transfer_system());
     assert!(bottom.relation_orbit_labels().is_empty());
     assert!(bottom.relations(false).is_empty());
     assert_eq!(bottom.relations(true).len(), g_lattice.lattice().size());
 
-    let top = containment
-        .system(containment.top())
-        .expect("top G-transfer system should exist");
+    let top = containment.system(containment.top());
+    assert_eq!(top, &g_lattice.complete_transfer_system());
     assert_eq!(top.relation_orbit_labels(), expected_labels);
     assert_eq!(top.relations(false).len(), 5);
     for relation in [
@@ -156,7 +148,7 @@ fn assert_transfer_system_containment_lattice_uses_orbit_inclusion(
         assert!(top.contains_relation(relation));
     }
     // Forgetting equivariance preserves exactly the underlying relations.
-    for system in containment.systems() {
+    for system in &containment {
         let ordinary = system.underlying_transfer_system();
         assert_eq!(ordinary.edges(false), system.relations(false));
         for relation in ordinary.edges(true) {
@@ -171,14 +163,13 @@ fn assert_transfer_system_containment_lattice_uses_orbit_inclusion(
 }
 
 fn check_subgroup_lattice_constructor_uses_conjugation_action() -> Result<(), Box<dyn Error>> {
-    let group = gap_sys::eval("SymmetricGroup(3);")?;
-    let subgroup_lattice = SubgroupGLattice::new(&group)?;
+    let subgroup_lattice = SubgroupGLattice::from_gap("SymmetricGroup(3)")?;
     let g_lattice = subgroup_lattice.g_lattice();
 
     assert_eq!(subgroup_lattice.subgroups().len(), 6);
     assert_eq!(g_lattice.lattice().size(), 6);
     assert_eq!(
-        g_lattice.lattice().elements(),
+        g_lattice.labels(),
         &[
             GapSubgroup::new(0, 0),
             GapSubgroup::new(1, 0),
@@ -187,7 +178,10 @@ fn check_subgroup_lattice_constructor_uses_conjugation_action() -> Result<(), Bo
             GapSubgroup::new(2, 0),
             GapSubgroup::new(3, 0),
         ]
+        .map(Label::from)
     );
+    assert_eq!(subgroup_lattice.id(GapSubgroup::new(2, 0))?, 4);
+    assert_eq!(subgroup_lattice.label(4).to_string(), "H(2,0)");
 
     assert_eq!(g_lattice.lattice().bottom(), 0);
     assert_eq!(g_lattice.lattice().top(), 5);
@@ -217,16 +211,17 @@ fn check_subgroup_lattice_constructor_uses_conjugation_action() -> Result<(), Bo
     assert_eq!(c3_identity_orbit.relations(), &[Edge::new(4, 4)]);
     assert_eq!(order(c3_identity_orbit.stabilizer())?, 6);
 
-    let subgroup_transfer_lattice = subgroup_lattice.transfer_systems_containment()?;
+    let subgroup_transfer_lattice = subgroup_lattice.transfer_systems();
     assert_eq!(
         subgroup_transfer_lattice.size(),
-        g_lattice.transfer_systems_containment()?.size()
+        g_lattice.transfer_systems().size()
     );
+    assert_eq!(subgroup_transfer_lattice.size(), 9);
     Ok(())
 }
 
-fn assert_transporter<A>(
-    g_lattice: &GLattice<A>,
+fn assert_transporter(
+    g_lattice: &GLattice,
     orbit: &RelationOrbit,
     transporter: &RelationTransporter,
 ) -> Result<(), Box<dyn Error>> {
@@ -252,7 +247,7 @@ fn order(element: &gap_sys::GapValue) -> Result<usize, Box<dyn Error>> {
     Ok(gap.to_usize(&order)?)
 }
 
-fn orbit_ids<A>(g_lattice: &GLattice<A>) -> Vec<Vec<usize>> {
+fn orbit_ids(g_lattice: &GLattice) -> Vec<Vec<usize>> {
     g_lattice
         .relation_orbits()
         .iter()
@@ -260,20 +255,10 @@ fn orbit_ids<A>(g_lattice: &GLattice<A>) -> Vec<Vec<usize>> {
         .collect()
 }
 
-fn diamond_lattice() -> Arc<Lattice<&'static str>> {
-    Arc::new(
-        Lattice::new(
-            Poset::from_edges(
-                vec!["0", "a", "b", "1"],
-                [
-                    Edge::new(0, 1),
-                    Edge::new(0, 2),
-                    Edge::new(1, 3),
-                    Edge::new(2, 3),
-                ],
-            )
-            .unwrap(),
-        )
-        .unwrap(),
+fn diamond_lattice() -> Lattice {
+    Lattice::from_covers(
+        ["0", "a", "b", "1"],
+        [("0", "a"), ("0", "b"), ("a", "1"), ("b", "1")],
     )
+    .unwrap()
 }

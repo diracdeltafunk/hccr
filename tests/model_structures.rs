@@ -1,78 +1,46 @@
 use hccr::lattice::Lattice;
 use hccr::model_structure::{ModelStructure, ModelStructureError};
-use hccr::poset::{Edge, EdgeSet, compose};
-use hccr::transfer_lattice::{TransferSystem, TransferUniverse};
-use std::sync::Arc;
+use hccr::poset::{EdgeSet, compose};
+use hccr::transfer_lattice::TransferSystem;
 
-fn chain_universe(top: usize) -> Arc<TransferUniverse<usize>> {
-    Arc::new(Lattice::chain(top).expect("a finite chain is a lattice")).transfer_universe()
+fn bottom_and_top(lattice: &Lattice) -> (TransferSystem, TransferSystem) {
+    (
+        lattice.trivial_transfer_system(),
+        lattice.complete_transfer_system(),
+    )
 }
 
-fn bottom_and_top<A>(
-    universe: &Arc<TransferUniverse<A>>,
-) -> (TransferSystem<A>, TransferSystem<A>) {
-    let bottom = universe
-        .generated_by(std::iter::empty::<Edge>())
-        .expect("the empty set generates a transfer system");
-    let top = universe
-        .generated_by(universe.proper_edges().iter().copied())
-        .expect("all ambient relations generate a transfer system");
-    (bottom, top)
+fn ambient_edges(lattice: &Lattice) -> EdgeSet {
+    lattice.all_relations_iter().collect()
 }
 
-fn ambient_edges<A>(universe: &TransferUniverse<A>) -> EdgeSet {
-    universe.lattice().as_poset().all_relations_iter().collect()
-}
+fn check_model_category_laws(lattice: Lattice) {
+    let tr = lattice.transfer_systems();
+    let systems = tr.systems();
 
-fn check_model_category_laws<A>(universe: Arc<TransferUniverse<A>>) {
-    let systems = universe.transfer_systems();
-
-    for acyclic_fibrations in &systems {
-        for fibrations in &systems {
+    for acyclic_fibrations in systems {
+        for fibrations in systems {
             let Ok(model) = ModelStructure::new(acyclic_fibrations.clone(), fibrations.clone())
             else {
                 continue;
             };
 
-            let recovered_acyclic_fibrations = model
-                .cofibrations()
-                .right_lifting_transfer()
-                .expect("the right lifting class is a transfer system");
-            let recovered_fibrations = model
-                .acyclic_cofibrations()
-                .right_lifting_transfer()
-                .expect("the right lifting class is a transfer system");
+            let recovered_acyclic_fibrations = model.cofibrations().right_lifting_transfer();
+            let recovered_fibrations = model.acyclic_cofibrations().right_lifting_transfer();
             assert!(recovered_acyclic_fibrations == *model.acyclic_fibrations());
             assert!(recovered_fibrations == *model.fibrations());
 
-            let ambient = ambient_edges(&universe);
+            let ambient = ambient_edges(&lattice);
             let cofibrations = model.cofibrations().edges(true);
             let acyclic_cofibrations = model.acyclic_cofibrations().edges(true);
             let fibrations = model.fibrations().edges(true);
             let acyclic_fibrations = model.acyclic_fibrations().edges(true);
 
-            assert_eq!(
-                cofibrations,
-                universe.lattice().as_poset().llc(&acyclic_fibrations)
-            );
-            assert_eq!(
-                acyclic_cofibrations,
-                universe.lattice().as_poset().llc(&fibrations)
-            );
-            assert_eq!(
-                universe.lattice().as_poset().rlc(&cofibrations),
-                acyclic_fibrations
-            );
-            assert_eq!(
-                universe.lattice().as_poset().rlc(&acyclic_cofibrations),
-                fibrations
-            );
-            assert!(
-                universe
-                    .lattice()
-                    .as_poset()
-                    .two_out_of_three(model.weak_equivalences())
-            );
+            assert_eq!(cofibrations, lattice.llc(&acyclic_fibrations));
+            assert_eq!(acyclic_cofibrations, lattice.llc(&fibrations));
+            assert_eq!(lattice.rlc(&cofibrations), acyclic_fibrations);
+            assert_eq!(lattice.rlc(&acyclic_cofibrations), fibrations);
+            assert!(lattice.two_out_of_three(model.weak_equivalences()));
 
             assert_eq!(&fibrations & model.weak_equivalences(), acyclic_fibrations);
             assert_eq!(
@@ -106,64 +74,57 @@ fn check_model_category_laws<A>(universe: Arc<TransferUniverse<A>>) {
 #[test]
 fn every_constructed_model_structure_satisfies_the_model_category_laws() {
     for top in 0..=3 {
-        check_model_category_laws(chain_universe(top));
+        check_model_category_laws(Lattice::chain(top));
     }
-    check_model_category_laws(
-        Arc::new(Lattice::boolean(2).expect("the Boolean lattice exists")).transfer_universe(),
-    );
+    check_model_category_laws(Lattice::boolean(2));
 }
 
 #[test]
 fn constructor_recognizes_exactly_the_intervals_in_the_model_structure_order() {
-    let universe = chain_universe(3);
-    let systems = universe.transfer_systems();
-    let order = universe
-        .model_structure_order()
-        .expect("the model-structure relation is a partial order");
+    let lattice = Lattice::chain(3);
+    let tr = lattice.transfer_systems();
+    let order = lattice.transfer_systems_model_structure_order();
 
-    for acyclic_fibrations in &systems {
-        for fibrations in &systems {
+    for acyclic_fibrations in tr.systems() {
+        for fibrations in tr.systems() {
             let lower = order
-                .raw_poset()
-                .elements()
-                .iter()
-                .position(|raw| raw == acyclic_fibrations.raw())
+                .id_of(acyclic_fibrations)
                 .expect("every transfer system occurs in the model-structure order");
             let upper = order
-                .raw_poset()
-                .elements()
-                .iter()
-                .position(|raw| raw == fibrations.raw())
+                .id_of(fibrations)
                 .expect("every transfer system occurs in the model-structure order");
             assert_eq!(
                 ModelStructure::new(acyclic_fibrations.clone(), fibrations.clone()).is_ok(),
-                order.raw_poset().leq(lower, upper),
+                order.leq(lower, upper),
                 "classification disagrees for transfer systems {lower} and {upper}"
             );
         }
     }
+
+    let model_structures = lattice.model_structures();
+    assert_eq!(model_structures.len(), order.all_relations_iter().count());
 }
 
 #[test]
 fn fibrant_and_cofibrant_queries_are_endpoint_predicates() {
-    let universe = chain_universe(3);
-    let (bottom, top) = bottom_and_top(&universe);
+    let lattice = Lattice::chain(3);
+    let (bottom, top) = bottom_and_top(&lattice);
 
     let discrete = ModelStructure::new(bottom, top)
         .expect("identity weak equivalences define the discrete model structure");
-    assert!(Arc::ptr_eq(
-        discrete.cofibrations().universe(),
-        discrete.acyclic_cofibrations().universe()
-    ));
+    assert_eq!(
+        discrete.cofibrations().lattice(),
+        discrete.acyclic_cofibrations().lattice()
+    );
 
-    for object in 0..universe.lattice().size() {
+    for object in lattice.ids() {
         assert_eq!(
             discrete.is_fibrant(object),
-            discrete.contains_fibration(Edge::new(object, universe.lattice().top()))
+            discrete.contains_fibration((object, lattice.top()).into())
         );
         assert_eq!(
             discrete.is_cofibrant(object),
-            discrete.contains_cofibration(Edge::new(universe.lattice().bottom(), object))
+            discrete.contains_cofibration((lattice.bottom(), object).into())
         );
         assert_eq!(
             discrete.is_bifibrant(object),
@@ -180,8 +141,8 @@ fn fibrant_and_cofibrant_queries_are_endpoint_predicates() {
 
 #[test]
 fn invalid_intervals_return_mathematical_witnesses() {
-    let universe = chain_universe(2);
-    let (bottom, top) = bottom_and_top(&universe);
+    let lattice = Lattice::chain(2);
+    let (bottom, top) = bottom_and_top(&lattice);
 
     let containment_error = ModelStructure::new(top, bottom)
         .expect_err("acyclic fibrations must be contained in fibrations");
@@ -190,7 +151,8 @@ fn invalid_intervals_return_mathematical_witnesses() {
     };
     assert!(relation.from < relation.to);
 
-    let systems = universe.transfer_systems();
+    let tr = lattice.transfer_systems();
+    let systems = tr.systems();
     let ((acyclic_fibrations, fibrations), failure) = systems
         .iter()
         .flat_map(|acyclic_fibrations| {
@@ -198,11 +160,7 @@ fn invalid_intervals_return_mathematical_witnesses() {
                 .iter()
                 .map(move |fibrations| (acyclic_fibrations, fibrations))
         })
-        .filter(|(acyclic_fibrations, fibrations)| {
-            universe.proper_edges().iter().all(|&edge| {
-                !acyclic_fibrations.contains_relation(edge) || fibrations.contains_relation(edge)
-            })
-        })
+        .filter(|(acyclic_fibrations, fibrations)| acyclic_fibrations <= fibrations)
         .find_map(|(acyclic_fibrations, fibrations)| {
             match ModelStructure::new(acyclic_fibrations.clone(), fibrations.clone()) {
                 Err(ModelStructureError::WeakEquivalencesFailTwoOutOfThree { witness }) => {
@@ -215,7 +173,7 @@ fn invalid_intervals_return_mathematical_witnesses() {
 
     let proposed_weak_equivalences = compose(
         &acyclic_fibrations.edges(true),
-        &universe.lattice().as_poset().llc(&fibrations.edges(true)),
+        &lattice.llc(&fibrations.edges(true)),
     );
     let membership = [failure.first, failure.second, failure.composite]
         .map(|edge| proposed_weak_equivalences.contains(&edge));
@@ -227,14 +185,18 @@ fn invalid_intervals_return_mathematical_witnesses() {
 }
 
 #[test]
-fn systems_from_distinct_universes_cannot_be_mixed() {
-    let first = chain_universe(2);
-    let second = chain_universe(2);
+fn systems_on_different_lattices_cannot_be_mixed() {
+    let first = Lattice::chain(2);
+    let relabelled = first.relabelled(|_, label| ("x", label)).unwrap();
     let (acyclic_fibrations, _) = bottom_and_top(&first);
-    let (_, fibrations) = bottom_and_top(&second);
+    let (_, fibrations) = bottom_and_top(&relabelled);
 
     assert!(matches!(
-        ModelStructure::new(acyclic_fibrations, fibrations),
-        Err(ModelStructureError::DifferentUniverses)
+        ModelStructure::new(acyclic_fibrations.clone(), fibrations),
+        Err(ModelStructureError::DifferentLattices)
     ));
+
+    // Independently constructed but equal lattices are interchangeable.
+    let (_, same_fibrations) = bottom_and_top(&Lattice::chain(2));
+    assert!(ModelStructure::new(acyclic_fibrations, same_fibrations).is_ok());
 }

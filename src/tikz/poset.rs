@@ -2,10 +2,10 @@ use super::ToTikz;
 use super::edge_routing::edge_bend_decisions;
 use super::layout::{PosetLayoutAlgorithm, layout_with_covers};
 use super::syntax::*;
+use crate::label::Label;
 use crate::lattice::Lattice;
 use crate::poset::{Edge, ElementId, Poset};
 use std::collections::HashMap;
-use std::fmt;
 
 /// Layout and styling options for rendering a finite poset.
 #[derive(Debug, Clone)]
@@ -71,16 +71,11 @@ impl Default for PosetTikzOptions {
 ///
 /// By default, only cover relations are drawn.  Set
 /// [`PosetTikzOptions::full_relations`] to draw every proper relation.
-pub fn poset_to_tikz_with<A, F>(
-    poset: &Poset<A>,
-    options: &PosetTikzOptions,
-    mut label: F,
-) -> TikzPicture
+pub fn poset_to_tikz_with<F>(poset: &Poset, options: &PosetTikzOptions, mut label: F) -> TikzPicture
 where
-    F: FnMut(ElementId, &A) -> TikzLabel,
+    F: FnMut(ElementId, &Label) -> TikzLabel,
 {
-    let mut covers: Vec<_> = poset.cover_relations().into_iter().collect();
-    covers.sort_unstable();
+    let covers = poset.sorted_cover_relations();
     let mut coords = layout_with_covers(
         poset.size(),
         &covers,
@@ -106,7 +101,7 @@ where
         vec![false; edges.len()]
     };
 
-    for (id, element) in poset.elements().iter().enumerate() {
+    for (id, element) in poset.labels().iter().enumerate() {
         picture.push(TikzNode {
             name: Some(node_name(id)),
             at: coords[&id].into(),
@@ -142,7 +137,7 @@ where
     picture
 }
 
-impl<A: fmt::Display> ToTikz for Poset<A> {
+impl ToTikz for Poset {
     type Options = PosetTikzOptions;
 
     fn to_tikz_with(&self, options: &Self::Options) -> TikzPicture {
@@ -152,7 +147,7 @@ impl<A: fmt::Display> ToTikz for Poset<A> {
     }
 }
 
-impl<A: fmt::Display> ToTikz for Lattice<A> {
+impl ToTikz for Lattice {
     type Options = PosetTikzOptions;
 
     fn to_tikz_with(&self, options: &Self::Options) -> TikzPicture {

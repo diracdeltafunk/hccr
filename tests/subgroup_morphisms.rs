@@ -1,36 +1,34 @@
 #![cfg(feature = "groups")]
-// GAP values are deliberately retained inside the crate's Arc-backed
-// mathematical presentations even though the GAP runtime is single-threaded.
-#![allow(clippy::arc_with_non_send_sync)]
 
 use gap_sys::GapValue;
 use hccr::g_lattice::SubgroupGLattice;
 use hccr::subgroup_morphism::SubgroupMaps;
 use std::error::Error;
-use std::sync::Arc;
 
 #[test]
 fn subgroup_image_and_preimage_maps_are_mathematically_correct() -> Result<(), Box<dyn Error>> {
     let (group, quotient, homomorphism) = cyclic_four_to_cyclic_two()?;
-    let domain = Arc::new(SubgroupGLattice::new(&group)?);
-    let codomain = Arc::new(SubgroupGLattice::new(&quotient)?);
+    let domain = SubgroupGLattice::new(&group)?;
+    let codomain = SubgroupGLattice::new(&quotient)?;
 
-    let maps = SubgroupMaps::new(&homomorphism, Arc::clone(&domain), Arc::clone(&codomain))?;
+    let maps = SubgroupMaps::new(&homomorphism, &domain, &codomain)?;
 
     assert!(!maps.is_injective());
     assert!(maps.is_surjective());
 
-    let image_orders = (0..domain.lattice().size())
+    let image_orders = domain
+        .ids()
         .map(|subgroup| {
-            let image = maps.image_map().apply(subgroup).unwrap();
+            let image = maps.image_map().apply(subgroup);
             subgroup_order(codomain.subgroup(image).unwrap())
         })
         .collect::<Result<Vec<_>, _>>()?;
     assert_eq!(image_orders, vec![1, 1, 2]);
 
-    let preimage_orders = (0..codomain.lattice().size())
+    let preimage_orders = codomain
+        .ids()
         .map(|subgroup| {
-            let preimage = maps.preimage_map().apply(subgroup).unwrap();
+            let preimage = maps.preimage_map().apply(subgroup);
             subgroup_order(domain.subgroup(preimage).unwrap())
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -38,22 +36,25 @@ fn subgroup_image_and_preimage_maps_are_mathematically_correct() -> Result<(), B
 
     check_preimage_map_for_nonsurjective_inclusion()?;
     check_map_that_is_neither_injective_nor_surjective()?;
+    check_convenience_constructors_build_the_expected_lattices()?;
+    check_errors_convert_into_the_crate_error();
 
     Ok(())
 }
 
 fn check_preimage_map_for_nonsurjective_inclusion() -> Result<(), Box<dyn Error>> {
     let (group, overgroup, inclusion) = cyclic_two_into_symmetric_three()?;
-    let domain = Arc::new(SubgroupGLattice::new(&group)?);
-    let codomain = Arc::new(SubgroupGLattice::new(&overgroup)?);
+    let domain = SubgroupGLattice::new(&group)?;
+    let codomain = SubgroupGLattice::new(&overgroup)?;
 
-    let maps = SubgroupMaps::new(&inclusion, domain, Arc::clone(&codomain))?;
+    let maps = SubgroupMaps::new(&inclusion, &domain, &codomain)?;
     assert!(maps.is_injective());
     assert!(!maps.is_surjective());
 
-    let mut preimage_orders = (0..codomain.lattice().size())
+    let mut preimage_orders = codomain
+        .ids()
         .map(|subgroup| {
-            let preimage = maps.preimage_map().apply(subgroup).unwrap();
+            let preimage = maps.preimage_map().apply(subgroup);
             subgroup_order(maps.domain().subgroup(preimage).unwrap())
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -79,22 +80,26 @@ fn check_map_that_is_neither_injective_nor_surjective() -> Result<(), Box<dyn Er
         let gap = gap_sys::global()?;
         (gap.list_get(&values, 0)?, gap.list_get(&values, 1)?)
     };
-    let lattice = Arc::new(SubgroupGLattice::new(&group)?);
-    let maps = SubgroupMaps::new(&homomorphism, Arc::clone(&lattice), lattice)?;
+    let lattice = SubgroupGLattice::new(&group)?;
+    let maps = SubgroupMaps::new(&homomorphism, &lattice, &lattice)?;
     assert!(!maps.is_injective());
     assert!(!maps.is_surjective());
 
-    let image_orders = (0..maps.domain().lattice().size())
+    let image_orders = maps
+        .domain()
+        .ids()
         .map(|subgroup| {
-            let image = maps.image_map().apply(subgroup).unwrap();
+            let image = maps.image_map().apply(subgroup);
             subgroup_order(maps.codomain().subgroup(image).unwrap())
         })
         .collect::<Result<Vec<_>, _>>()?;
     assert_eq!(image_orders, vec![1, 1, 2]);
 
-    let preimage_orders = (0..maps.codomain().lattice().size())
+    let preimage_orders = maps
+        .codomain()
+        .ids()
         .map(|subgroup| {
-            let preimage = maps.preimage_map().apply(subgroup).unwrap();
+            let preimage = maps.preimage_map().apply(subgroup);
             subgroup_order(maps.domain().subgroup(preimage).unwrap())
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -141,4 +146,37 @@ fn subgroup_order(subgroup: &GapValue) -> Result<usize, Box<dyn Error>> {
     let gap = gap_sys::global()?;
     let order = gap.call_global("Size", &[subgroup])?;
     Ok(gap.to_usize(&order)?)
+}
+
+fn check_convenience_constructors_build_the_expected_lattices() -> Result<(), Box<dyn Error>> {
+    let c4 = SubgroupGLattice::from_gap("CyclicGroup(4)")?;
+    assert_eq!(c4.size(), 3);
+    assert_eq!(c4.transfer_system_count(), 5);
+
+    let sign = SubgroupMaps::from_gap(
+        "NaturalHomomorphismByNormalSubgroup(SymmetricGroup(3), AlternatingGroup(3));",
+    )?;
+    assert!(sign.is_surjective());
+    assert!(!sign.is_injective());
+    assert_eq!(sign.domain().size(), 6);
+    assert_eq!(sign.codomain().size(), 2);
+
+    let not_a_homomorphism = SubgroupMaps::from_gap("SymmetricGroup(3)");
+    assert!(not_a_homomorphism.is_err());
+    Ok(())
+}
+
+fn check_errors_convert_into_the_crate_error() {
+    fn run() -> hccr::Result<()> {
+        let group = hccr::gap::eval("SymmetricGroup(3);")?;
+        let _ = SubgroupGLattice::new(&group)?;
+        let _ = SubgroupMaps::from_gap("SymmetricGroup(3)")?;
+        Ok(())
+    }
+    assert!(matches!(
+        run(),
+        Err(hccr::Error::SubgroupMap(
+            hccr::subgroup_morphism::SubgroupMapError::NotAGroupHomomorphism
+        ))
+    ));
 }

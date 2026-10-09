@@ -1,21 +1,17 @@
 #![cfg(feature = "groups")]
-// GAP-backed handles are intentionally retained by the Arc-backed G-lattice.
-#![allow(clippy::arc_with_non_send_sync)]
 
 use hccr::g_lattice::{GLattice, GTransferSystem};
 use hccr::lattice::Lattice;
-use hccr::poset::{Edge, Poset};
 use std::error::Error;
-use std::sync::Arc;
 
 #[test]
 fn equivariant_saturation_cosaturation_and_bases_obey_their_universal_properties()
 -> Result<(), Box<dyn Error>> {
     let g_lattice = swapping_diamond()?;
-    let universe = g_lattice.transfer_universe();
-    let systems = universe.transfer_systems();
+    let tr = g_lattice.transfer_systems();
+    let systems = tr.systems();
 
-    for system in &systems {
+    for system in systems {
         let underlying = system.underlying_transfer_system();
         let saturated = system.saturated_closure();
         assert_eq!(system.is_saturated(), underlying.is_saturated());
@@ -67,7 +63,7 @@ fn equivariant_saturation_cosaturation_and_bases_obey_their_universal_properties
             assert!(!system.is_generated_by(smaller)?);
         }
 
-        let orbit_labels = universe.relation_orbit_labels();
+        let orbit_labels = g_lattice.non_identity_relation_orbit_labels();
         let mut minimum_size = usize::MAX;
         for mask in 0usize..(1usize << orbit_labels.len()) {
             let candidate = orbit_labels.iter().enumerate().filter_map(|(bit, label)| {
@@ -92,14 +88,10 @@ fn equivariant_saturation_cosaturation_and_bases_obey_their_universal_properties
         .map(GTransferSystem::generator_complexity)
         .max()
         .unwrap_or(0);
-    assert_eq!(universe.complexity(), complexity);
     assert_eq!(g_lattice.transfer_system_complexity(), complexity);
 
-    let containment = universe.containment_lattice()?;
-    let complete = containment
-        .system(containment.top())
-        .expect("the top containment element should exist");
-    assert_eq!(universe.width(), complete.generator_complexity());
+    let complete = tr.system(tr.top());
+    assert_eq!(complete, &g_lattice.complete_transfer_system());
     assert_eq!(
         g_lattice.transfer_system_width(),
         complete.generator_complexity()
@@ -111,36 +103,24 @@ fn equivariant_saturation_cosaturation_and_bases_obey_their_universal_properties
 fn saturated_g_transfer_systems_form_the_claimed_containment_lattice_and_pairs_enumerate()
 -> Result<(), Box<dyn Error>> {
     let g_lattice = swapping_diamond()?;
-    let universe = g_lattice.transfer_universe();
-    let saturated = universe.saturated_transfer_systems();
-    let lattice = universe.saturated_containment_lattice()?;
+    let lattice = g_lattice.saturated_transfer_systems();
+    let tr = g_lattice.transfer_systems();
+    let all = tr.systems();
 
-    assert_eq!(lattice.size(), saturated.len());
-    assert!(lattice.systems().all(|system| system.is_saturated()));
-    for left in 0..lattice.size() {
-        for right in 0..lattice.size() {
-            assert!(
-                lattice
-                    .system(lattice.meet_id(left, right))
-                    .expect("meet id should be valid")
-                    .is_saturated()
-            );
-            assert!(
-                lattice
-                    .system(lattice.join_id(left, right))
-                    .expect("join id should be valid")
-                    .is_saturated()
-            );
+    assert_eq!(
+        lattice.size(),
+        all.iter().filter(|system| system.is_saturated()).count()
+    );
+    assert!(lattice.systems().iter().all(|system| system.is_saturated()));
+    for left in lattice.ids() {
+        for right in lattice.ids() {
+            assert!(lattice.system(lattice.meet(left, right)).is_saturated());
+            assert!(lattice.system(lattice.join(left, right)).is_saturated());
         }
     }
-    assert_eq!(
-        g_lattice.saturated_transfer_systems_containment()?.size(),
-        saturated.len()
-    );
 
-    let all = universe.transfer_systems();
-    for additive in &all {
-        for multiplicative in &all {
+    for additive in all {
+        for multiplicative in all {
             assert_eq!(
                 additive.is_compatible_with(multiplicative),
                 additive
@@ -156,7 +136,7 @@ fn saturated_g_transfer_systems_form_the_claimed_containment_lattice_and_pairs_e
                 .filter(move |multiplicative| additive.is_compatible_with(multiplicative))
         })
         .count();
-    let pairs = universe.compatible_pairs();
+    let pairs = g_lattice.compatible_transfer_system_pairs();
     assert_eq!(pairs.len(), expected_pair_count);
     assert!(pairs.iter().all(|(additive, multiplicative)| {
         additive.compatibility_failure(multiplicative).is_none()
@@ -164,23 +144,25 @@ fn saturated_g_transfer_systems_form_the_claimed_containment_lattice_and_pairs_e
     Ok(())
 }
 
-fn contained<A>(lower: &GTransferSystem<A>, upper: &GTransferSystem<A>) -> bool {
-    lower.relations(false).is_subset(&upper.relations(false))
+fn contained(lower: &GTransferSystem, upper: &GTransferSystem) -> bool {
+    let by_relations = lower.relations(false).is_subset(&upper.relations(false));
+    assert_eq!(by_relations, lower <= upper);
+    by_relations
 }
 
-fn swapping_diamond() -> Result<GLattice<&'static str>, Box<dyn Error>> {
-    let lattice = Arc::new(Lattice::new(Poset::from_edges(
-        vec!["bottom", "left", "right", "top"],
+fn swapping_diamond() -> Result<GLattice, Box<dyn Error>> {
+    let lattice = Lattice::from_covers(
+        ["bottom", "left", "right", "top"],
         [
-            Edge::new(0, 1),
-            Edge::new(0, 2),
-            Edge::new(1, 3),
-            Edge::new(2, 3),
+            ("bottom", "left"),
+            ("bottom", "right"),
+            ("left", "top"),
+            ("right", "top"),
         ],
-    )?)?);
+    )?;
     let group = gap_sys::eval("Group((1,2));")?;
     Ok(GLattice::from_generator_images(
-        lattice,
+        &lattice,
         &group,
         vec![vec![0, 2, 1, 3]],
     )?)

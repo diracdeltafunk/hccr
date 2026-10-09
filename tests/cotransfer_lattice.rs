@@ -1,34 +1,22 @@
-use hccr::cotransfer_lattice::{CotransferSystem, opposite_lattice};
+use hccr::cotransfer_lattice::CotransferSystem;
 use hccr::lattice::Lattice;
-use hccr::poset::{Edge, Poset};
+use hccr::poset::Edge;
 use std::error::Error;
-use std::sync::Arc;
 
-fn representative_lattices() -> Vec<Arc<Lattice<usize>>> {
+fn representative_lattices() -> Vec<Lattice> {
     vec![
-        Arc::new(Lattice::chain(0).unwrap()),
-        Arc::new(Lattice::chain(3).unwrap()),
-        Arc::new(Lattice::boolean(2).unwrap()),
-        Arc::new(
-            Lattice::new(
-                Poset::from_edges(
-                    (0..5).collect(),
-                    [
-                        Edge::new(0, 1),
-                        Edge::new(1, 3),
-                        Edge::new(3, 4),
-                        Edge::new(0, 2),
-                        Edge::new(2, 4),
-                    ],
-                )
-                .unwrap(),
-            )
-            .unwrap(),
-        ),
+        Lattice::chain(0),
+        Lattice::chain(3),
+        Lattice::boolean(2),
+        Lattice::from_covers(
+            ["0", "a", "b", "c", "1"],
+            [("0", "a"), ("a", "c"), ("c", "1"), ("0", "b"), ("b", "1")],
+        )
+        .unwrap(),
     ]
 }
 
-fn assert_cotransfer_axioms<A>(system: &CotransferSystem<A>) {
+fn assert_cotransfer_axioms(system: &CotransferSystem) {
     let lattice = system.lattice();
     let arrows = system.edges(true);
 
@@ -44,10 +32,10 @@ fn assert_cotransfer_axioms<A>(system: &CotransferSystem<A>) {
     }
 
     for &edge in &arrows {
-        for z in 0..lattice.size() {
+        for z in lattice.ids() {
             if lattice.leq(edge.from, z) {
                 assert!(
-                    arrows.contains(&Edge::new(z, lattice.join_id(edge.to, z))),
+                    arrows.contains(&Edge::new(z, lattice.join(edge.to, z))),
                     "cotransfer system was not closed under pushout"
                 );
             }
@@ -59,70 +47,56 @@ fn assert_cotransfer_axioms<A>(system: &CotransferSystem<A>) {
 fn cotransfer_generation_enumeration_and_opposite_conversion_obey_their_laws()
 -> Result<(), Box<dyn Error>> {
     for lattice in representative_lattices() {
-        let universe = Arc::clone(&lattice).cotransfer_universe();
-        let systems = universe.cotransfer_systems();
-        let containment = universe.containment_lattice()?;
-        let opposite_count = universe
-            .opposite_transfer_universe()
-            .transfer_systems()
-            .len();
+        let containment = lattice.cotransfer_systems();
+        let opposite_count = lattice.opposite().transfer_system_count();
 
-        assert_eq!(systems.len(), opposite_count);
-        assert_eq!(containment.size(), systems.len());
-        for system in systems {
-            assert_cotransfer_axioms(&system);
+        assert_eq!(containment.size(), opposite_count);
+        assert_eq!(lattice.cotransfer_system_count(), opposite_count);
+        for system in containment.systems() {
+            assert_cotransfer_axioms(system);
 
             let opposite = system.opposite_transfer_system();
+            assert_eq!(*opposite.lattice(), lattice.opposite());
             for edge in system.edges(true) {
-                assert!(opposite.contains_relation(Edge::new(edge.to, edge.from)));
+                assert!(opposite.contains_relation(edge.reversed()));
             }
-            let round_trip = universe.from_opposite_transfer_system(&opposite)?;
-            assert_eq!(round_trip, system);
+            let round_trip = lattice.cotransfer_system_from_opposite(&opposite)?;
+            assert_eq!(&round_trip, system);
         }
     }
     Ok(())
 }
 
 #[test]
-fn lifting_classes_give_an_order_reversing_bijection() -> Result<(), Box<dyn Error>> {
+fn lifting_classes_give_an_order_reversing_bijection() {
     for lattice in representative_lattices() {
-        let transfer_universe = Arc::clone(&lattice).transfer_universe();
-        let cotransfer_universe = Arc::new(
-            hccr::cotransfer_lattice::CotransferUniverse::from_transfer_universe(Arc::clone(
-                &transfer_universe,
-            )),
-        );
-        let transfers = transfer_universe.transfer_systems();
+        let transfers = lattice.transfer_systems();
 
-        for right in &transfers {
-            let left = cotransfer_universe.left_lifting_of(right)?;
-            assert_eq!(left.right_lifting_transfer()?, *right);
+        for right in transfers.systems() {
+            let left = right.left_lifting_cotransfer();
+            assert_eq!(left.right_lifting_transfer(), *right);
         }
 
-        for left in cotransfer_universe.cotransfer_systems() {
-            let right = left.right_lifting_transfer()?;
-            assert_eq!(cotransfer_universe.left_lifting_of(&right)?, left);
+        for left in lattice.cotransfer_systems().systems() {
+            let right = left.right_lifting_transfer();
+            assert_eq!(right.left_lifting_cotransfer(), *left);
         }
 
-        for lower in &transfers {
-            for upper in &transfers {
-                if lower.edges(false).is_subset(&upper.edges(false)) {
-                    let lower_left = cotransfer_universe.left_lifting_of(lower)?;
-                    let upper_left = cotransfer_universe.left_lifting_of(upper)?;
-                    assert!(upper_left.edges(false).is_subset(&lower_left.edges(false)));
+        for lower in transfers.systems() {
+            for upper in transfers.systems() {
+                if lower <= upper {
+                    assert!(upper.left_lifting_cotransfer() <= lower.left_lifting_cotransfer());
                 }
             }
         }
     }
-    Ok(())
 }
 
 #[test]
 fn generated_cotransfer_system_is_the_least_pushout_closed_system() {
-    let lattice = Arc::new(Lattice::chain(2).unwrap());
+    let lattice = Lattice::chain(2);
     let generated = lattice
-        .cotransfer_universe()
-        .generated_by([Edge::new(0, 2)])
+        .cotransfer_system_generated_by([Edge::new(0, 2)])
         .unwrap();
     assert_eq!(
         generated.edges(false),
@@ -133,13 +107,16 @@ fn generated_cotransfer_system_is_the_least_pushout_closed_system() {
 #[test]
 fn opposite_lattice_interchanges_meets_and_joins() {
     for lattice in representative_lattices() {
-        let opposite = opposite_lattice(lattice.as_ref());
-        for left in 0..lattice.size() {
-            for right in 0..lattice.size() {
-                assert_eq!(opposite.meet_id(left, right), lattice.join_id(left, right));
-                assert_eq!(opposite.join_id(left, right), lattice.meet_id(left, right));
+        let opposite = lattice.opposite();
+        assert_eq!(opposite.labels(), lattice.labels());
+        assert_eq!(opposite.bottom(), lattice.top());
+        for left in lattice.ids() {
+            for right in lattice.ids() {
+                assert_eq!(opposite.meet(left, right), lattice.join(left, right));
+                assert_eq!(opposite.join(left, right), lattice.meet(left, right));
                 assert_eq!(opposite.leq(left, right), lattice.leq(right, left));
             }
         }
+        assert_eq!(opposite.opposite(), lattice);
     }
 }

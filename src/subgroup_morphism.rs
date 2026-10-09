@@ -12,13 +12,12 @@
 //! GAP's concrete subgroup enumeration and are not interchangeable merely
 //! because two subgroup lattices happen to be isomorphic.
 
-use crate::g_lattice::SubgroupGLattice;
-use crate::group_theory::{self, GapSubgroup, GroupTheoryError};
+use crate::g_lattice::{GLatticeError, SubgroupGLattice};
+use crate::group_theory::{self, GroupTheoryError};
 use crate::morphism::{PosetMap, PosetMapError};
 use crate::poset::ElementId;
 use gap_sys::GapValue;
 use std::fmt;
-use std::sync::Arc;
 
 /// The subgroup-lattice maps induced by a concrete GAP group homomorphism.
 ///
@@ -29,10 +28,10 @@ use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub struct SubgroupMaps {
     homomorphism: GapValue,
-    domain: Arc<SubgroupGLattice>,
-    codomain: Arc<SubgroupGLattice>,
-    image_map: PosetMap<GapSubgroup, GapSubgroup>,
-    preimage_map: PosetMap<GapSubgroup, GapSubgroup>,
+    domain: SubgroupGLattice,
+    codomain: SubgroupGLattice,
+    image_map: PosetMap,
+    preimage_map: PosetMap,
     is_injective: bool,
     is_surjective: bool,
 }
@@ -60,6 +59,8 @@ pub enum SubgroupMapError {
     },
     /// Validation of one of the induced monotone maps failed.
     PosetMap(PosetMapError),
+    /// Constructing the subgroup lattice of the source or range failed.
+    SubgroupLattice(GLatticeError),
 }
 
 impl fmt::Display for SubgroupMapError {
@@ -86,6 +87,9 @@ impl fmt::Display for SubgroupMapError {
                 "GAP did not find the inverse image of codomain subgroup {subgroup} in the domain subgroup lattice"
             ),
             Self::PosetMap(error) => write!(f, "induced subgroup map is not monotone: {error}"),
+            Self::SubgroupLattice(error) => {
+                write!(f, "could not construct a subgroup lattice: {error}")
+            }
         }
     }
 }
@@ -116,7 +120,55 @@ impl From<GroupTheoryError> for SubgroupMapError {
     }
 }
 
+impl From<GLatticeError> for SubgroupMapError {
+    fn from(error: GLatticeError) -> Self {
+        Self::SubgroupLattice(error)
+    }
+}
+
 impl SubgroupMaps {
+    /// Computes the subgroup maps of the homomorphism described by a GAP
+    /// expression, constructing the subgroup lattices of its source and range.
+    ///
+    /// ```no_run
+    /// use hccr::subgroup_morphism::SubgroupMaps;
+    ///
+    /// let sign = SubgroupMaps::from_gap(
+    ///     "NaturalHomomorphismByNormalSubgroup(SymmetricGroup(3), AlternatingGroup(3))",
+    /// )?;
+    /// assert!(sign.is_surjective());
+    /// assert_eq!(sign.codomain().size(), 2);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn from_gap(expression: &str) -> Result<Self, SubgroupMapError> {
+        let expression = expression.trim().trim_end_matches(';');
+        let homomorphism = gap_sys::eval(&format!("{expression};"))
+            .map_err(|error| SubgroupMapError::Gap(error.to_string()))?;
+        Self::from_homomorphism(&homomorphism)
+    }
+
+    /// Computes the subgroup maps of a GAP homomorphism, constructing the
+    /// subgroup lattices of its source and range.
+    ///
+    /// Use [`SubgroupMaps::new`] instead to reuse subgroup lattices that you
+    /// have already constructed, for example to compose maps.
+    pub fn from_homomorphism(homomorphism: &GapValue) -> Result<Self, SubgroupMapError> {
+        let (source, range) = {
+            let mut gap = group_theory::global_gap()?;
+            group_theory::validate_group_homomorphism(&mut gap, homomorphism)?;
+            let source = gap
+                .call_global("Source", &[homomorphism])
+                .map_err(|error| SubgroupMapError::Gap(error.to_string()))?;
+            let range = gap
+                .call_global("Range", &[homomorphism])
+                .map_err(|error| SubgroupMapError::Gap(error.to_string()))?;
+            (source, range)
+        };
+        let domain = SubgroupGLattice::new(&source)?;
+        let codomain = SubgroupGLattice::new(&range)?;
+        Self::new(homomorphism, &domain, &codomain)
+    }
+
     /// Computes the subgroup image and inverse-image maps induced by `homomorphism`.
     ///
     /// GAP's `Source(homomorphism)` and `Range(homomorphism)` must be the exact
@@ -125,8 +177,8 @@ impl SubgroupMaps {
     /// different subgroup enumeration or conjugation action.
     pub fn new(
         homomorphism: &GapValue,
-        domain: Arc<SubgroupGLattice>,
-        codomain: Arc<SubgroupGLattice>,
+        domain: &SubgroupGLattice,
+        codomain: &SubgroupGLattice,
     ) -> Result<Self, SubgroupMapError> {
         let mut gap = group_theory::global_gap()?;
         let data = group_theory::subgroup_maps_data(
@@ -144,21 +196,13 @@ impl SubgroupMaps {
             },
         )?;
 
-        let image_map = PosetMap::between_lattices(
-            domain.lattice().as_ref(),
-            codomain.lattice().as_ref(),
-            data.image_map,
-        )?;
-        let preimage_map = PosetMap::between_lattices(
-            codomain.lattice().as_ref(),
-            domain.lattice().as_ref(),
-            data.preimage_map,
-        )?;
+        let image_map = PosetMap::new(domain.lattice(), codomain.lattice(), data.image_map)?;
+        let preimage_map = PosetMap::new(codomain.lattice(), domain.lattice(), data.preimage_map)?;
 
         Ok(Self {
             homomorphism: homomorphism.clone(),
-            domain,
-            codomain,
+            domain: domain.clone(),
+            codomain: codomain.clone(),
             image_map,
             preimage_map,
             is_injective: data.is_injective,
@@ -172,22 +216,22 @@ impl SubgroupMaps {
     }
 
     /// Returns the precise subgroup G-lattice used as the domain.
-    pub fn domain(&self) -> &Arc<SubgroupGLattice> {
+    pub fn domain(&self) -> &SubgroupGLattice {
         &self.domain
     }
 
     /// Returns the precise subgroup G-lattice used as the codomain.
-    pub fn codomain(&self) -> &Arc<SubgroupGLattice> {
+    pub fn codomain(&self) -> &SubgroupGLattice {
         &self.codomain
     }
 
     /// Returns the monotone map `K |-> f(K)` from `Sub(G)` to `Sub(H)`.
-    pub fn image_map(&self) -> &PosetMap<GapSubgroup, GapSubgroup> {
+    pub fn image_map(&self) -> &PosetMap {
         &self.image_map
     }
 
     /// Returns the monotone map `J |-> f^{-1}(J)` from `Sub(H)` to `Sub(G)`.
-    pub fn preimage_map(&self) -> &PosetMap<GapSubgroup, GapSubgroup> {
+    pub fn preimage_map(&self) -> &PosetMap {
         &self.preimage_map
     }
 
@@ -202,12 +246,12 @@ impl SubgroupMaps {
     }
 
     /// Tests whether `candidate` is the exact stored domain G-lattice.
-    pub fn has_domain(&self, candidate: &Arc<SubgroupGLattice>) -> bool {
-        Arc::ptr_eq(&self.domain, candidate)
+    pub fn has_domain(&self, candidate: &SubgroupGLattice) -> bool {
+        self.domain == *candidate
     }
 
     /// Tests whether `candidate` is the exact stored codomain G-lattice.
-    pub fn has_codomain(&self, candidate: &Arc<SubgroupGLattice>) -> bool {
-        Arc::ptr_eq(&self.codomain, candidate)
+    pub fn has_codomain(&self, candidate: &SubgroupGLattice) -> bool {
+        self.codomain == *candidate
     }
 }
