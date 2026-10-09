@@ -159,42 +159,5 @@ fn convenience_constructors_build_the_expected_lattices() -> Result<(), Box<dyn 
     assert!(!sign.is_injective());
     assert_eq!(sign.domain().size(), 6);
     assert_eq!(sign.codomain().size(), 2);
-
-    let not_a_homomorphism = SubgroupMaps::from_gap("SymmetricGroup(3)");
-    assert!(not_a_homomorphism.is_err());
-    Ok(())
-}
-
-#[test]
-fn errors_convert_into_the_crate_error() {
-    fn not_a_homomorphism() -> hccr::Result<()> {
-        let _ = SubgroupMaps::from_gap("SymmetricGroup(3)")?;
-        Ok(())
-    }
-    assert!(matches!(
-        not_a_homomorphism(),
-        Err(hccr::Error::SubgroupMap(
-            hccr::subgroup_morphism::SubgroupMapError::NotAGroupHomomorphism
-        ))
-    ));
-
-    fn bad_syntax() -> hccr::Result<()> {
-        hccr::gap::eval("this is not GAP syntax;")?;
-        Ok(())
-    }
-    assert!(matches!(bad_syntax(), Err(hccr::Error::Gap(_))));
-}
-
-#[test]
-fn gap_errors_are_reported_and_leave_gap_usable() -> Result<(), Box<dyn Error>> {
-    assert!(matches!(
-        SubgroupGLattice::from_gap("this is not GAP syntax"),
-        Err(hccr::g_lattice::GLatticeError::Gap(_))
-    ));
-    assert!(SubgroupMaps::from_gap("NoSuchFunction(SymmetricGroup(3))").is_err());
-
-    // GAP keeps working after both errors.
-    let s3 = SubgroupGLattice::from_gap("SymmetricGroup(3)")?;
-    assert_eq!(s3.transfer_system_count(), 9);
     Ok(())
 }

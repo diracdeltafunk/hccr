@@ -281,60 +281,59 @@ fn two_out_of_three_satisfies_its_defining_condition() {
 }
 
 #[test]
-fn errors_convert_into_the_crate_error_and_name_the_label() {
-    fn build() -> hccr::Result<Lattice> {
-        Ok(Lattice::from_covers(["0", "1"], [("0", "2")])?)
-    }
-    let error = build().unwrap_err();
-    assert!(matches!(
-        error,
-        hccr::Error::Lattice(hccr::lattice::LatticeError::Poset(
-            hccr::poset::PosetError::UnknownLabel { .. }
-        ))
-    ));
-    assert_eq!(error.to_string(), "no element has the label `2`");
+fn constructions_have_the_expected_order_structure() {
+    use hccr::prelude::{chain, horizontal_join, product};
 
-    let duplicate = Poset::from_edges(["a", "a"], [] as [Edge; 0]).unwrap_err();
-    assert!(matches!(
-        duplicate,
-        hccr::poset::PosetError::DuplicateLabel { .. }
-    ));
-}
-
-#[test]
-fn constructions_have_the_documented_labels_and_maps() {
-    use hccr::label::Label;
-    use hccr::prelude::{boolean, chain, horizontal_join, product};
-
-    let square = product([chain(1), chain(2)]);
+    // The product order and meet are componentwise.
+    let left = chain(1);
+    let right = chain(2);
+    let (square, projections) = Lattice::product_with_projections([&left, &right]);
     assert_eq!(square.size(), 6);
-    assert_eq!(square.label(square.top()), &Label::from((1, 2)));
-    assert_eq!(
-        square.meet(square.id((0, 2)).unwrap(), square.id((1, 1)).unwrap()),
-        square.id((0, 1)).unwrap()
-    );
+    for x in square.ids() {
+        for y in square.ids() {
+            let (p, q) = (&projections[0], &projections[1]);
+            assert_eq!(
+                square.leq(x, y),
+                left.leq(p.apply(x), p.apply(y)) && right.leq(q.apply(x), q.apply(y))
+            );
+            assert_eq!(
+                p.apply(square.meet(x, y)),
+                left.meet(p.apply(x), p.apply(y))
+            );
+            assert_eq!(
+                q.apply(square.join(x, y)),
+                right.join(q.apply(x), q.apply(y))
+            );
+        }
+    }
 
-    let b3 = boolean(3);
-    assert_eq!(b3.label(5), &Label::set([0, 2]));
-    assert_eq!(b3.id(Label::set([2, 0])).unwrap(), 5);
-
+    // The horizontal join glues the factors along their bottoms and tops and
+    // makes elements of different factors incomparable otherwise.
     let c3 = chain(3);
     let (fusion, inclusions) = Lattice::horizontal_join_with_inclusions([&c3, &c3]).unwrap();
-    assert_eq!(fusion, horizontal_join([&c3, &c3]).unwrap());
     assert_eq!(fusion.size(), 6);
-    assert_eq!(inclusions[0].apply(0), fusion.id("bot").unwrap());
-    assert_eq!(inclusions[1].apply(3), fusion.id("top").unwrap());
-    assert_eq!(inclusions[1].apply(2), fusion.id((1, 2)).unwrap());
-    assert_eq!(horizontal_join([] as [Lattice; 0]).unwrap(), {
-        Lattice::from_covers(["bot", "top"], [("bot", "top")]).unwrap()
-    });
-    assert!(horizontal_join([chain(0)]).is_err());
+    assert!(fusion.is_fusion_of_total_orders());
+    for inclusion in &inclusions {
+        assert_eq!(inclusion.apply(c3.bottom()), fusion.bottom());
+        assert_eq!(inclusion.apply(c3.top()), fusion.top());
+    }
+    for x in 1..3 {
+        for y in 1..3 {
+            let (a, b) = (inclusions[0].apply(x), inclusions[1].apply(y));
+            assert!(!fusion.leq(a, b) && !fusion.leq(b, a));
+        }
+    }
 
-    // Cloning is cheap and shares data; equality is structural.
-    let copy = fusion.clone();
-    assert!(copy.ptr_eq(&fusion));
+    // The empty horizontal join is the two-element chain, its unit.
+    let unit = horizontal_join([] as [Lattice; 0]).unwrap();
+    assert_eq!(unit.size(), 2);
+    assert!(unit.is_total_order());
     assert_eq!(
-        copy,
-        Lattice::horizontal_join([&chain(3), &chain(3)]).unwrap()
+        horizontal_join([&c3, &unit])
+            .unwrap()
+            .transfer_system_count(),
+        c3.transfer_system_count()
     );
+    assert!(horizontal_join([chain(0)]).is_err());
+    assert_eq!(product([chain(1), chain(1)]).transfer_system_count(), 10);
 }

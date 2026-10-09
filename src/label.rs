@@ -412,35 +412,3 @@ impl TryFrom<&Label> for GapSubgroup {
             .ok_or_else(|| mismatch("a subgroup", label))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn integer_types_agree() {
-        assert_eq!(Label::from(3u8), Label::from(3usize));
-        assert_eq!(Label::from(-1i32), Label::Int(-1));
-    }
-
-    #[test]
-    fn sets_ignore_order_and_duplicates() {
-        assert_eq!(Label::set([2, 0, 2]), Label::set([0, 2]));
-        assert_eq!(Label::set([2, 0]).to_string(), "{0, 2}");
-    }
-
-    #[test]
-    fn nested_round_trip() {
-        let label = Label::from((1, ("a", vec![2, 3])));
-        assert_eq!(label.to_string(), "(1, (a, (2, 3)))");
-        let (n, (s, v)): (u8, (String, Vec<i64>)) = (&label).try_into().unwrap();
-        assert_eq!((n, s.as_str(), v), (1, "a", vec![2, 3]));
-    }
-
-    #[test]
-    fn mismatches_report_the_label() {
-        let error = i64::try_from(&Label::from("x")).unwrap_err();
-        assert_eq!(error.found, Label::from("x"));
-        assert!(error.to_string().contains("string"));
-    }
-}

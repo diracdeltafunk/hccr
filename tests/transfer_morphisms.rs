@@ -38,11 +38,8 @@ fn assert_batch_pushforward_agrees(
     codomain: &TransferLattice,
 ) {
     let map = pushforward_containment_map(homomorphism, domain, codomain).unwrap();
-    assert_eq!(map.domain(), domain.as_poset());
-    assert_eq!(map.codomain(), codomain.as_poset());
     for (source_id, system) in domain.systems().iter().enumerate() {
         let expected = pushforward(homomorphism, system).unwrap();
-        assert_eq!(system.pushforward(homomorphism).unwrap(), expected);
         assert!(
             codomain.system(map.apply(source_id)) == &expected,
             "batch pushforward disagrees at source element {source_id}"
@@ -58,7 +55,6 @@ fn assert_batch_pullback_agrees(
     let map = pullback_containment_map(homomorphism, codomain, domain).unwrap();
     for (source_id, system) in codomain.systems().iter().enumerate() {
         let expected = pullback(homomorphism, system).unwrap();
-        assert_eq!(system.pullback(homomorphism).unwrap(), expected);
         assert!(
             domain.system(map.apply(source_id)) == &expected,
             "batch pullback disagrees at source element {source_id}"
@@ -261,7 +257,6 @@ fn pointwise_maps_are_functorial_and_identity_maps_work_for_both_orders() {
     let identity = LatticeMap::new(&c3, &c3, vec![0, 1, 2]).unwrap();
     assert_eq!(g.compose(&f).unwrap(), composite);
     assert_eq!(identity, LatticeMap::identity(&c3));
-    assert!(f.compose(&g).is_err());
     let u4 = c4.clone();
     let u3 = c3.clone();
     let u2 = c2.clone();

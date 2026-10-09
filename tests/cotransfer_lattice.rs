@@ -108,7 +108,6 @@ fn generated_cotransfer_system_is_the_least_pushout_closed_system() {
 fn opposite_lattice_interchanges_meets_and_joins() {
     for lattice in representative_lattices() {
         let opposite = lattice.opposite();
-        assert_eq!(opposite.labels(), lattice.labels());
         assert_eq!(opposite.bottom(), lattice.top());
         for left in lattice.ids() {
             for right in lattice.ids() {

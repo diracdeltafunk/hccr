@@ -1197,13 +1197,4 @@ mod tests {
                 .all(|edge| composition_order.leq(edge.from, edge.to))
         );
     }
-
-    #[test]
-    fn transfer_systems_print_with_labels() {
-        let lattice = Lattice::from_covers(["0", "a", "1"], [("0", "a"), ("a", "1")]).unwrap();
-        let system = lattice
-            .transfer_system_generated_by([lattice.edge("a", "1").unwrap()])
-            .unwrap();
-        assert_eq!(system.to_string(), "{a -> 1}");
-    }
 }

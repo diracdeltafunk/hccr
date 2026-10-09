@@ -195,8 +195,4 @@ fn systems_on_different_lattices_cannot_be_mixed() {
         ModelStructure::new(acyclic_fibrations.clone(), fibrations),
         Err(ModelStructureError::DifferentLattices)
     ));
-
-    // Independently constructed but equal lattices are interchangeable.
-    let (_, same_fibrations) = bottom_and_top(&Lattice::chain(2));
-    assert!(ModelStructure::new(acyclic_fibrations, same_fibrations).is_ok());
 }

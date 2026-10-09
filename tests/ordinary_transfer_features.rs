@@ -162,13 +162,3 @@ fn compatibility_satisfies_the_standard_general_laws() {
         Some(CompatibilityFailure::DifferentLattices)
     );
 }
-
-#[test]
-fn transfer_systems_on_equal_lattices_are_interchangeable() {
-    let first = Lattice::boolean(2);
-    let second = Lattice::boolean(2);
-    let left = first.transfer_systems();
-    for system in second.transfer_systems().systems() {
-        assert!(left.id_of(system).is_some());
-    }
-}

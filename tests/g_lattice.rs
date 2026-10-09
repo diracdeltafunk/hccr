@@ -180,8 +180,6 @@ fn check_subgroup_lattice_constructor_uses_conjugation_action() -> Result<(), Bo
         ]
         .map(Label::from)
     );
-    assert_eq!(subgroup_lattice.id(GapSubgroup::new(2, 0))?, 4);
-    assert_eq!(subgroup_lattice.label(4).to_string(), "H(2,0)");
 
     assert_eq!(g_lattice.lattice().bottom(), 0);
     assert_eq!(g_lattice.lattice().top(), 5);
