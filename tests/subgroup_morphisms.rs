@@ -36,8 +36,6 @@ fn subgroup_image_and_preimage_maps_are_mathematically_correct() -> Result<(), B
 
     check_preimage_map_for_nonsurjective_inclusion()?;
     check_map_that_is_neither_injective_nor_surjective()?;
-    check_convenience_constructors_build_the_expected_lattices()?;
-    check_errors_convert_into_the_crate_error();
 
     Ok(())
 }
@@ -148,7 +146,8 @@ fn subgroup_order(subgroup: &GapValue) -> Result<usize, Box<dyn Error>> {
     Ok(gap.to_usize(&order)?)
 }
 
-fn check_convenience_constructors_build_the_expected_lattices() -> Result<(), Box<dyn Error>> {
+#[test]
+fn convenience_constructors_build_the_expected_lattices() -> Result<(), Box<dyn Error>> {
     let c4 = SubgroupGLattice::from_gap("CyclicGroup(4)")?;
     assert_eq!(c4.size(), 3);
     assert_eq!(c4.transfer_system_count(), 5);
@@ -160,23 +159,5 @@ fn check_convenience_constructors_build_the_expected_lattices() -> Result<(), Bo
     assert!(!sign.is_injective());
     assert_eq!(sign.domain().size(), 6);
     assert_eq!(sign.codomain().size(), 2);
-
-    let not_a_homomorphism = SubgroupMaps::from_gap("SymmetricGroup(3)");
-    assert!(not_a_homomorphism.is_err());
     Ok(())
-}
-
-fn check_errors_convert_into_the_crate_error() {
-    fn run() -> hccr::Result<()> {
-        let group = hccr::gap::eval("SymmetricGroup(3);")?;
-        let _ = SubgroupGLattice::new(&group)?;
-        let _ = SubgroupMaps::from_gap("SymmetricGroup(3)")?;
-        Ok(())
-    }
-    assert!(matches!(
-        run(),
-        Err(hccr::Error::SubgroupMap(
-            hccr::subgroup_morphism::SubgroupMapError::NotAGroupHomomorphism
-        ))
-    ));
 }

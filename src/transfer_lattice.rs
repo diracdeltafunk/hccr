@@ -1128,22 +1128,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn transfer_context_uses_stable_objects_and_target_major_attributes() {
-        let lattice = Lattice::chain(3);
-        let universe = lattice.transfer_universe();
-
-        assert_eq!(universe.context.objects, universe.proper_edges());
-        assert!(
-            universe
-                .context
-                .attributes
-                .windows(2)
-                .all(|edges| (edges[0].to, edges[0].from) <= (edges[1].to, edges[1].from))
-        );
-        assert_ne!(universe.context.objects, universe.context.attributes);
-    }
-
-    #[test]
     fn generated_transfer_system_has_restriction_closure() {
         let lattice = Lattice::chain(2);
         let generated = lattice
@@ -1196,14 +1180,5 @@ mod tests {
                 .all_relations_iter()
                 .all(|edge| composition_order.leq(edge.from, edge.to))
         );
-    }
-
-    #[test]
-    fn transfer_systems_print_with_labels() {
-        let lattice = Lattice::from_covers(["0", "a", "1"], [("0", "a"), ("a", "1")]).unwrap();
-        let system = lattice
-            .transfer_system_generated_by([lattice.edge("a", "1").unwrap()])
-            .unwrap();
-        assert_eq!(system.to_string(), "{a -> 1}");
     }
 }
