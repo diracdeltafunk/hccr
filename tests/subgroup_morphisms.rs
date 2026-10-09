@@ -36,8 +36,6 @@ fn subgroup_image_and_preimage_maps_are_mathematically_correct() -> Result<(), B
 
     check_preimage_map_for_nonsurjective_inclusion()?;
     check_map_that_is_neither_injective_nor_surjective()?;
-    check_convenience_constructors_build_the_expected_lattices()?;
-    check_errors_convert_into_the_crate_error();
 
     Ok(())
 }
@@ -148,7 +146,8 @@ fn subgroup_order(subgroup: &GapValue) -> Result<usize, Box<dyn Error>> {
     Ok(gap.to_usize(&order)?)
 }
 
-fn check_convenience_constructors_build_the_expected_lattices() -> Result<(), Box<dyn Error>> {
+#[test]
+fn convenience_constructors_build_the_expected_lattices() -> Result<(), Box<dyn Error>> {
     let c4 = SubgroupGLattice::from_gap("CyclicGroup(4)")?;
     assert_eq!(c4.size(), 3);
     assert_eq!(c4.transfer_system_count(), 5);
@@ -166,17 +165,36 @@ fn check_convenience_constructors_build_the_expected_lattices() -> Result<(), Bo
     Ok(())
 }
 
-fn check_errors_convert_into_the_crate_error() {
-    fn run() -> hccr::Result<()> {
-        let group = hccr::gap::eval("SymmetricGroup(3);")?;
-        let _ = SubgroupGLattice::new(&group)?;
+#[test]
+fn errors_convert_into_the_crate_error() {
+    fn not_a_homomorphism() -> hccr::Result<()> {
         let _ = SubgroupMaps::from_gap("SymmetricGroup(3)")?;
         Ok(())
     }
     assert!(matches!(
-        run(),
+        not_a_homomorphism(),
         Err(hccr::Error::SubgroupMap(
             hccr::subgroup_morphism::SubgroupMapError::NotAGroupHomomorphism
         ))
     ));
+
+    fn bad_syntax() -> hccr::Result<()> {
+        hccr::gap::eval("this is not GAP syntax;")?;
+        Ok(())
+    }
+    assert!(matches!(bad_syntax(), Err(hccr::Error::Gap(_))));
+}
+
+#[test]
+fn gap_errors_are_reported_and_leave_gap_usable() -> Result<(), Box<dyn Error>> {
+    assert!(matches!(
+        SubgroupGLattice::from_gap("this is not GAP syntax"),
+        Err(hccr::g_lattice::GLatticeError::Gap(_))
+    ));
+    assert!(SubgroupMaps::from_gap("NoSuchFunction(SymmetricGroup(3))").is_err());
+
+    // GAP keeps working after both errors.
+    let s3 = SubgroupGLattice::from_gap("SymmetricGroup(3)")?;
+    assert_eq!(s3.transfer_system_count(), 9);
+    Ok(())
 }

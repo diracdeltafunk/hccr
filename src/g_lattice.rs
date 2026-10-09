@@ -32,8 +32,9 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
-//! [`GLattice`] and [`SubgroupGLattice`] are cheap-to-clone handles. Because
-//! GAP itself is single-threaded, they cannot be sent between threads.
+//! [`GLattice`] and [`SubgroupGLattice`] are cheap-to-clone handles. GAP may be
+//! used from any thread, but these handles hold GAP values, which cannot be
+//! sent between threads, so each handle stays on the thread that created it.
 
 use crate::bitvec_utils::{is_subset, set_partial_cmp};
 use crate::group_theory::{self, GapAction, GapSubgroup, GroupTheoryError, PointOrbitError};
