@@ -1,6 +1,6 @@
 use super::ToTikz;
 use super::edge_routing::edge_bend_decisions;
-use super::layout::{PosetLayoutAlgorithm, layout_with_covers};
+use super::layout::{PosetLayout, layout_with_covers};
 use super::poset::{PosetTikzOptions, poset_to_tikz_with};
 use super::syntax::*;
 use crate::cotransfer_lattice::CotransferLattice;
@@ -48,8 +48,8 @@ pub struct TransferSystemGlyphOptions {
     pub x_spacing: f64,
     /// Vertical spacing in the underlying lattice glyph.
     pub y_spacing: f64,
-    /// The algorithm used to lay out the underlying lattice glyph.
-    pub layout_algorithm: PosetLayoutAlgorithm,
+    /// How the elements of the underlying lattice glyph are placed.
+    pub layout: PosetLayout,
     /// Whether to bend relations that would overlap glyph nodes or relations.
     pub bend_colinear_edges: bool,
     /// Bend angle used when a glyph relation must be curved.
@@ -134,7 +134,7 @@ impl Default for TransferSystemGlyphOptions {
             baseline: "-.5ex".to_string(),
             x_spacing: 1.0,
             y_spacing: 0.9,
-            layout_algorithm: PosetLayoutAlgorithm::default(),
+            layout: PosetLayout::default(),
             bend_colinear_edges: true,
             bend_angle: 18.0,
             colinear_tolerance: 1e-6,
@@ -308,7 +308,7 @@ impl<'a> SuborderGlyphRenderer<'a> {
                 &covers,
                 options.x_spacing,
                 options.y_spacing,
-                options.layout_algorithm,
+                options.layout,
             ),
             proper_edges,
             ambient_edges,

@@ -1,6 +1,6 @@
 use super::ToTikz;
 use super::edge_routing::edge_bend_decisions;
-use super::layout::{PosetLayoutAlgorithm, layout_with_covers};
+use super::layout::{PosetLayout, layout_with_covers};
 use super::syntax::*;
 use crate::label::Label;
 use crate::lattice::Lattice;
@@ -16,8 +16,8 @@ pub struct PosetTikzOptions {
     pub x_spacing: f64,
     /// Vertical spacing between consecutive ranks on a longest chain.
     pub y_spacing: f64,
-    /// The algorithm used to assign coordinates to elements.
-    pub layout_algorithm: PosetLayoutAlgorithm,
+    /// How elements are placed; see [`PosetLayout`].
+    pub layout: PosetLayout,
     /// Options applied to each element node.
     pub node_options: TikzOptions,
     /// Options applied to each order-relation edge.
@@ -46,7 +46,7 @@ impl Default for PosetTikzOptions {
             picture_options: TikzOptions::default(),
             x_spacing: 1.8,
             y_spacing: 1.4,
-            layout_algorithm: PosetLayoutAlgorithm::default(),
+            layout: PosetLayout::default(),
             node_options: TikzOptions::new(["circle", "draw", "inner sep=1.5pt"]),
             edge_options: TikzOptions::default(),
             debug_element_ids: false,
@@ -81,7 +81,7 @@ where
         &covers,
         options.x_spacing,
         options.y_spacing,
-        options.layout_algorithm,
+        options.layout,
     );
     for (&id, &coordinate) in &options.coordinate_overrides {
         if id < poset.size() {

@@ -3,7 +3,8 @@
 //! The module provides a small typed TikZ abstract syntax tree together with
 //! convenience renderers for Hasse diagrams. The default layout uses centered
 //! feasible heights and layered crossing reduction, retaining the best
-//! straight-line geometry found among the ranked and optimized candidates.
+//! straight-line geometry found among the ranked and optimized candidates;
+//! [`PosetLayout`] describes the alternatives.
 //! Cover relations are drawn unless full relations are requested.
 
 mod edge_routing;
@@ -12,7 +13,7 @@ mod poset;
 mod syntax;
 mod transfer;
 
-pub use layout::PosetLayoutAlgorithm;
+pub use layout::{LayoutCoordinates, LayoutLevels, LayoutOrdering, PosetLayout};
 pub use poset::{PosetTikzOptions, poset_to_tikz_with};
 pub use syntax::{
     TikzCircle, TikzCoord, TikzDrawCommand, TikzItem, TikzLabel, TikzNode, TikzOptions, TikzPath,

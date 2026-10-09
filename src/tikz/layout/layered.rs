@@ -5,48 +5,71 @@ use crate::poset::{Edge, ElementId};
 use std::collections::HashMap;
 
 /// A proper layered graph made by subdividing every Hasse edge at each
-/// intervening half-rank. Vertices below `real_count` are poset elements; the
+/// intervening layer. Vertices below `real_count` are poset elements; the
 /// rest are temporary dummy vertices used only by crossing reduction.
+///
+/// Levels are doubled heights, so that centered heights are integers; a
+/// vertex at level `l` is drawn at height `l / 2`. There is a layer at every
+/// multiple of `level_step`, the spacing of the heights an element can have
+/// (a whole rank, or half a rank for centered heights).
 pub(super) struct LayeredCoverGraph {
-    real_count: usize,
+    pub(super) real_count: usize,
     real_edges: Vec<Edge>,
-    levels: Vec<usize>,
-    layers: Vec<Vec<usize>>,
-    incoming: Vec<Vec<usize>>,
-    outgoing: Vec<Vec<usize>>,
+    pub(super) levels: Vec<usize>,
+    /// The index in `layers` of the layer containing each vertex.
+    layer_of: Vec<usize>,
+    pub(super) layers: Vec<Vec<usize>>,
+    pub(super) incoming: Vec<Vec<usize>>,
+    pub(super) outgoing: Vec<Vec<usize>>,
 }
 
 impl LayeredCoverGraph {
-    pub(super) fn new(real_levels: &[usize], covers: &[Edge]) -> Self {
+    pub(super) fn new(real_levels: &[usize], level_step: usize, covers: &[Edge]) -> Self {
+        Self::build(real_levels, level_step, covers, true)
+    }
+
+    /// The same graph without dummy vertices: every cover is a single edge,
+    /// possibly between non-adjacent layers. Layers are in element id order.
+    pub(super) fn without_bend_points(
+        real_levels: &[usize],
+        level_step: usize,
+        covers: &[Edge],
+    ) -> Self {
+        Self::build(real_levels, level_step, covers, false)
+    }
+
+    fn build(real_levels: &[usize], level_step: usize, covers: &[Edge], subdivide: bool) -> Self {
         let real_count = real_levels.len();
+        debug_assert!(real_levels.iter().all(|level| level % level_step == 0));
         let layer_count = real_levels
             .iter()
-            .copied()
             .max()
-            .map_or(0, |maximum| maximum + 1);
+            .map_or(0, |maximum| maximum / level_step + 1);
         let mut graph = Self {
             real_count,
             real_edges: covers.to_vec(),
             levels: real_levels.to_vec(),
+            layer_of: real_levels.iter().map(|level| level / level_step).collect(),
             layers: vec![Vec::new(); layer_count],
             incoming: vec![Vec::new(); real_count],
             outgoing: vec![Vec::new(); real_count],
         };
 
-        for (id, &level) in real_levels.iter().enumerate() {
-            graph.layers[level].push(id);
+        for id in 0..real_count {
+            graph.layers[graph.layer_of[id]].push(id);
         }
 
         for &edge in covers {
-            let from_level = graph.levels[edge.from];
-            let to_level = graph.levels[edge.to];
-            debug_assert!(from_level < to_level);
+            let from_layer = graph.layer_of[edge.from];
+            let to_layer = graph.layer_of[edge.to];
+            debug_assert!(from_layer < to_layer);
 
             let mut previous = edge.from;
-            for level in from_level + 1..to_level {
+            for layer in (from_layer + 1..to_layer).filter(|_| subdivide) {
                 let dummy = graph.levels.len();
-                graph.levels.push(level);
-                graph.layers[level].push(dummy);
+                graph.levels.push(layer * level_step);
+                graph.layer_of.push(layer);
+                graph.layers[layer].push(dummy);
                 graph.incoming.push(Vec::new());
                 graph.outgoing.push(Vec::new());
                 graph.add_edge(previous, dummy);
@@ -59,9 +82,39 @@ impl LayeredCoverGraph {
     }
 
     fn add_edge(&mut self, from: usize, to: usize) {
-        debug_assert_eq!(self.levels[from] + 1, self.levels[to]);
+        debug_assert!(self.layer_of[from] < self.layer_of[to]);
         self.outgoing[from].push(to);
         self.incoming[to].push(from);
+    }
+
+    /// The textbook ordering step: barycenter sweeps, keeping the layer orders
+    /// with the fewest crossings in the layered graph.
+    pub(super) fn order_by_barycenter(&mut self) {
+        if self.layers.len() < 2 {
+            return;
+        }
+
+        let mut best_layers = self.layers.clone();
+        let mut best_crossings = self.routed_crossings(&self.vertex_positions());
+        for _ in 0..8 {
+            let cycle_start = self.layers.clone();
+            self.sweep_downward();
+            self.remember_if_fewer_crossings(&mut best_layers, &mut best_crossings);
+            self.sweep_upward();
+            self.remember_if_fewer_crossings(&mut best_layers, &mut best_crossings);
+            if self.layers == cycle_start {
+                break;
+            }
+        }
+        self.layers = best_layers;
+    }
+
+    fn remember_if_fewer_crossings(&self, best_layers: &mut Vec<Vec<usize>>, best: &mut u64) {
+        let crossings = self.routed_crossings(&self.vertex_positions());
+        if crossings < *best {
+            *best = crossings;
+            *best_layers = self.layers.clone();
+        }
     }
 
     pub(super) fn reduce_crossings(&mut self) -> StraightGeometryDefects {
@@ -242,26 +295,12 @@ impl LayeredCoverGraph {
             &self.real_edges,
             &self.real_grid_points_with_positions(&positions),
         );
-        let mut routed_crossings = 0u64;
+        let routed_crossings = self.routed_crossings(&positions);
         let mut horizontal_length = 0u64;
-
         for level in 0..self.layers.len().saturating_sub(1) {
             let upper_width = self.layers[level + 1].len();
-            let mut targets_seen = FenwickTree::new(upper_width);
-            let mut seen_count = 0u64;
-
             for &source in &self.layers[level] {
-                // Query the whole source group before inserting it, so edges
-                // with a shared endpoint are not counted as crossings.
                 for &target in &self.outgoing[source] {
-                    let target_position = positions[target];
-                    routed_crossings = routed_crossings
-                        .saturating_add(seen_count - targets_seen.prefix_sum(target_position + 1));
-                }
-                for &target in &self.outgoing[source] {
-                    targets_seen.add(positions[target], 1);
-                    seen_count += 1;
-
                     let source_x =
                         doubled_centered_slot(positions[source], self.layers[level].len());
                     let target_x = doubled_centered_slot(positions[target], upper_width);
@@ -278,6 +317,29 @@ impl LayeredCoverGraph {
         }
     }
 
+    /// Counts pairs of crossing edges between adjacent layers.
+    fn routed_crossings(&self, positions: &[usize]) -> u64 {
+        let mut crossings = 0u64;
+        for level in 0..self.layers.len().saturating_sub(1) {
+            let mut targets_seen = FenwickTree::new(self.layers[level + 1].len());
+            let mut seen_count = 0u64;
+            for &source in &self.layers[level] {
+                // Query the whole source group before inserting it, so edges
+                // with a shared endpoint are not counted as crossings.
+                for &target in &self.outgoing[source] {
+                    crossings = crossings.saturating_add(
+                        seen_count - targets_seen.prefix_sum(positions[target] + 1),
+                    );
+                }
+                for &target in &self.outgoing[source] {
+                    targets_seen.add(positions[target], 1);
+                    seen_count += 1;
+                }
+            }
+        }
+        crossings
+    }
+
     fn straight_geometry_defects(&self) -> StraightGeometryDefects {
         let positions = self.vertex_positions();
         straight_geometry_defects(
@@ -288,12 +350,9 @@ impl LayeredCoverGraph {
 
     fn real_grid_points_with_positions(&self, positions: &[usize]) -> Vec<GridPoint> {
         (0..self.real_count)
-            .map(|id| {
-                let level = self.levels[id];
-                GridPoint {
-                    x: doubled_centered_slot(positions[id], self.layers[level].len()),
-                    y: level as i64,
-                }
+            .map(|id| GridPoint {
+                x: doubled_centered_slot(positions[id], self.layers[self.layer_of[id]].len()),
+                y: self.levels[id] as i64,
             })
             .collect()
     }
@@ -308,7 +367,8 @@ impl LayeredCoverGraph {
         positions
     }
 
-    pub(super) fn real_coordinates(
+    /// Evenly spaced, centered layers.
+    pub(super) fn grid_coordinates(
         &self,
         x_spacing: f64,
         y_spacing: f64,
@@ -316,10 +376,9 @@ impl LayeredCoverGraph {
         let positions = self.vertex_positions();
         (0..self.real_count)
             .map(|id| {
-                let level = self.levels[id];
-                let width = self.layers[level].len().saturating_sub(1) as f64;
+                let width = self.layers[self.layer_of[id]].len().saturating_sub(1) as f64;
                 let x = (positions[id] as f64 - width / 2.0) * x_spacing;
-                let y = level as f64 * y_spacing / 2.0;
+                let y = self.levels[id] as f64 * y_spacing / 2.0;
                 (id, (x, y))
             })
             .collect()
