@@ -279,3 +279,62 @@ fn two_out_of_three_satisfies_its_defining_condition() {
 
     assert!(!Poset::chain(1).two_out_of_three(&EdgeSet::from([Edge::new(1, 0)])));
 }
+
+#[test]
+fn errors_convert_into_the_crate_error_and_name_the_label() {
+    fn build() -> hccr::Result<Lattice> {
+        Ok(Lattice::from_covers(["0", "1"], [("0", "2")])?)
+    }
+    let error = build().unwrap_err();
+    assert!(matches!(
+        error,
+        hccr::Error::Lattice(hccr::lattice::LatticeError::Poset(
+            hccr::poset::PosetError::UnknownLabel { .. }
+        ))
+    ));
+    assert_eq!(error.to_string(), "no element has the label `2`");
+
+    let duplicate = Poset::from_edges(["a", "a"], [] as [Edge; 0]).unwrap_err();
+    assert!(matches!(
+        duplicate,
+        hccr::poset::PosetError::DuplicateLabel { .. }
+    ));
+}
+
+#[test]
+fn constructions_have_the_documented_labels_and_maps() {
+    use hccr::label::Label;
+    use hccr::prelude::{boolean, chain, horizontal_join, product};
+
+    let square = product([chain(1), chain(2)]);
+    assert_eq!(square.size(), 6);
+    assert_eq!(square.label(square.top()), &Label::from((1, 2)));
+    assert_eq!(
+        square.meet(square.id((0, 2)).unwrap(), square.id((1, 1)).unwrap()),
+        square.id((0, 1)).unwrap()
+    );
+
+    let b3 = boolean(3);
+    assert_eq!(b3.label(5), &Label::set([0, 2]));
+    assert_eq!(b3.id(Label::set([2, 0])).unwrap(), 5);
+
+    let c3 = chain(3);
+    let (fusion, inclusions) = Lattice::horizontal_join_with_inclusions([&c3, &c3]).unwrap();
+    assert_eq!(fusion, horizontal_join([&c3, &c3]).unwrap());
+    assert_eq!(fusion.size(), 6);
+    assert_eq!(inclusions[0].apply(0), fusion.id("bot").unwrap());
+    assert_eq!(inclusions[1].apply(3), fusion.id("top").unwrap());
+    assert_eq!(inclusions[1].apply(2), fusion.id((1, 2)).unwrap());
+    assert_eq!(horizontal_join([] as [Lattice; 0]).unwrap(), {
+        Lattice::from_covers(["bot", "top"], [("bot", "top")]).unwrap()
+    });
+    assert!(horizontal_join([chain(0)]).is_err());
+
+    // Cloning is cheap and shares data; equality is structural.
+    let copy = fusion.clone();
+    assert!(copy.ptr_eq(&fusion));
+    assert_eq!(
+        copy,
+        Lattice::horizontal_join([&chain(3), &chain(3)]).unwrap()
+    );
+}

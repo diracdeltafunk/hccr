@@ -302,6 +302,19 @@ impl TikzPicture {
         out
     }
 
+    /// Renders the picture as a complete LaTeX document using the
+    /// `standalone` class, ready to compile with `pdflatex`.
+    pub fn to_standalone_document(&self) -> String {
+        format!(
+            "\\documentclass[tikz,border=8pt]{{standalone}}\n\
+             \\usepackage{{tikz}}\n\
+             \\begin{{document}}\n\
+             {}\
+             \\end{{document}}\n",
+            self.render()
+        )
+    }
+
     /// Renders the picture as an inline `\tikz{...}` command.
     pub fn render_inline(&self) -> String {
         let mut out = format!("\\tikz{}{{", self.options.render_brackets());

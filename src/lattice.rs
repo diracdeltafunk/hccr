@@ -547,3 +547,33 @@ impl fmt::Debug for Lattice {
         fmt::Display::fmt(self, f)
     }
 }
+
+/// The chain `[top] = {0 < 1 < ... < top}`; see [`Lattice::chain`].
+pub fn chain(top: usize) -> Lattice {
+    Lattice::chain(top)
+}
+
+/// The Boolean lattice of subsets of `{0, ..., rank - 1}`; see
+/// [`Lattice::boolean`].
+pub fn boolean(rank: usize) -> Lattice {
+    Lattice::boolean(rank)
+}
+
+/// The direct product of finitely many lattices; see [`Lattice::product`].
+pub fn product<I>(factors: I) -> Lattice
+where
+    I: IntoIterator,
+    I::Item: Borrow<Lattice>,
+{
+    Lattice::product(factors)
+}
+
+/// The horizontal join of finitely many nontrivial lattices; see
+/// [`Lattice::horizontal_join`].
+pub fn horizontal_join<I>(factors: I) -> Result<Lattice, HorizontalJoinError>
+where
+    I: IntoIterator,
+    I::Item: Borrow<Lattice>,
+{
+    Lattice::horizontal_join(factors)
+}
