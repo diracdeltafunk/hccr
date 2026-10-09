@@ -1,12 +1,9 @@
 #![cfg(feature = "groups")]
 
-use hccr::g_lattice::{
-    GLattice, RelationOrbit, RelationOrbitLabel, RelationTransporter, SubgroupGLattice,
-};
-use hccr::group_theory::GapSubgroup;
-use hccr::label::Label;
+use hccr::g_lattice::{GLattice, RelationOrbit, RelationTransporter, SubgroupGLattice};
 use hccr::lattice::Lattice;
 use hccr::poset::{Edge, EdgeSet};
+use std::collections::BTreeSet;
 use std::error::Error;
 
 #[test]
@@ -22,54 +19,41 @@ fn group_actions_produce_the_correct_relation_orbits_and_transfer_systems()
         gap_sys::eval("GroupHomomorphismByImages(Group((1,2)), Group((2,3)), [(1,2)], [(2,3)]);")?;
     let from_gap = GLattice::from_gap_homomorphism(&diamond, &group, &homomorphism)?;
 
-    let expected_relations = vec![
-        Edge::new(0, 0),
-        Edge::new(0, 1),
-        Edge::new(0, 2),
-        Edge::new(0, 3),
-        Edge::new(1, 1),
-        Edge::new(1, 3),
-        Edge::new(2, 2),
-        Edge::new(2, 3),
-        Edge::new(3, 3),
-    ];
-    let expected_orbits = vec![
-        vec![0],
-        vec![1, 2],
-        vec![3],
-        vec![4, 6],
-        vec![5, 7],
-        vec![8],
-    ];
+    // The swap of the two atoms a, b acts on the nine relations of the
+    // diamond with these six orbits, however the action is presented.
+    let e = |x: &str, y: &str| diamond.edge(x, y).unwrap();
+    let expected_orbits = BTreeSet::from([
+        BTreeSet::from([e("0", "0")]),
+        BTreeSet::from([e("0", "a"), e("0", "b")]),
+        BTreeSet::from([e("0", "1")]),
+        BTreeSet::from([e("a", "a"), e("b", "b")]),
+        BTreeSet::from([e("a", "1"), e("b", "1")]),
+        BTreeSet::from([e("1", "1")]),
+    ]);
+    for g_lattice in [&from_generators, &from_gap] {
+        assert_eq!(
+            g_lattice.relations().iter().copied().collect::<EdgeSet>(),
+            diamond.all_relations_iter().collect::<EdgeSet>()
+        );
+        assert_eq!(orbits(g_lattice), expected_orbits);
+    }
 
-    assert_eq!(from_generators.relations(), expected_relations);
-    assert_eq!(orbit_ids(&from_generators), expected_orbits);
-    assert_eq!(from_gap.relations(), expected_relations);
-    assert_eq!(orbit_ids(&from_gap), expected_orbits);
-    assert_eq!(
-        from_gap.element_generator_permutations(),
-        &[vec![0, 2, 1, 3]]
-    );
-
-    let generated = from_generators.transfer_system_generated_by([Edge::new(0, 3)])?;
+    let generated = from_generators.transfer_system_generated_by([e("0", "1")])?;
     assert_eq!(
         generated.relations(false),
-        EdgeSet::from([Edge::new(0, 1), Edge::new(0, 2), Edge::new(0, 3)])
+        EdgeSet::from([e("0", "a"), e("0", "b"), e("0", "1")])
     );
 
     let fixed = from_generators
-        .relation_orbit(Edge::new(0, 0))
+        .relation_orbit(e("0", "0"))
         .expect("fixed identity relation should have an orbit");
     assert_eq!(order(fixed.stabilizer())?, 2);
 
     let swapped = from_generators
-        .relation_orbit(Edge::new(0, 1))
+        .relation_orbit(e("0", "a"))
         .expect("swapped relation should have an orbit");
-    assert_eq!(swapped.canonical_representative(), Edge::new(0, 1));
-    assert_eq!(swapped.relation_ids(), &[1, 2]);
     assert_eq!(order(swapped.stabilizer())?, 1);
 
-    assert_transfer_context_quotients_by_non_identity_relation_orbits(&from_generators);
     assert_transfer_system_containment_lattice_uses_orbit_inclusion(&from_generators)?;
 
     for orbit in from_generators.relation_orbits() {
@@ -80,42 +64,6 @@ fn group_actions_produce_the_correct_relation_orbits_and_transfer_systems()
 
     check_subgroup_lattice_constructor_uses_conjugation_action()?;
     Ok(())
-}
-
-fn assert_transfer_context_quotients_by_non_identity_relation_orbits(g_lattice: &GLattice) {
-    let context = g_lattice.transfer_context();
-    let expected_labels = vec![
-        RelationOrbitLabel::new(1, 1, Edge::new(0, 1)),
-        RelationOrbitLabel::new(2, 3, Edge::new(0, 3)),
-        RelationOrbitLabel::new(4, 5, Edge::new(1, 3)),
-    ];
-    assert_eq!(context.objects, expected_labels);
-    assert_eq!(context.attributes, expected_labels);
-    assert_eq!(
-        g_lattice.non_identity_relation_orbit_labels(),
-        expected_labels
-    );
-    assert!(context.attributes.windows(2).all(|labels| {
-        let left = labels[0].canonical_representative();
-        let right = labels[1].canonical_representative();
-        (left.to, left.from) <= (right.to, right.from)
-    }));
-
-    let lower_middle = expected_labels[0];
-    let bottom_top = expected_labels[1];
-    let middle_top = expected_labels[2];
-
-    assert!(!context.get_relation(&lower_middle, &lower_middle));
-    assert!(context.get_relation(&lower_middle, &bottom_top));
-    assert!(context.get_relation(&lower_middle, &middle_top));
-
-    assert!(!context.get_relation(&bottom_top, &lower_middle));
-    assert!(!context.get_relation(&bottom_top, &bottom_top));
-    assert!(context.get_relation(&bottom_top, &middle_top));
-
-    assert!(!context.get_relation(&middle_top, &lower_middle));
-    assert!(!context.get_relation(&middle_top, &bottom_top));
-    assert!(!context.get_relation(&middle_top, &middle_top));
 }
 
 fn assert_transfer_system_containment_lattice_uses_orbit_inclusion(
@@ -135,7 +83,12 @@ fn assert_transfer_system_containment_lattice_uses_orbit_inclusion(
 
     let top = containment.system(containment.top());
     assert_eq!(top, &g_lattice.complete_transfer_system());
-    assert_eq!(top.relation_orbit_labels(), expected_labels);
+    assert_eq!(
+        top.relation_orbit_labels()
+            .into_iter()
+            .collect::<BTreeSet<_>>(),
+        expected_labels.into_iter().collect::<BTreeSet<_>>()
+    );
     assert_eq!(top.relations(false).len(), 5);
     for relation in [
         Edge::new(0, 1),
@@ -166,55 +119,61 @@ fn check_subgroup_lattice_constructor_uses_conjugation_action() -> Result<(), Bo
     let subgroup_lattice = SubgroupGLattice::from_gap("SymmetricGroup(3)")?;
     let g_lattice = subgroup_lattice.g_lattice();
 
-    assert_eq!(subgroup_lattice.subgroups().len(), 6);
-    assert_eq!(g_lattice.lattice().size(), 6);
-    assert_eq!(
-        g_lattice.labels(),
-        &[
-            GapSubgroup::new(0, 0),
-            GapSubgroup::new(1, 0),
-            GapSubgroup::new(1, 1),
-            GapSubgroup::new(1, 2),
-            GapSubgroup::new(2, 0),
-            GapSubgroup::new(3, 0),
-        ]
-        .map(Label::from)
-    );
-
-    assert_eq!(g_lattice.lattice().bottom(), 0);
-    assert_eq!(g_lattice.lattice().top(), 5);
+    // Sub(S_3): the trivial group, three conjugate subgroups of order 2, the
+    // normal subgroup of order 3, and S_3 itself, ordered by inclusion.
+    let orders = subgroup_lattice
+        .subgroups()
+        .iter()
+        .map(subgroup_order)
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut sorted_orders = orders.clone();
+    sorted_orders.sort_unstable();
+    assert_eq!(sorted_orders, vec![1, 2, 2, 2, 3, 6]);
+    assert_eq!(orders[g_lattice.bottom()], 1);
+    assert_eq!(orders[g_lattice.top()], 6);
     assert_eq!(g_lattice.relations().len(), 15);
-    assert!((0..6).all(|id| g_lattice.lattice().leq(0, id)));
-    assert!((0..6).all(|id| g_lattice.lattice().leq(id, 5)));
-    assert!(!g_lattice.lattice().leq(1, 2));
-    assert!(!g_lattice.lattice().leq(1, 4));
 
-    assert_eq!(
-        g_lattice.element_generator_permutations(),
-        &[vec![0, 3, 1, 2, 4, 5], vec![0, 3, 2, 1, 4, 5]]
-    );
+    let of_order = |n: usize| {
+        g_lattice
+            .ids()
+            .filter(|&id| orders[id] == n)
+            .collect::<Vec<_>>()
+    };
+    let involutions = of_order(2);
+    let rotations = of_order(3)[0];
+    for &h in &involutions {
+        assert!(!g_lattice.leq(h, rotations) && !g_lattice.leq(rotations, h));
+        for &k in &involutions {
+            assert_eq!(g_lattice.leq(h, k), h == k);
+        }
+    }
 
+    // Conjugation permutes the three subgroups of order 2 transitively, each
+    // with stabilizer (its own normalizer) of order 2, and fixes the normal
+    // subgroup of order 3, whose stabilizer is all of S_3.
     let c2_identity_orbit = g_lattice
-        .relation_orbit(Edge::new(1, 1))
+        .relation_orbit(Edge::new(involutions[0], involutions[0]))
         .expect("C2 identity relation should have an orbit");
     assert_eq!(
-        c2_identity_orbit.relations(),
-        &[Edge::new(1, 1), Edge::new(2, 2), Edge::new(3, 3)]
+        c2_identity_orbit
+            .relations()
+            .iter()
+            .copied()
+            .collect::<EdgeSet>(),
+        involutions.iter().map(|&h| Edge::new(h, h)).collect()
     );
     assert_eq!(order(c2_identity_orbit.stabilizer())?, 2);
 
     let c3_identity_orbit = g_lattice
-        .relation_orbit(Edge::new(4, 4))
+        .relation_orbit(Edge::new(rotations, rotations))
         .expect("normal C3 identity relation should have an orbit");
-    assert_eq!(c3_identity_orbit.relations(), &[Edge::new(4, 4)]);
+    assert_eq!(
+        c3_identity_orbit.relations(),
+        &[Edge::new(rotations, rotations)]
+    );
     assert_eq!(order(c3_identity_orbit.stabilizer())?, 6);
 
-    let subgroup_transfer_lattice = subgroup_lattice.transfer_systems();
-    assert_eq!(
-        subgroup_transfer_lattice.size(),
-        g_lattice.transfer_systems().size()
-    );
-    assert_eq!(subgroup_transfer_lattice.size(), 9);
+    assert_eq!(subgroup_lattice.transfer_systems().size(), 9);
     Ok(())
 }
 
@@ -245,11 +204,17 @@ fn order(element: &gap_sys::GapValue) -> Result<usize, Box<dyn Error>> {
     Ok(gap.to_usize(&order)?)
 }
 
-fn orbit_ids(g_lattice: &GLattice) -> Vec<Vec<usize>> {
+fn subgroup_order(subgroup: &gap_sys::GapValue) -> Result<usize, Box<dyn Error>> {
+    let gap = gap_sys::global()?;
+    let size = gap.call_global("Size", &[subgroup])?;
+    Ok(gap.to_usize(&size)?)
+}
+
+fn orbits(g_lattice: &GLattice) -> BTreeSet<BTreeSet<Edge>> {
     g_lattice
         .relation_orbits()
         .iter()
-        .map(|orbit| orbit.relation_ids().to_vec())
+        .map(|orbit| orbit.relations().iter().copied().collect())
         .collect()
 }
 

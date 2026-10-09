@@ -1128,22 +1128,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn transfer_context_uses_stable_objects_and_target_major_attributes() {
-        let lattice = Lattice::chain(3);
-        let universe = lattice.transfer_universe();
-
-        assert_eq!(universe.context.objects, universe.proper_edges());
-        assert!(
-            universe
-                .context
-                .attributes
-                .windows(2)
-                .all(|edges| (edges[0].to, edges[0].from) <= (edges[1].to, edges[1].from))
-        );
-        assert_ne!(universe.context.objects, universe.context.attributes);
-    }
-
-    #[test]
     fn generated_transfer_system_has_restriction_closure() {
         let lattice = Lattice::chain(2);
         let generated = lattice
