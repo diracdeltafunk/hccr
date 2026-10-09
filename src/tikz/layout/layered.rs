@@ -357,7 +357,7 @@ impl LayeredCoverGraph {
             .collect()
     }
 
-    fn vertex_positions(&self) -> Vec<usize> {
+    pub(super) fn vertex_positions(&self) -> Vec<usize> {
         let mut positions = vec![0usize; self.levels.len()];
         for layer in &self.layers {
             for (position, &vertex) in layer.iter().enumerate() {

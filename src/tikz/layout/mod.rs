@@ -1,3 +1,4 @@
+mod additive;
 mod coordinates;
 mod geometry;
 mod layered;
@@ -5,6 +6,7 @@ mod layered;
 use crate::poset::{Edge, ElementId};
 use std::collections::{BTreeSet, HashMap};
 
+use additive::IrreducibleChains;
 pub(in crate::tikz) use geometry::{
     GridPoint, StraightGeometryDefects, straight_geometry_contribution, straight_geometry_defects,
 };
@@ -83,6 +85,15 @@ impl PosetLayout {
         coordinates: LayoutCoordinates::Aligned,
         ..Self::CROSSING_REDUCED
     };
+
+    /// An additive drawing: heights count join-irreducibles, and each chain
+    /// of join-irreducibles contributes its own edge direction. See
+    /// [`LayoutCoordinates::Additive`].
+    pub const ADDITIVE: Self = Self {
+        levels: LayoutLevels::JoinIrreducibles,
+        ordering: LayoutOrdering::Barycenter,
+        coordinates: LayoutCoordinates::Additive,
+    };
 }
 
 impl Default for PosetLayout {
@@ -93,8 +104,9 @@ impl Default for PosetLayout {
 
 /// How the heights of elements are chosen.
 ///
-/// Both choices are strictly monotone: if `x < y` then `x` is drawn strictly
-/// below `y`. They agree on graded posets.
+/// Every choice is strictly monotone: if `x < y` then `x` is drawn strictly
+/// below `y`. On a distributive lattice, all of them draw each element at its
+/// rank.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum LayoutLevels {
     /// The height of `x` is the length of a longest chain from a minimal
@@ -108,6 +120,13 @@ pub enum LayoutLevels {
     /// so it may be a half-integer.
     #[default]
     Centered,
+    /// The height of `x` is the number of join-irreducibles below it (less
+    /// the least such number, so that the drawing starts at height zero).
+    /// Here `x` is join-irreducible unless it is the least upper bound of the
+    /// elements strictly below it. Covers can span several heights, which is
+    /// what [`LayoutCoordinates::Additive`] needs to keep parallel edges
+    /// parallel.
+    JoinIrreducibles,
 }
 
 /// How the elements at each height are ordered from left to right.
@@ -151,6 +170,24 @@ pub enum LayoutCoordinates {
     /// and edges come out parallel, then balance four such alignments
     /// (leaning up or down, left or right) against each other.
     Aligned,
+    /// An additive drawing, in the sense of Ganter and Wille.
+    ///
+    /// The join-irreducibles are split into as few chains as possible
+    /// (Dilworth's theorem), and each element is recorded by how far it
+    /// reaches up each chain. This embeds the poset in a product of chains,
+    /// which is then projected to the plane by giving each chain one edge
+    /// direction, the directions evenly spread. Steps along the same chain are
+    /// parallel: for a distributive lattice, every cover diamond is a
+    /// parallelogram. For the transfer systems on a chain `[n]` (Tamari
+    /// lattices) there is one chain per source `i`, recording the longest
+    /// relation `i -> j`, so their drawings use just `n` edge directions.
+    /// Of the ways to assign the directions to the chains, the one with the
+    /// fewest crossings is used; elements that would collide are then moved
+    /// apart as little as possible, and any lean is sheared away.
+    ///
+    /// The ordering stage only breaks ties between colliding elements. Use
+    /// with [`LayoutLevels::JoinIrreducibles`] for a truly additive drawing.
+    Additive,
 }
 
 pub(super) fn layout_with_covers(
@@ -161,14 +198,27 @@ pub(super) fn layout_with_covers(
     layout: PosetLayout,
 ) -> HashMap<ElementId, (f64, f64)> {
     let vertical = vertical_levels(size, covers);
+    let chains = (layout.levels == LayoutLevels::JoinIrreducibles
+        || layout.coordinates == LayoutCoordinates::Additive)
+        .then(|| IrreducibleChains::new(size, covers));
     // Levels are stored doubled, so that centered heights are integers.
-    // Longest-path heights are whole ranks; centered ones may be half-ranks.
+    // Other heights are whole numbers; centered ones may be half-integers.
     let (levels, level_step): (Vec<usize>, usize) = match layout.levels {
         LayoutLevels::LongestPath => (
             vertical.earliest.iter().map(|&height| 2 * height).collect(),
             2,
         ),
         LayoutLevels::Centered => (vertical.centered.clone(), 1),
+        LayoutLevels::JoinIrreducibles => (
+            chains
+                .as_ref()
+                .expect("chains are computed for these levels")
+                .heights()
+                .iter()
+                .map(|&height| 2 * height)
+                .collect(),
+            2,
+        ),
     };
 
     let mut graph = match layout.ordering {
@@ -205,6 +255,14 @@ pub(super) fn layout_with_covers(
         }
         LayoutCoordinates::Balanced => graph.balanced_coordinates(x_spacing, y_spacing),
         LayoutCoordinates::Aligned => graph.aligned_coordinates(x_spacing, y_spacing),
+        LayoutCoordinates::Additive => graph.additive_coordinates(
+            chains
+                .as_ref()
+                .expect("chains are computed for additive coordinates"),
+            covers,
+            x_spacing,
+            y_spacing,
+        ),
     }
 }
 
@@ -327,7 +385,11 @@ mod tests {
 
     fn all_layouts() -> Vec<PosetLayout> {
         let mut layouts = Vec::new();
-        for levels in [LayoutLevels::LongestPath, LayoutLevels::Centered] {
+        for levels in [
+            LayoutLevels::LongestPath,
+            LayoutLevels::Centered,
+            LayoutLevels::JoinIrreducibles,
+        ] {
             for ordering in [
                 LayoutOrdering::ElementOrder,
                 LayoutOrdering::Barycenter,
@@ -337,6 +399,7 @@ mod tests {
                     LayoutCoordinates::Grid,
                     LayoutCoordinates::Balanced,
                     LayoutCoordinates::Aligned,
+                    LayoutCoordinates::Additive,
                 ] {
                     layouts.push(PosetLayout {
                         levels,
@@ -360,13 +423,20 @@ mod tests {
     }
 
     fn examples() -> Vec<(&'static str, Poset, bool)> {
-        // (name, poset, whether it is graded)
+        // (name, poset, whether it is a distributive lattice or an antichain)
         vec![
             ("empty", Poset::antichain(0), true),
             ("point", Poset::antichain(1), true),
             ("antichain", Poset::antichain(3), true),
             ("chain", Poset::chain(3), true),
             ("cube", Lattice::boolean(3).as_poset().clone(), true),
+            (
+                "[2] × [2]",
+                Lattice::product([Lattice::chain(2), Lattice::chain(2)])
+                    .as_poset()
+                    .clone(),
+                true,
+            ),
             ("pentagon", pentagon(), false),
             (
                 "disjoint union",
@@ -424,12 +494,15 @@ mod tests {
         }
     }
 
-    /// On a graded poset, every layout draws each element at its rank, so
-    /// every cover relation rises by exactly `y_spacing`.
+    /// On a distributive lattice, every layout draws each element at its rank
+    /// (for a distributive lattice the rank of `x` is also the number of
+    /// join-irreducibles below it), and so does every layout of an antichain.
+    /// So every cover relation rises by exactly `y_spacing`, and the minimal
+    /// elements are at height zero.
     #[test]
-    fn graded_posets_are_drawn_by_rank() {
-        for (name, poset, graded) in examples() {
-            if !graded {
+    fn distributive_lattices_are_drawn_by_rank() {
+        for (name, poset, distributive) in examples() {
+            if !distributive {
                 continue;
             }
             let covers = poset.sorted_cover_relations();

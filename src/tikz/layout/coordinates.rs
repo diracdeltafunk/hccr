@@ -313,7 +313,7 @@ impl LayeredCoverGraph {
     /// order within layers nor which straight edges cross or overlap. When the
     /// poset has a unique bottom and top, `k` puts the top directly above the
     /// bottom; otherwise it is the least-squares slope of `x` against level.
-    fn remove_lean(&self, x: &mut [f64]) {
+    pub(super) fn remove_lean(&self, x: &mut [f64]) {
         let real = 0..self.real_count;
         let level = |id: usize| self.levels[id] as f64;
         let lowest = real.clone().map(|id| self.levels[id]).min();
@@ -400,7 +400,7 @@ impl LayeredCoverGraph {
     }
 
     /// Scales the poset elements' positions and centres their bounding box.
-    fn centered_coordinates(
+    pub(super) fn centered_coordinates(
         &self,
         x: &[f64],
         x_spacing: f64,
@@ -428,7 +428,7 @@ fn segment(a: usize, b: usize) -> (usize, usize) {
 }
 
 /// Weighted least-squares nondecreasing fit (pool adjacent violators).
-fn isotonic_fit(targets: &[(f64, f64)]) -> Vec<f64> {
+pub(super) fn isotonic_fit(targets: &[(f64, f64)]) -> Vec<f64> {
     // Each block is (weighted mean, total weight, number of entries).
     let mut blocks: Vec<(f64, f64, usize)> = Vec::with_capacity(targets.len());
     for &(value, weight) in targets {
