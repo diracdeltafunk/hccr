@@ -7,57 +7,34 @@
 //! bottom element, below everything, and a unique top element, above
 //! everything.
 //!
-//! This type stores the underlying [`Poset`] together with complete meet and
-//! join tables. Construction does the quadratic validation and precomputation;
-//! subsequent operations on element ids take constant time.
+//! A `Lattice` is a cheap-to-clone handle around a [`Poset`] whose meet and
+//! join tables have been computed. Every poset method is available on a
+//! lattice directly, because `Lattice` dereferences to `Poset`.
 
+use crate::label::Label;
 use crate::morphism::LatticeMap;
-use crate::poset::{ElementId, Poset, PosetError};
+use crate::poset::{ElementId, Poset, PosetError, product_coordinates};
 use bitvec::prelude::*;
-use either::Either;
-use std::convert::TryFrom;
+use std::borrow::Borrow;
 use std::fmt;
-use std::sync::Arc;
+use std::ops::Deref;
 
 /// A finite lattice.
 ///
-/// The underlying order is stored as a [`Poset`].  Meets, joins, bottom, and top
-/// are computed once when the lattice is constructed and then accessed by
-/// [`ElementId`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Lattice<A> {
-    poset: Poset<A>,
+/// This is a cheap-to-clone handle; clones share their data. Meets, joins,
+/// bottom, and top are computed once, when the lattice is constructed.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Lattice {
+    poset: Poset,
+}
+
+/// Precomputed lattice operations, cached on the underlying poset.
+#[derive(Debug, Clone)]
+pub(crate) struct LatticeTables {
     meet: Vec<Vec<ElementId>>,
     join: Vec<Vec<ElementId>>,
     bottom: ElementId,
     top: ElementId,
-}
-
-/// The horizontal join, or fusion, of two nontrivial lattices.
-///
-/// The construction identifies the two bottom elements and identifies the two
-/// top elements, leaving all other elements in the two factors disjoint.
-#[derive(Debug, Clone)]
-pub struct LatticeFusion<A, B> {
-    /// The fused lattice, with labels tagged according to their original side.
-    pub lattice: Arc<Lattice<Either<A, B>>>,
-    /// The canonical lattice embedding of the left factor.
-    pub left: LatticeMap<A, Either<A, B>>,
-    /// The canonical lattice embedding of the right factor.
-    pub right: LatticeMap<B, Either<A, B>>,
-}
-
-/// The categorical product of two finite lattices and its projections.
-///
-/// The order, meet, and join are all computed componentwise.
-#[derive(Debug, Clone)]
-pub struct LatticeProduct<A, B> {
-    /// The product lattice.
-    pub lattice: Arc<Lattice<(A, B)>>,
-    /// The first projection `(a, b) |-> a`.
-    pub left_projection: LatticeMap<(A, B), A>,
-    /// The second projection `(a, b) |-> b`.
-    pub right_projection: LatticeMap<(A, B), B>,
 }
 
 /// Errors that can occur while constructing a finite lattice.
@@ -67,11 +44,6 @@ pub enum LatticeError {
     Poset(PosetError),
     /// A finite lattice must have at least one element.
     Empty,
-    /// The requested Boolean lattice cannot be encoded by `usize` bitmasks.
-    BooleanRankTooLarge {
-        /// The requested rank.
-        rank: usize,
-    },
     /// The poset has no element below every other element.
     MissingBottom,
     /// The poset has no element above every other element.
@@ -90,10 +62,6 @@ impl fmt::Display for LatticeError {
         match self {
             LatticeError::Poset(error) => write!(f, "{error}"),
             LatticeError::Empty => write!(f, "a finite lattice must be nonempty"),
-            LatticeError::BooleanRankTooLarge { rank } => write!(
-                f,
-                "cannot encode Boolean lattice of rank {rank} as usize bitmasks"
-            ),
             LatticeError::MissingBottom => write!(f, "poset has no bottom element"),
             LatticeError::MissingTop => write!(f, "poset has no top element"),
             LatticeError::NotALattice { left, right } => write!(
@@ -115,208 +83,392 @@ impl From<PosetError> for LatticeError {
 /// Errors that can occur while forming a horizontal join of lattices.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HorizontalJoinError {
-    /// At least one input has bottom equal to top.
-    TrivialInput,
-    /// The fused order failed to form a lattice.
-    Lattice(LatticeError),
+    /// A factor has bottom equal to top.
+    TrivialFactor {
+        /// The position of the offending factor.
+        factor: usize,
+    },
 }
 
 impl fmt::Display for HorizontalJoinError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            HorizontalJoinError::TrivialInput => {
-                write!(f, "cannot horizontally join a trivial lattice")
-            }
-            HorizontalJoinError::Lattice(error) => write!(f, "{error}"),
+            HorizontalJoinError::TrivialFactor { factor } => write!(
+                f,
+                "cannot horizontally join a trivial lattice (factor {factor})"
+            ),
         }
     }
 }
 
 impl std::error::Error for HorizontalJoinError {}
 
-impl From<LatticeError> for HorizontalJoinError {
-    fn from(error: LatticeError) -> Self {
-        Self::Lattice(error)
-    }
-}
-
-impl From<PosetError> for HorizontalJoinError {
-    fn from(error: PosetError) -> Self {
-        Self::Lattice(LatticeError::from(error))
-    }
-}
-
-impl<A> Lattice<A> {
+impl Lattice {
     /// Constructs a lattice from a finite poset.
     ///
-    /// This checks every unordered pair for a meet and a join, stores the
-    /// results in symmetric lookup tables, and locates bottom and top. The
-    /// original element ids and labels are preserved.
-    pub fn new(poset: Poset<A>) -> Result<Self, LatticeError> {
-        Self::try_from(poset)
+    /// This checks every pair of elements for a meet and a join, stores the
+    /// results in lookup tables, and locates bottom and top. The result shares
+    /// the poset's data, so its element ids and labels are those of the poset.
+    pub fn new(poset: Poset) -> Result<Self, LatticeError> {
+        poset
+            .data()
+            .lattice
+            .get_or_init(|| LatticeTables::compute(&poset))
+            .as_ref()
+            .map_err(Clone::clone)?;
+        Ok(Self { poset })
+    }
+
+    /// Constructs a lattice from labels and generating relations named by
+    /// label. See [`Poset::from_covers`].
+    pub fn from_covers<I, C, L, M>(labels: I, covers: C) -> Result<Self, LatticeError>
+    where
+        I: IntoIterator,
+        I::Item: Into<Label>,
+        C: IntoIterator<Item = (L, M)>,
+        L: Into<Label>,
+        M: Into<Label>,
+    {
+        Self::new(Poset::from_covers(labels, covers)?)
+    }
+
+    /// Constructs a lattice from your own values and an order predicate on
+    /// them. See [`Poset::from_elements_by`].
+    pub fn from_elements_by<I, F>(elements: I, leq: F) -> Result<Self, LatticeError>
+    where
+        I: IntoIterator,
+        I::Item: Into<Label>,
+        F: Fn(&I::Item, &I::Item) -> bool,
+    {
+        Self::new(Poset::from_elements_by(elements, leq)?)
+    }
+
+    fn from_poset_with_tables(poset: Poset, tables: LatticeTables) -> Self {
+        let stored = poset.data().lattice.set(Ok(tables));
+        debug_assert!(stored.is_ok(), "fresh posets have no lattice tables yet");
+        Self { poset }
+    }
+
+    fn tables(&self) -> &LatticeTables {
+        self.poset
+            .data()
+            .lattice
+            .get()
+            .and_then(|tables| tables.as_ref().ok())
+            .expect("a Lattice always has computed tables")
     }
 
     /// Returns the underlying poset.
-    pub fn as_poset(&self) -> &Poset<A> {
+    pub fn as_poset(&self) -> &Poset {
         &self.poset
     }
 
     /// Consumes the lattice and returns its underlying poset.
-    pub fn into_poset(self) -> Poset<A> {
+    pub fn into_poset(self) -> Poset {
         self.poset
-    }
-
-    /// Returns the same lattice with labels transformed by `f`.
-    ///
-    /// The order, meet table, join table, bottom, and top are unchanged.
-    pub fn relabelled<B, F>(&self, f: F) -> Lattice<B>
-    where
-        F: FnMut(&A) -> B,
-    {
-        Lattice {
-            poset: self.poset.relabelled(f),
-            meet: self.meet.clone(),
-            join: self.join.clone(),
-            bottom: self.bottom,
-            top: self.top,
-        }
-    }
-
-    /// Returns the number of elements.
-    pub fn size(&self) -> usize {
-        self.poset.size()
-    }
-
-    /// Returns whether the lattice has exactly one element.
-    #[must_use]
-    pub fn is_trivial(&self) -> bool {
-        self.bottom == self.top
-    }
-
-    /// Returns whether the lattice is a fusion of total orders.
-    ///
-    /// Equivalently, any two incomparable non-bottom elements have meet equal
-    /// to bottom.  This is a useful recognition criterion for examples built
-    /// from chains by horizontal joins.
-    #[must_use]
-    pub fn is_fusion_of_total_orders(&self) -> bool {
-        (0..self.size()).all(|i| {
-            (i + 1..self.size()).all(|j| {
-                let meet = self.meet_id(i, j);
-                meet == i || meet == j || meet == self.bottom
-            })
-        })
-    }
-
-    /// Returns all element labels in `ElementId` order.
-    pub fn elements(&self) -> &[A] {
-        self.poset.elements()
-    }
-
-    /// Returns the label of an element by id.
-    pub fn element(&self, id: ElementId) -> Option<&A> {
-        self.poset.element(id)
-    }
-
-    /// Tests the order relation `left <= right`.
-    ///
-    /// Panics if either id is out of bounds.
-    pub fn leq(&self, left: ElementId, right: ElementId) -> bool {
-        self.poset.leq(left, right)
     }
 
     /// Returns the meet `left /\ right`.
     ///
     /// Panics if either id is out of bounds.
-    pub fn meet_id(&self, left: ElementId, right: ElementId) -> ElementId {
-        self.meet[left][right]
+    pub fn meet(&self, left: ElementId, right: ElementId) -> ElementId {
+        self.tables().meet[left][right]
     }
 
     /// Returns the join `left \/ right`.
     ///
     /// Panics if either id is out of bounds.
-    pub fn join_id(&self, left: ElementId, right: ElementId) -> ElementId {
-        self.join[left][right]
+    pub fn join(&self, left: ElementId, right: ElementId) -> ElementId {
+        self.tables().join[left][right]
     }
 
     /// Returns the bottom element.
     pub fn bottom(&self) -> ElementId {
-        self.bottom
+        self.tables().bottom
     }
 
     /// Returns the top element.
     pub fn top(&self) -> ElementId {
-        self.top
+        self.tables().top
     }
-}
 
-impl Lattice<usize> {
-    /// Constructs the chain `[top] = {0, ..., top}` with its usual total order.
+    /// Returns whether the lattice has exactly one element.
+    #[must_use]
+    pub fn is_trivial(&self) -> bool {
+        self.bottom() == self.top()
+    }
+
+    /// Returns whether the lattice is a horizontal join of chains.
+    ///
+    /// Equivalently, any two incomparable non-bottom elements have meet equal
+    /// to bottom.
+    #[must_use]
+    pub fn is_fusion_of_total_orders(&self) -> bool {
+        (0..self.size()).all(|i| {
+            (i + 1..self.size()).all(|j| {
+                let meet = self.meet(i, j);
+                meet == i || meet == j || meet == self.bottom()
+            })
+        })
+    }
+
+    /// Returns the opposite lattice, with the same labels and element ids,
+    /// every relation reversed, and meet and join exchanged.
+    pub fn opposite(&self) -> Self {
+        let tables = self.tables();
+        Self::from_poset_with_tables(
+            self.poset.opposite(),
+            LatticeTables {
+                meet: tables.join.clone(),
+                join: tables.meet.clone(),
+                bottom: tables.top,
+                top: tables.bottom,
+            },
+        )
+    }
+
+    /// Returns the same lattice with new labels. See [`Poset::relabelled`].
+    pub fn relabelled<F, L>(&self, f: F) -> Result<Self, PosetError>
+    where
+        F: FnMut(ElementId, Label) -> L,
+        L: Into<Label>,
+    {
+        Ok(Self::from_poset_with_tables(
+            self.poset.relabelled(f)?,
+            self.tables().clone(),
+        ))
+    }
+
+    /// Constructs the chain `[top] = {0 < 1 < ... < top}`.
     ///
     /// The argument is the largest element, so the lattice has `top + 1`
-    /// elements. Meet is minimum and join is maximum.
-    pub fn chain(top: usize) -> Result<Self, LatticeError> {
-        Lattice::new(Poset::chain(top)?)
+    /// elements, labelled by the integers `0` through `top`. Meet is minimum
+    /// and join is maximum.
+    pub fn chain(top: usize) -> Self {
+        let size = top + 1;
+        Self::from_poset_with_tables(
+            Poset::chain(top),
+            LatticeTables {
+                meet: (0..size)
+                    .map(|i| (0..size).map(|j| i.min(j)).collect())
+                    .collect(),
+                join: (0..size)
+                    .map(|i| (0..size).map(|j| i.max(j)).collect())
+                    .collect(),
+                bottom: 0,
+                top,
+            },
+        )
     }
 
     /// Constructs the Boolean lattice of subsets of `{0, ..., rank - 1}`.
     ///
-    /// Elements are `usize` bitmasks ordered by subset inclusion: bit `i` is
-    /// set exactly when the subset contains `i`. Consequently meet is bitwise
-    /// intersection and join is bitwise union. For example, rank `3` produces
-    /// eight elements numbered `0` through `7`.
-    pub fn boolean(rank: usize) -> Result<Self, LatticeError> {
-        if rank >= usize::BITS as usize {
-            return Err(LatticeError::BooleanRankTooLarge { rank });
+    /// Elements are labelled by the subsets themselves, such as `{0, 2}`, and
+    /// ordered by inclusion. The element with id `i` is the subset whose
+    /// members are the positions of the set bits of `i`.
+    ///
+    /// Panics if `rank` is at least the number of bits in a `usize`.
+    pub fn boolean(rank: usize) -> Self {
+        assert!(
+            rank < usize::BITS as usize,
+            "cannot construct the Boolean lattice of rank {rank}"
+        );
+        let size = 1usize << rank;
+        let labels = (0..size)
+            .map(|mask| Label::set((0..rank).filter(|bit| mask & (1 << bit) != 0)))
+            .collect();
+        let relation = (0..size)
+            .map(|left| (0..size).map(|right| left & !right == 0).collect())
+            .collect();
+        Self::from_poset_with_tables(
+            Poset::from_validated(labels, relation),
+            LatticeTables {
+                meet: (0..size)
+                    .map(|i| (0..size).map(|j| i & j).collect())
+                    .collect(),
+                join: (0..size)
+                    .map(|i| (0..size).map(|j| i | j).collect())
+                    .collect(),
+                bottom: 0,
+                top: size - 1,
+            },
+        )
+    }
+
+    /// Constructs the direct product of finitely many lattices.
+    ///
+    /// Elements are tuples `(x_0, ..., x_{k-1})`; the order, meet, and join
+    /// are computed componentwise.
+    pub fn product<I>(factors: I) -> Self
+    where
+        I: IntoIterator,
+        I::Item: Borrow<Lattice>,
+    {
+        Self::product_with_projections(factors).0
+    }
+
+    /// Constructs the direct product of finitely many lattices together with
+    /// its projections, one for each factor.
+    pub fn product_with_projections<I>(factors: I) -> (Self, Vec<LatticeMap>)
+    where
+        I: IntoIterator,
+        I::Item: Borrow<Lattice>,
+    {
+        let factors = factors
+            .into_iter()
+            .map(|factor| factor.borrow().clone())
+            .collect::<Vec<_>>();
+        let (poset, _) = Poset::product_with_projections(factors.iter().map(Lattice::as_poset));
+        let (coordinates, _) = product_coordinates(
+            &factors
+                .iter()
+                .map(|factor| factor.relation_matrix())
+                .collect::<Vec<_>>(),
+        );
+        let id_of = |coordinate: &[ElementId]| {
+            coordinate
+                .iter()
+                .zip(&factors)
+                .fold(0, |id, (&x, factor)| id * factor.size() + x)
+        };
+        let componentwise = |op: fn(&Lattice, ElementId, ElementId) -> ElementId| {
+            coordinates
+                .iter()
+                .map(|left| {
+                    coordinates
+                        .iter()
+                        .map(|right| {
+                            let combined = left
+                                .iter()
+                                .zip(right)
+                                .zip(&factors)
+                                .map(|((&x, &y), factor)| op(factor, x, y))
+                                .collect::<Vec<_>>();
+                            id_of(&combined)
+                        })
+                        .collect()
+                })
+                .collect()
+        };
+        let tables = LatticeTables {
+            meet: componentwise(Lattice::meet),
+            join: componentwise(Lattice::join),
+            bottom: id_of(&factors.iter().map(Lattice::bottom).collect::<Vec<_>>()),
+            top: id_of(&factors.iter().map(Lattice::top).collect::<Vec<_>>()),
+        };
+        let product = Self::from_poset_with_tables(poset, tables);
+        let projections = factors
+            .iter()
+            .enumerate()
+            .map(|(index, factor)| {
+                LatticeMap::from_validated(
+                    product.clone(),
+                    factor.clone(),
+                    coordinates
+                        .iter()
+                        .map(|coordinate| coordinate[index])
+                        .collect(),
+                )
+            })
+            .collect();
+        (product, projections)
+    }
+
+    /// Constructs the horizontal join (fusion) of finitely many nontrivial
+    /// lattices.
+    ///
+    /// The factors are placed side by side, with all of their bottoms
+    /// identified and all of their tops identified; no other relations are
+    /// added between different factors. The shared bottom and top are
+    /// labelled `"bot"` and `"top"`, and every other element `x` of the `i`th
+    /// factor is labelled `(i, x)`.
+    ///
+    /// ```
+    /// use hccr::lattice::Lattice;
+    ///
+    /// let c3 = Lattice::chain(3);
+    /// let l = Lattice::horizontal_join([&c3, &c3, &c3])?;
+    /// assert_eq!(l.size(), 8);
+    /// assert!(l.leq(l.id((1, 2))?, l.id("top")?));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
+    /// Joining no lattices gives the two-element chain `bot < top`, the
+    /// unit for this operation.
+    pub fn horizontal_join<I>(factors: I) -> Result<Self, HorizontalJoinError>
+    where
+        I: IntoIterator,
+        I::Item: Borrow<Lattice>,
+    {
+        Ok(Self::horizontal_join_with_inclusions(factors)?.0)
+    }
+
+    /// Constructs the horizontal join of finitely many nontrivial lattices
+    /// together with its inclusions, one for each factor.
+    pub fn horizontal_join_with_inclusions<I>(
+        factors: I,
+    ) -> Result<(Self, Vec<LatticeMap>), HorizontalJoinError>
+    where
+        I: IntoIterator,
+        I::Item: Borrow<Lattice>,
+    {
+        let factors = factors
+            .into_iter()
+            .map(|factor| factor.borrow().clone())
+            .collect::<Vec<_>>();
+        if let Some(factor) = factors.iter().position(Lattice::is_trivial) {
+            return Err(HorizontalJoinError::TrivialFactor { factor });
         }
 
-        let size = 1usize << rank;
-        Lattice::new(Poset::from_vec_by((0..size).collect(), |left, right| {
-            left & !right == 0
-        })?)
+        let interior_count = factors
+            .iter()
+            .map(|factor| factor.size() - 2)
+            .sum::<usize>();
+        let size = interior_count + 2;
+        let bottom = 0;
+        let top = size - 1;
+        let mut labels = Vec::with_capacity(size);
+        labels.push(Label::from("bot"));
+        let mut maps = Vec::with_capacity(factors.len());
+        for (index, factor) in factors.iter().enumerate() {
+            let mut map = vec![0; factor.size()];
+            for id in factor.ids() {
+                map[id] = if id == factor.bottom() {
+                    bottom
+                } else if id == factor.top() {
+                    top
+                } else {
+                    labels.push(Label::from((index, factor.label(id))));
+                    labels.len() - 1
+                };
+            }
+            maps.push(map);
+        }
+        labels.push(Label::from("top"));
+
+        let mut relation = vec![BitVec::repeat(false, size); size];
+        relation[bottom].fill(true);
+        for row in &mut relation {
+            row.set(top, true);
+        }
+        for (factor, map) in factors.iter().zip(&maps) {
+            for edge in factor.all_relations_iter() {
+                relation[map[edge.from]].set(map[edge.to], true);
+            }
+        }
+        let fusion = Lattice::new(Poset::from_validated(labels, relation))
+            .expect("a horizontal join of nontrivial lattices is a lattice");
+        let inclusions = factors
+            .iter()
+            .zip(maps)
+            .map(|(factor, map)| LatticeMap::from_validated(factor.clone(), fusion.clone(), map))
+            .collect();
+        Ok((fusion, inclusions))
     }
 }
 
-impl<A: Clone, B: Clone> Lattice<(A, B)> {
-    /// Constructs the direct product of two lattices and its canonical projections.
-    ///
-    /// The product lattice has elements `(a, b)` and componentwise order:
-    /// `(a, b) <= (a', b')` if and only if `a <= a'` and `b <= b'`.
-    pub fn product(
-        left: Arc<Lattice<A>>,
-        right: Arc<Lattice<B>>,
-    ) -> Result<LatticeProduct<A, B>, LatticeError> {
-        let product = crate::poset::product(
-            Arc::new(left.as_poset().clone()),
-            Arc::new(right.as_poset().clone()),
-        )
-        .expect("product projections should be poset maps");
-        let lattice = Arc::new(Lattice::new(product.poset.as_ref().clone())?);
-        let left_projection = LatticeMap::new(
-            Arc::clone(&lattice),
-            left,
-            product.left_projection.map().to_vec(),
-        )
-        .expect("left product projection should be a lattice map");
-        let right_projection = LatticeMap::new(
-            Arc::clone(&lattice),
-            right,
-            product.right_projection.map().to_vec(),
-        )
-        .expect("right product projection should be a lattice map");
-
-        Ok(LatticeProduct {
-            lattice,
-            left_projection,
-            right_projection,
-        })
-    }
-}
-
-impl<A> TryFrom<Poset<A>> for Lattice<A> {
-    type Error = LatticeError;
-
-    fn try_from(poset: Poset<A>) -> Result<Self, Self::Error> {
+impl LatticeTables {
+    fn compute(poset: &Poset) -> Result<Self, LatticeError> {
         if poset.is_empty() {
             return Err(LatticeError::Empty);
         }
@@ -330,13 +482,13 @@ impl<A> TryFrom<Poset<A>> for Lattice<A> {
             meet[i][i] = i;
             join[i][i] = i;
             for j in (i + 1)..n {
-                let Some(m) = poset.meet(i, j) else {
+                let Some(m) = poset.try_meet(i, j) else {
                     return Err(LatticeError::NotALattice { left: i, right: j });
                 };
                 meet[i][j] = m;
                 meet[j][i] = m;
 
-                let Some(k) = poset.join(i, j) else {
+                let Some(k) = poset.try_join(i, j) else {
                     return Err(LatticeError::NotALattice { left: i, right: j });
                 };
                 join[i][j] = k;
@@ -344,11 +496,10 @@ impl<A> TryFrom<Poset<A>> for Lattice<A> {
             }
         }
 
-        let bottom = poset.bottom().ok_or(LatticeError::MissingBottom)?;
-        let top = poset.top().ok_or(LatticeError::MissingTop)?;
+        let bottom = poset.try_bottom().ok_or(LatticeError::MissingBottom)?;
+        let top = poset.try_top().ok_or(LatticeError::MissingTop)?;
 
         Ok(Self {
-            poset,
             meet,
             join,
             bottom,
@@ -357,63 +508,42 @@ impl<A> TryFrom<Poset<A>> for Lattice<A> {
     }
 }
 
-/// Fuses two nontrivial lattices by identifying their bottoms and tops.
-///
-/// The resulting lattice contains a copy of each input lattice, except that the
-/// two bottom elements are identified and the two top elements are identified.
-/// No new comparabilities are added between the two factors beyond those forced
-/// by the common bottom and common top. The result is sometimes called the
-/// horizontal sum of the lattices. The returned embeddings record which
-/// element ids of the fused lattice represent the two inputs.
-pub fn horizontal_join<A: Clone, B: Clone>(
-    left: Arc<Lattice<A>>,
-    right: Arc<Lattice<B>>,
-) -> Result<LatticeFusion<A, B>, HorizontalJoinError> {
-    if left.bottom() == left.top() || right.bottom() == right.top() {
-        return Err(HorizontalJoinError::TrivialInput);
+impl Deref for Lattice {
+    type Target = Poset;
+
+    fn deref(&self) -> &Poset {
+        &self.poset
     }
+}
 
-    let left_len = left.size();
-    let right_len = right.size();
-    let mut elements = left
-        .elements()
-        .iter()
-        .cloned()
-        .map(Either::Left)
-        .collect::<Vec<_>>();
-    let mut right_map = vec![0; right_len];
-    right_map[right.bottom()] = left.bottom();
-    right_map[right.top()] = left.top();
-
-    for (id, label) in right.elements().iter().cloned().enumerate() {
-        if id != right.bottom() && id != right.top() {
-            right_map[id] = elements.len();
-            elements.push(Either::Right(label));
-        }
+impl AsRef<Poset> for Lattice {
+    fn as_ref(&self) -> &Poset {
+        &self.poset
     }
+}
 
-    let mut relation = vec![BitVec::repeat(false, elements.len()); elements.len()];
-    for edge in left.as_poset().all_relations_iter() {
-        relation[edge.from].set(edge.to, true);
+impl From<Lattice> for Poset {
+    fn from(lattice: Lattice) -> Self {
+        lattice.poset
     }
-    for edge in right.as_poset().all_relations_iter() {
-        relation[right_map[edge.from]].set(right_map[edge.to], true);
+}
+
+impl TryFrom<Poset> for Lattice {
+    type Error = LatticeError;
+
+    fn try_from(poset: Poset) -> Result<Self, Self::Error> {
+        Self::new(poset)
     }
+}
 
-    let poset = Poset::from_relation(elements, relation)?;
-    let lattice = Arc::new(Lattice::new(poset)?);
-    let left_map = LatticeMap::new(
-        Arc::clone(&left),
-        Arc::clone(&lattice),
-        (0..left_len).collect(),
-    )
-    .expect("fusion left embedding should be a lattice map");
-    let right_map = LatticeMap::new(Arc::clone(&right), Arc::clone(&lattice), right_map)
-        .expect("fusion right embedding should be a lattice map");
+impl fmt::Display for Lattice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.poset.fmt_named("Lattice", f)
+    }
+}
 
-    Ok(LatticeFusion {
-        lattice,
-        left: left_map,
-        right: right_map,
-    })
+impl fmt::Debug for Lattice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
 }

@@ -3,6 +3,7 @@ use super::edge_routing::edge_bend_decisions;
 use super::layout::{PosetLayoutAlgorithm, layout_with_covers};
 use super::poset::{PosetTikzOptions, poset_to_tikz_with};
 use super::syntax::*;
+use crate::cotransfer_lattice::CotransferLattice;
 #[cfg(feature = "groups")]
 use crate::g_lattice::GTransferLattice;
 use crate::lattice::Lattice;
@@ -159,26 +160,26 @@ impl TransferSystemGlyphOptions {
 }
 
 /// Renders the containment lattice of transfer systems as a TikZ picture.
-pub fn transfer_system_lattice_to_tikz<A>(lattice: &TransferLattice<A>) -> TikzPicture {
+pub fn transfer_system_lattice_to_tikz(lattice: &TransferLattice) -> TikzPicture {
     lattice.to_tikz()
 }
 
 /// Renders the containment lattice of transfer systems with custom options.
-pub fn transfer_system_lattice_to_tikz_with<A>(
-    lattice: &TransferLattice<A>,
+pub fn transfer_system_lattice_to_tikz_with(
+    lattice: &TransferLattice,
     options: &TransferSystemTikzOptions,
 ) -> TikzPicture {
     lattice.to_tikz_with(options)
 }
 
 /// Renders a poset of transfer systems as a TikZ picture.
-pub fn transfer_system_order_to_tikz<A>(order: &TransferPoset<A>) -> TikzPicture {
+pub fn transfer_system_order_to_tikz(order: &TransferPoset) -> TikzPicture {
     order.to_tikz()
 }
 
 /// Renders a poset of transfer systems with custom options.
-pub fn transfer_system_order_to_tikz_with<A>(
-    order: &TransferPoset<A>,
+pub fn transfer_system_order_to_tikz_with(
+    order: &TransferPoset,
     options: &TransferSystemTikzOptions,
 ) -> TikzPicture {
     order.to_tikz_with(options)
@@ -190,83 +191,73 @@ pub fn transfer_system_order_to_tikz_with<A>(
 /// function is available only with the `groups` feature; it is also exposed by
 /// the feature-gated [`ToTikz`] implementation for [`GTransferLattice`].
 #[cfg(feature = "groups")]
-pub fn g_transfer_system_lattice_to_tikz<A>(lattice: &GTransferLattice<A>) -> TikzPicture {
+pub fn g_transfer_system_lattice_to_tikz(lattice: &GTransferLattice) -> TikzPicture {
     lattice.to_tikz()
 }
 
 /// Renders the containment lattice of G-transfer systems with custom options.
 #[cfg(feature = "groups")]
-pub fn g_transfer_system_lattice_to_tikz_with<A>(
-    lattice: &GTransferLattice<A>,
+pub fn g_transfer_system_lattice_to_tikz_with(
+    lattice: &GTransferLattice,
     options: &TransferSystemTikzOptions,
 ) -> TikzPicture {
     lattice.to_tikz_with(options)
 }
 
-impl<A> ToTikz for TransferLattice<A> {
+impl ToTikz for TransferLattice {
     type Options = TransferSystemTikzOptions;
 
     fn to_tikz_with(&self, options: &Self::Options) -> TikzPicture {
-        transfer_system_order_picture(
-            self.as_poset(),
-            self.universe().lattice().as_ref(),
-            options,
-            |node_id, glyph_renderer| {
-                self.system(node_id)
-                    .map(|system| glyph_renderer.render_transfer_system(&system))
-                    .expect("transfer-system lattice node id should be valid")
-            },
-        )
+        transfer_system_order_picture(self, self.base_lattice(), options, |id, glyph_renderer| {
+            glyph_renderer.render_transfer_system(self.system(id))
+        })
     }
 }
 
-impl<A> ToTikz for TransferPoset<A> {
+impl ToTikz for TransferPoset {
     type Options = TransferSystemTikzOptions;
 
     fn to_tikz_with(&self, options: &Self::Options) -> TikzPicture {
-        transfer_system_order_picture(
-            self.raw_poset(),
-            self.universe().lattice().as_ref(),
-            options,
-            |node_id, glyph_renderer| {
-                self.system(node_id)
-                    .map(|system| glyph_renderer.render_transfer_system(&system))
-                    .expect("transfer-system poset node id should be valid")
-            },
-        )
+        transfer_system_order_picture(self, self.base_lattice(), options, |id, glyph_renderer| {
+            glyph_renderer.render_transfer_system(self.system(id))
+        })
+    }
+}
+
+impl ToTikz for CotransferLattice {
+    type Options = TransferSystemTikzOptions;
+
+    fn to_tikz_with(&self, options: &Self::Options) -> TikzPicture {
+        transfer_system_order_picture(self, self.base_lattice(), options, |id, glyph_renderer| {
+            let system = self.system(id);
+            glyph_renderer.render_with(|relation| system.contains_relation(relation))
+        })
     }
 }
 
 #[cfg(feature = "groups")]
-impl<A> ToTikz for GTransferLattice<A> {
+impl ToTikz for GTransferLattice {
     type Options = TransferSystemTikzOptions;
 
     fn to_tikz_with(&self, options: &Self::Options) -> TikzPicture {
-        transfer_system_order_picture(
-            self.as_poset(),
-            self.universe().lattice().as_ref(),
-            options,
-            |node_id, glyph_renderer| {
-                let system = self
-                    .system(node_id)
-                    .expect("G-transfer-system lattice node id should be valid");
-                glyph_renderer.render_with(|relation| system.contains_relation(relation))
-            },
-        )
+        transfer_system_order_picture(self, self.base_lattice(), options, |id, glyph_renderer| {
+            let system = self.system(id);
+            glyph_renderer.render_with(|relation| system.contains_relation(relation))
+        })
     }
 }
 
-fn transfer_system_order_picture<A, R, F>(
-    order: &Poset<R>,
-    underlying_lattice: &Lattice<A>,
+fn transfer_system_order_picture<F>(
+    order: &Poset,
+    underlying_lattice: &Lattice,
     options: &TransferSystemTikzOptions,
     mut glyph_for_node: F,
 ) -> TikzPicture
 where
-    F: FnMut(ElementId, &SuborderGlyphRenderer<'_, A>) -> TikzPicture,
+    F: FnMut(ElementId, &SuborderGlyphRenderer<'_>) -> TikzPicture,
 {
     let glyph_renderer = SuborderGlyphRenderer::new(underlying_lattice, &options.glyph);
-    poset_to_tikz_with(order, &options.poset, |node_id, _raw| {
+    poset_to_tikz_with(order, &options.poset, |node_id, _label| {
         TikzLabel::raw(glyph_for_node(node_id, &glyph_renderer).render_inline())
     })
 }
@@ -282,17 +273,17 @@ pub fn transfer_system_tikz_options() -> TransferSystemTikzOptions {
 /// diagram and reused for every node.  This keeps all glyphs in the same
 /// coordinates and avoids recomputing the ranked layout for each transfer
 /// system.
-pub(in crate::tikz) struct SuborderGlyphRenderer<'a, A> {
-    lattice: &'a Lattice<A>,
+pub(in crate::tikz) struct SuborderGlyphRenderer<'a> {
+    lattice: &'a Lattice,
     coordinates: HashMap<ElementId, (f64, f64)>,
     proper_edges: Vec<Edge>,
     ambient_edges: Vec<Edge>,
     options: &'a TransferSystemGlyphOptions,
 }
 
-impl<'a, A> SuborderGlyphRenderer<'a, A> {
+impl<'a> SuborderGlyphRenderer<'a> {
     pub(in crate::tikz) fn new(
-        lattice: &'a Lattice<A>,
+        lattice: &'a Lattice,
         options: &'a TransferSystemGlyphOptions,
     ) -> Self {
         if let GlyphNodeDisplay::Labels(labels) = &options.node_display {
@@ -304,16 +295,8 @@ impl<'a, A> SuborderGlyphRenderer<'a, A> {
                 lattice.size(),
             );
         }
-        let proper_edges = lattice
-            .as_poset()
-            .proper_relations_iter()
-            .collect::<Vec<_>>();
-        let mut covers = lattice
-            .as_poset()
-            .cover_relations()
-            .into_iter()
-            .collect::<Vec<_>>();
-        covers.sort_unstable();
+        let proper_edges = lattice.proper_relations_iter().collect::<Vec<_>>();
+        let covers = lattice.sorted_cover_relations();
         let ambient_edges = match options.ambient_relations {
             RelationDisplay::Covers => covers.clone(),
             RelationDisplay::AllProperRelations => proper_edges.clone(),
@@ -333,7 +316,7 @@ impl<'a, A> SuborderGlyphRenderer<'a, A> {
         }
     }
 
-    fn render_transfer_system(&self, system: &TransferSystem<A>) -> TikzPicture {
+    fn render_transfer_system(&self, system: &TransferSystem) -> TikzPicture {
         self.render_with(|relation| system.contains_relation(relation))
     }
 

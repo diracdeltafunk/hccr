@@ -1,20 +1,13 @@
 use hccr::lattice::Lattice;
-use hccr::poset::{Edge, Poset};
 use hccr::tikz::{transfer_system_order_to_tikz_with, transfer_system_tikz_options};
-use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let diamond = Arc::new(Lattice::new(Poset::from_edges(
-        ["0", "a", "b", "1"].to_vec(),
-        [
-            Edge::new(0, 1),
-            Edge::new(0, 2),
-            Edge::new(1, 3),
-            Edge::new(2, 3),
-        ],
-    )?)?);
+    let diamond = Lattice::from_covers(
+        ["0", "a", "b", "1"],
+        [("0", "a"), ("0", "b"), ("a", "1"), ("b", "1")],
+    )?;
 
-    let composition_closed_order = diamond.transfer_systems_composition_closed()?;
+    let composition_closed_order = diamond.transfer_systems_composition_closed();
     let mut tikz_options = transfer_system_tikz_options();
     tikz_options.poset.debug_element_ids = true;
     let tikz =

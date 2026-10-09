@@ -7,51 +7,20 @@
 //! `L^op`.
 //!
 //! This module uses that equivalence internally. It keeps cotransfer arrows in
-//! the familiar orientation of `L`, but delegates generation, validation, and
-//! enumeration to the existing transfer-system implementation on `L^op`.
+//! the familiar orientation of `L`, but delegates generation and enumeration
+//! to the transfer-system implementation on `L^op`.
 
-use crate::bitvec_utils::set_partial_cmp;
+use crate::bitvec_utils::{is_subset, set_partial_cmp};
+use crate::label::Label;
 use crate::lattice::Lattice;
 use crate::poset::{Edge, EdgeSet, ElementId, Poset};
-use crate::transfer_lattice::{
-    RawTransferSystem, TransferError, TransferSystem, TransferSystemError, TransferUniverse,
-};
+use crate::transfer_lattice::{TransferSystem, fmt_relations};
 use bitvec::prelude::*;
+use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::fmt;
+use std::ops::Deref;
 use std::sync::Arc;
-
-/// An error while constructing a cotransfer-system containment lattice.
-///
-/// Cotransfer enumeration is transfer enumeration on the opposite lattice, so
-/// it has exactly the same construction errors.
-pub type CotransferError = TransferError;
-
-/// A cotransfer system stored in the relation coordinates of `L^op`.
-///
-/// Bit `i` denotes the reversal in `L` of
-/// `universe.opposite_transfer_universe().proper_edges()[i]`. Identity arrows
-/// are implicit.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct RawCotransferSystem {
-    arrows: BitVec,
-}
-
-impl PartialOrd for RawCotransferSystem {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        set_partial_cmp(&self.arrows, &other.arrows)
-    }
-}
-
-impl RawCotransferSystem {
-    pub(crate) fn new(arrows: BitVec) -> Self {
-        Self { arrows }
-    }
-
-    /// Returns the bitvector of non-identity arrows.
-    pub fn arrows(&self) -> &BitVec {
-        &self.arrows
-    }
-}
 
 /// Errors that can occur while constructing one cotransfer system.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,17 +37,7 @@ pub enum CotransferSystemError {
         /// The invalid relation.
         edge: Edge,
     },
-    /// A raw bitvector has the wrong number of coordinates.
-    WrongArrowCount {
-        /// The number of proper relations in the universe.
-        expected: usize,
-        /// The number of supplied bits.
-        actual: usize,
-    },
-    /// Raw arrows are not closed under the cotransfer-system axioms.
-    RawNotClosed,
-    /// A lifting or opposite-conversion input uses a different ambient
-    /// transfer universe.
+    /// A transfer system on the wrong lattice was supplied.
     LatticeMismatch,
 }
 
@@ -95,19 +54,8 @@ impl fmt::Display for CotransferSystemError {
                 "generator {} <= {} is not a relation in the lattice order",
                 edge.from, edge.to
             ),
-            Self::WrongArrowCount { expected, actual } => write!(
-                f,
-                "raw cotransfer system has {actual} arrow bits, expected {expected}"
-            ),
-            Self::RawNotClosed => write!(
-                f,
-                "raw arrow set is not closed under the cotransfer-system axioms"
-            ),
             Self::LatticeMismatch => {
-                write!(
-                    f,
-                    "the transfer and cotransfer systems use different ambient universes"
-                )
+                write!(f, "the supplied transfer system is on the wrong lattice")
             }
         }
     }
@@ -115,123 +63,97 @@ impl fmt::Display for CotransferSystemError {
 
 impl std::error::Error for CotransferSystemError {}
 
-impl From<TransferSystemError> for CotransferSystemError {
-    fn from(error: TransferSystemError) -> Self {
-        match error {
-            TransferSystemError::EdgeOutOfBounds { edge, lattice_size } => Self::EdgeOutOfBounds {
-                edge: reverse(edge),
-                lattice_size,
-            },
-            TransferSystemError::NotLatticeRelation { edge } => Self::NotLatticeRelation {
-                edge: reverse(edge),
-            },
-            TransferSystemError::WrongArrowCount { expected, actual } => {
-                Self::WrongArrowCount { expected, actual }
-            }
-            TransferSystemError::RawNotClosed => Self::RawNotClosed,
-        }
-    }
-}
-
-/// Shared coordinates and closure data for cotransfer systems on a lattice.
-#[derive(Debug)]
-pub struct CotransferUniverse<A> {
-    lattice: Arc<Lattice<A>>,
-    transfer_universe: Arc<TransferUniverse<A>>,
-    opposite_lattice: Arc<Lattice<ElementId>>,
-    opposite_transfer_universe: Arc<TransferUniverse<ElementId>>,
+/// The coordinates of cotransfer systems on a lattice `L`: the opposite
+/// lattice, whose transfer systems they correspond to, and the proper
+/// relations of `L` in the bit order of transfer systems on `L^op`.
+pub(crate) struct CotransferUniverse {
+    opposite: Lattice,
     proper_edges: Vec<Edge>,
 }
 
-/// An owned cotransfer system together with its ambient universe.
-#[derive(Debug)]
-pub struct CotransferSystem<A> {
-    raw: RawCotransferSystem,
-    universe: Arc<CotransferUniverse<A>>,
+/// A cotransfer system on a finite lattice.
+///
+/// It remembers its lattice. Cotransfer systems on the same lattice are
+/// ordered by containment, so `<=` can be used to compare them.
+#[derive(Clone)]
+pub struct CotransferSystem {
+    lattice: Lattice,
+    arrows: BitVec,
 }
 
-/// The lattice of cotransfer systems ordered by containment.
-#[derive(Debug, Clone)]
-pub struct CotransferLattice<A> {
-    universe: Arc<CotransferUniverse<A>>,
-    lattice: Lattice<RawCotransferSystem>,
+/// The lattice of cotransfer systems on a fixed lattice, ordered by
+/// containment.
+///
+/// This dereferences to the [`Lattice`] whose elements are the cotransfer
+/// systems (labelled `0, 1, 2, ...`); use [`CotransferLattice::system`] to get
+/// the cotransfer system with a given id.
+#[derive(Clone)]
+pub struct CotransferLattice {
+    order: Lattice,
+    base: Lattice,
+    systems: Arc<[CotransferSystem]>,
+    ids: Arc<HashMap<BitVec, ElementId>>,
 }
 
-impl<A> Lattice<A> {
-    /// Builds the shared universe for cotransfer systems on this lattice.
-    pub fn cotransfer_universe(self: Arc<Self>) -> Arc<CotransferUniverse<A>> {
-        Arc::new(CotransferUniverse::new(self))
+impl Lattice {
+    pub(crate) fn cotransfer_universe(&self) -> &CotransferUniverse {
+        self.data().cotransfer_universe.get_or_init(|| {
+            let opposite = self.opposite();
+            let proper_edges = opposite
+                .transfer_universe()
+                .proper_edges()
+                .iter()
+                .map(|edge| edge.reversed())
+                .collect();
+            CotransferUniverse {
+                opposite,
+                proper_edges,
+            }
+        })
     }
 
-    /// Constructs the containment lattice of cotransfer systems.
-    pub fn cotransfer_systems_containment(
-        self: Arc<Self>,
-    ) -> Result<CotransferLattice<A>, CotransferError> {
-        self.cotransfer_universe().containment_lattice()
-    }
-}
-
-impl<A> CotransferUniverse<A> {
-    /// Constructs a cotransfer universe on `lattice`.
-    pub fn new(lattice: Arc<Lattice<A>>) -> Self {
-        Self::from_transfer_universe(Arc::new(TransferUniverse::new(lattice)))
-    }
-
-    /// Constructs a cotransfer universe dual to an existing transfer universe.
-    ///
-    /// Retaining the supplied universe makes the right-lifting/left-lifting
-    /// duality round-trip preserve the public [`TransferSystem`] value, not
-    /// merely its set of arrows.
-    pub fn from_transfer_universe(transfer_universe: Arc<TransferUniverse<A>>) -> Self {
-        let lattice = Arc::clone(transfer_universe.lattice());
-        let opposite_lattice = Arc::new(opposite_lattice_with_id_labels(&lattice));
-        let opposite_transfer_universe =
-            Arc::new(TransferUniverse::new(Arc::clone(&opposite_lattice)));
-        let proper_edges = opposite_transfer_universe
-            .proper_edges()
+    /// Constructs the lattice of all cotransfer systems on this lattice,
+    /// ordered by containment.
+    pub fn cotransfer_systems(&self) -> CotransferLattice {
+        let opposite = &self.cotransfer_universe().opposite;
+        let systems = opposite.transfer_universe().all_systems();
+        let relation = systems
             .iter()
-            .copied()
-            .map(reverse)
+            .map(|left| systems.iter().map(|right| is_subset(left, right)).collect())
             .collect();
-        Self {
-            lattice,
-            transfer_universe,
-            opposite_lattice,
-            opposite_transfer_universe,
-            proper_edges,
+        let order = Lattice::new(Poset::from_validated(
+            (0..systems.len()).map(Label::from).collect(),
+            relation,
+        ))
+        .expect("cotransfer systems ordered by containment form a lattice");
+        let ids = systems
+            .iter()
+            .enumerate()
+            .map(|(id, arrows)| (arrows.clone(), id))
+            .collect();
+        let systems = systems
+            .into_iter()
+            .map(|arrows| CotransferSystem::new(self.clone(), arrows))
+            .collect();
+        CotransferLattice {
+            order,
+            base: self.clone(),
+            systems,
+            ids: Arc::new(ids),
         }
     }
 
-    /// Returns the underlying lattice in its original orientation.
-    pub fn lattice(&self) -> &Arc<Lattice<A>> {
-        &self.lattice
+    /// Counts the cotransfer systems on this lattice without storing them.
+    pub fn cotransfer_system_count(&self) -> usize {
+        self.cotransfer_universe().opposite.transfer_system_count()
     }
 
-    /// Returns the transfer universe dualized by lifting classes.
-    pub fn transfer_universe(&self) -> &Arc<TransferUniverse<A>> {
-        &self.transfer_universe
-    }
-
-    /// Returns `L^op`, with element ids used as labels and coordinates unchanged.
-    pub fn opposite_lattice(&self) -> &Arc<Lattice<ElementId>> {
-        &self.opposite_lattice
-    }
-
-    /// Returns the transfer universe on `L^op` used by this dual representation.
-    pub fn opposite_transfer_universe(&self) -> &Arc<TransferUniverse<ElementId>> {
-        &self.opposite_transfer_universe
-    }
-
-    /// Returns the proper relations in `L` in raw cotransfer-coordinate order.
-    pub fn proper_edges(&self) -> &[Edge] {
-        &self.proper_edges
-    }
-
-    /// Constructs the least cotransfer system containing `generators`.
-    pub fn generated_by<I, E>(
-        self: &Arc<Self>,
+    /// Constructs the least cotransfer system containing `generators`, which
+    /// are relations of this lattice given by element id.
+    pub fn cotransfer_system_generated_by<I, E>(
+        &self,
         generators: I,
-    ) -> Result<CotransferSystem<A>, CotransferSystemError>
+    ) -> Result<CotransferSystem, CotransferSystemError>
     where
         I: IntoIterator<Item = E>,
         E: Into<Edge>,
@@ -239,284 +161,241 @@ impl<A> CotransferUniverse<A> {
         let mut reversed = Vec::new();
         for generator in generators {
             let edge = generator.into();
-            validate_edge(&self.lattice, edge)?;
-            reversed.push(reverse(edge));
+            if edge.from >= self.size() || edge.to >= self.size() {
+                return Err(CotransferSystemError::EdgeOutOfBounds {
+                    edge,
+                    lattice_size: self.size(),
+                });
+            }
+            if !self.leq(edge.from, edge.to) {
+                return Err(CotransferSystemError::NotLatticeRelation { edge });
+            }
+            reversed.push(edge.reversed());
         }
-        let opposite = self.opposite_transfer_universe.generated_by(reversed)?;
+        let opposite = self
+            .cotransfer_universe()
+            .opposite
+            .transfer_system_generated_by(reversed)
+            .expect("reversed lattice relations are relations of the opposite lattice");
         Ok(CotransferSystem::new(
-            RawCotransferSystem::new(opposite.raw().arrows().clone()),
-            Arc::clone(self),
+            self.clone(),
+            opposite.arrows().clone(),
         ))
     }
 
-    /// Validates raw data and pairs it with this universe.
-    ///
-    /// Use [`CotransferUniverse::generated_by`] to add cotransfer closure.
-    pub fn try_from_raw(
-        self: &Arc<Self>,
-        raw: RawCotransferSystem,
-    ) -> Result<CotransferSystem<A>, CotransferSystemError> {
-        let opposite_raw = RawTransferSystem::new(raw.arrows().clone());
-        self.opposite_transfer_universe.try_from_raw(opposite_raw)?;
-        Ok(CotransferSystem::new(raw, Arc::clone(self)))
+    /// Returns the trivial cotransfer system, containing only identities.
+    pub fn trivial_cotransfer_system(&self) -> CotransferSystem {
+        let bits = self.cotransfer_universe().proper_edges.len();
+        CotransferSystem::new(self.clone(), BitVec::repeat(false, bits))
     }
 
-    /// Converts a transfer system on the coordinate-wise opposite lattice to
-    /// its corresponding cotransfer system on `L`.
-    ///
-    /// The input must belong to this cotransfer universe's associated
-    /// opposite transfer universe.
-    pub fn from_opposite_transfer_system(
-        self: &Arc<Self>,
-        opposite: &TransferSystem<ElementId>,
-    ) -> Result<CotransferSystem<A>, CotransferSystemError> {
-        if !Arc::ptr_eq(&self.opposite_transfer_universe, opposite.universe()) {
+    /// Returns the complete cotransfer system, containing every relation.
+    pub fn complete_cotransfer_system(&self) -> CotransferSystem {
+        let bits = self.cotransfer_universe().proper_edges.len();
+        CotransferSystem::new(self.clone(), BitVec::repeat(true, bits))
+    }
+
+    /// Converts a transfer system on the opposite lattice `L^op` to the
+    /// corresponding cotransfer system on this lattice.
+    pub fn cotransfer_system_from_opposite(
+        &self,
+        opposite: &TransferSystem,
+    ) -> Result<CotransferSystem, CotransferSystemError> {
+        if *opposite.lattice() != self.cotransfer_universe().opposite {
             return Err(CotransferSystemError::LatticeMismatch);
         }
-        self.generated_by(opposite.edges(false).into_iter().map(reverse))
-    }
-
-    /// Forms the left lifting class of a transfer system as a cotransfer system.
-    pub fn left_lifting_of(
-        self: &Arc<Self>,
-        right: &TransferSystem<A>,
-    ) -> Result<CotransferSystem<A>, CotransferSystemError> {
-        if !Arc::ptr_eq(&self.transfer_universe, right.universe()) {
-            return Err(CotransferSystemError::LatticeMismatch);
-        }
-        let arrows = self.lattice.as_poset().llc(&right.edges(true));
-        self.generated_by(arrows)
-    }
-
-    /// Enumerates all cotransfer systems on the lattice.
-    pub fn cotransfer_systems(self: &Arc<Self>) -> Vec<CotransferSystem<A>> {
-        self.opposite_transfer_universe
-            .transfer_systems()
-            .into_iter()
-            .map(|opposite| {
-                CotransferSystem::new(
-                    RawCotransferSystem::new(opposite.raw().arrows().clone()),
-                    Arc::clone(self),
-                )
-            })
-            .collect()
-    }
-
-    /// Constructs the lattice of cotransfer systems ordered by containment.
-    pub fn containment_lattice(self: &Arc<Self>) -> Result<CotransferLattice<A>, CotransferError> {
-        let opposite = self.opposite_transfer_universe.containment_lattice()?;
-        let lattice = opposite
-            .raw_lattice()
-            .relabelled(|raw| RawCotransferSystem::new(raw.arrows().clone()));
-        Ok(CotransferLattice {
-            universe: Arc::clone(self),
-            lattice,
-        })
+        Ok(CotransferSystem::new(
+            self.clone(),
+            opposite.arrows().clone(),
+        ))
     }
 }
 
-impl<A> CotransferSystem<A> {
-    pub(crate) fn new(raw: RawCotransferSystem, universe: Arc<CotransferUniverse<A>>) -> Self {
-        Self { raw, universe }
+impl CotransferSystem {
+    pub(crate) fn new(lattice: Lattice, arrows: BitVec) -> Self {
+        Self { lattice, arrows }
     }
 
-    /// Returns the raw bitvector representation.
-    pub fn raw(&self) -> &RawCotransferSystem {
-        &self.raw
+    fn universe(&self) -> &CotransferUniverse {
+        self.lattice.cotransfer_universe()
     }
 
-    /// Returns the ambient cotransfer universe.
-    pub fn universe(&self) -> &Arc<CotransferUniverse<A>> {
-        &self.universe
-    }
-
-    /// Returns the underlying lattice.
-    pub fn lattice(&self) -> &Arc<Lattice<A>> {
-        self.universe.lattice()
+    /// Returns the lattice this cotransfer system lives on.
+    pub fn lattice(&self) -> &Lattice {
+        &self.lattice
     }
 
     /// Tests membership of a relation in this cotransfer system.
     pub fn contains_relation(&self, relation: Edge) -> bool {
         if relation.is_identity() {
-            return relation.from < self.lattice().size();
+            return relation.from < self.lattice.size();
         }
-        self.universe
-            .proper_edges()
-            .iter()
-            .position(|&edge| edge == relation)
-            .is_some_and(|edge_id| self.raw.arrows()[edge_id])
+        self.universe()
+            .opposite
+            .transfer_universe()
+            .proper_edge_id(relation.reversed())
+            .is_some_and(|edge_id| self.arrows[edge_id])
     }
 
     /// Returns all selected relations, optionally including identities.
     pub fn edges(&self, include_identities: bool) -> EdgeSet {
         let mut result = EdgeSet::new();
         if include_identities {
-            result.extend((0..self.lattice().size()).map(|id| Edge::new(id, id)));
+            result.extend(self.lattice.ids().map(|id| Edge::new(id, id)));
         }
-        result.extend(
-            self.raw
-                .arrows()
-                .iter_ones()
-                .map(|edge_id| self.universe.proper_edges()[edge_id]),
-        );
+        result.extend(self.sorted_proper_edges());
         result
+    }
+
+    /// Returns the non-identity relations, sorted by `(from, to)`.
+    pub fn sorted_proper_edges(&self) -> Vec<Edge> {
+        let universe = self.universe();
+        let mut edges = self
+            .arrows
+            .iter_ones()
+            .map(|edge_id| universe.proper_edges[edge_id])
+            .collect::<Vec<_>>();
+        edges.sort_unstable();
+        edges
     }
 
     /// Returns the corresponding transfer system on `L^op`.
     ///
     /// This realizes the containment-preserving isomorphism
     /// `coTr(L) ~= Tr(L^op)`.
-    pub fn opposite_transfer_system(&self) -> TransferSystem<ElementId> {
-        TransferSystem::new(
-            RawTransferSystem::new(self.raw.arrows().clone()),
-            Arc::clone(self.universe.opposite_transfer_universe()),
-        )
+    pub fn opposite_transfer_system(&self) -> TransferSystem {
+        TransferSystem::new(self.universe().opposite.clone(), self.arrows.clone())
     }
 
-    /// Forms this cotransfer system's right lifting class.
+    /// Forms this cotransfer system's right lifting class, a transfer system.
     ///
     /// Together with [`TransferSystem::left_lifting_cotransfer`], this realizes
     /// the order-reversing duality `coTr(L) ~= Tr(L)^op`.
-    pub fn right_lifting_transfer(&self) -> Result<TransferSystem<A>, CotransferSystemError> {
-        let arrows = self.lattice().as_poset().rlc(&self.edges(true));
-        Ok(self.universe.transfer_universe.generated_by(arrows)?)
+    pub fn right_lifting_transfer(&self) -> TransferSystem {
+        let arrows = self.lattice.rlc(&self.edges(true));
+        self.lattice
+            .transfer_system_generated_by(arrows)
+            .expect("a right lifting class consists of lattice relations")
     }
 }
 
-impl<A> Clone for CotransferSystem<A> {
-    fn clone(&self) -> Self {
-        Self::new(self.raw.clone(), Arc::clone(&self.universe))
-    }
-}
-
-impl<A> PartialEq for CotransferSystem<A> {
-    fn eq(&self, other: &Self) -> bool {
-        self.raw == other.raw && Arc::ptr_eq(&self.universe, &other.universe)
-    }
-}
-
-impl<A> Eq for CotransferSystem<A> {}
-
-impl<A> TransferSystem<A> {
-    /// Forms this transfer system's left lifting class.
+impl TransferSystem {
+    /// Forms this transfer system's left lifting class, a cotransfer system
+    /// on the same lattice.
     ///
-    /// The result is a cotransfer system on the identical underlying lattice.
     /// Applying [`CotransferSystem::right_lifting_transfer`] recovers `self`.
-    pub fn left_lifting_cotransfer(&self) -> Result<CotransferSystem<A>, CotransferSystemError> {
-        let universe = Arc::new(CotransferUniverse::from_transfer_universe(Arc::clone(
-            self.universe(),
-        )));
-        universe.left_lifting_of(self)
+    pub fn left_lifting_cotransfer(&self) -> CotransferSystem {
+        let arrows = self.lattice().llc(&self.edges(true));
+        self.lattice()
+            .cotransfer_system_generated_by(arrows)
+            .expect("a left lifting class consists of lattice relations")
     }
 }
 
-impl<A> CotransferLattice<A> {
-    /// Returns the universe shared by all systems in this lattice.
-    pub fn universe(&self) -> &Arc<CotransferUniverse<A>> {
-        &self.universe
-    }
-
-    /// Returns the raw containment lattice.
-    pub fn raw_lattice(&self) -> &Lattice<RawCotransferSystem> {
-        &self.lattice
-    }
-
-    /// Returns the underlying containment poset.
-    pub fn as_poset(&self) -> &Poset<RawCotransferSystem> {
-        self.lattice.as_poset()
-    }
-
-    /// Returns the number of cotransfer systems.
-    pub fn size(&self) -> usize {
-        self.lattice.size()
-    }
-
-    /// Returns the meet of two cotransfer systems by id.
-    pub fn meet_id(&self, left: ElementId, right: ElementId) -> ElementId {
-        self.lattice.meet_id(left, right)
-    }
-
-    /// Returns the join of two cotransfer systems by id.
-    pub fn join_id(&self, left: ElementId, right: ElementId) -> ElementId {
-        self.lattice.join_id(left, right)
-    }
-
-    /// Returns the bottom cotransfer system id.
-    pub fn bottom(&self) -> ElementId {
-        self.lattice.bottom()
-    }
-
-    /// Returns the top cotransfer system id.
-    pub fn top(&self) -> ElementId {
-        self.lattice.top()
-    }
-
-    /// Returns a cotransfer system by element id.
-    pub fn system(&self, id: ElementId) -> Option<CotransferSystem<A>> {
-        self.lattice
-            .element(id)
-            .cloned()
-            .map(|raw| CotransferSystem::new(raw, Arc::clone(&self.universe)))
-    }
-
-    /// Iterates over all cotransfer systems in element-id order.
-    pub fn systems(&self) -> impl Iterator<Item = CotransferSystem<A>> + '_ {
-        self.lattice
-            .elements()
-            .iter()
-            .cloned()
-            .map(|raw| CotransferSystem::new(raw, Arc::clone(&self.universe)))
-    }
-
-    /// Relabels the raw lattice by user-facing cotransfer systems.
-    pub fn to_system_lattice(&self) -> Lattice<CotransferSystem<A>> {
-        self.lattice
-            .relabelled(|raw| CotransferSystem::new(raw.clone(), Arc::clone(&self.universe)))
-    }
-
-    /// Relabels the containment poset by user-facing cotransfer systems.
-    pub fn to_system_poset(&self) -> Poset<CotransferSystem<A>> {
-        self.as_poset()
-            .relabelled(|raw| CotransferSystem::new(raw.clone(), Arc::clone(&self.universe)))
+impl PartialEq for CotransferSystem {
+    fn eq(&self, other: &Self) -> bool {
+        self.arrows == other.arrows && self.lattice == other.lattice
     }
 }
 
-/// Constructs the opposite of a lattice, preserving element ids and labels.
-pub fn opposite_lattice<A: Clone>(lattice: &Lattice<A>) -> Lattice<A> {
-    Lattice::new(
-        Poset::from_relation(
-            lattice.elements().to_vec(),
-            lattice.as_poset().relation_matrix_transpose().to_vec(),
+impl Eq for CotransferSystem {}
+
+impl PartialOrd for CotransferSystem {
+    /// Compares cotransfer systems on the same lattice by containment.
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        if self.lattice != other.lattice {
+            return None;
+        }
+        set_partial_cmp(&self.arrows, &other.arrows)
+    }
+}
+
+impl fmt::Display for CotransferSystem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt_relations(&self.lattice, self.sorted_proper_edges(), f)
+    }
+}
+
+impl fmt::Debug for CotransferSystem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "CotransferSystem {self}")
+    }
+}
+
+impl CotransferLattice {
+    /// Returns the lattice whose cotransfer systems these are.
+    pub fn base_lattice(&self) -> &Lattice {
+        &self.base
+    }
+
+    /// Returns the lattice of cotransfer systems itself, with elements
+    /// labelled `0, 1, 2, ...`. The same lattice is available through
+    /// dereferencing.
+    pub fn as_lattice(&self) -> &Lattice {
+        &self.order
+    }
+
+    /// Returns the cotransfer system with the given element id.
+    ///
+    /// Panics if `id` is out of bounds.
+    pub fn system(&self, id: ElementId) -> &CotransferSystem {
+        &self.systems[id]
+    }
+
+    /// Returns all cotransfer systems, in element-id order.
+    pub fn systems(&self) -> &[CotransferSystem] {
+        &self.systems
+    }
+
+    /// Returns the element id of a cotransfer system, if it belongs to this
+    /// lattice.
+    pub fn id_of(&self, system: &CotransferSystem) -> Option<ElementId> {
+        if system.lattice != self.base {
+            return None;
+        }
+        self.ids.get(&system.arrows).copied()
+    }
+}
+
+impl Deref for CotransferLattice {
+    type Target = Lattice;
+
+    fn deref(&self) -> &Lattice {
+        &self.order
+    }
+}
+
+impl<'a> IntoIterator for &'a CotransferLattice {
+    type Item = &'a CotransferSystem;
+    type IntoIter = std::slice::Iter<'a, CotransferSystem>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.systems().iter()
+    }
+}
+
+impl IntoIterator for CotransferLattice {
+    type Item = CotransferSystem;
+    type IntoIter = std::vec::IntoIter<CotransferSystem>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.systems().to_vec().into_iter()
+    }
+}
+
+impl fmt::Display for CotransferLattice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "lattice of {} cotransfer systems on {}",
+            self.size(),
+            self.base
         )
-        .expect("the transpose of a partial order is a partial order"),
-    )
-    .expect("the opposite of a lattice is a lattice")
-}
-
-fn opposite_lattice_with_id_labels<A>(lattice: &Lattice<A>) -> Lattice<ElementId> {
-    Lattice::new(
-        Poset::from_relation(
-            (0..lattice.size()).collect(),
-            lattice.as_poset().relation_matrix_transpose().to_vec(),
-        )
-        .expect("the transpose of a partial order is a partial order"),
-    )
-    .expect("the opposite of a lattice is a lattice")
-}
-
-fn reverse(edge: Edge) -> Edge {
-    Edge::new(edge.to, edge.from)
-}
-
-fn validate_edge<A>(lattice: &Lattice<A>, edge: Edge) -> Result<(), CotransferSystemError> {
-    if edge.from >= lattice.size() || edge.to >= lattice.size() {
-        return Err(CotransferSystemError::EdgeOutOfBounds {
-            edge,
-            lattice_size: lattice.size(),
-        });
     }
-    if !lattice.leq(edge.from, edge.to) {
-        return Err(CotransferSystemError::NotLatticeRelation { edge });
+}
+
+impl fmt::Debug for CotransferLattice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
     }
-    Ok(())
 }

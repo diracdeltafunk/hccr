@@ -26,6 +26,8 @@
 //!
 mod bitvec_utils;
 
+pub mod label;
+
 #[cfg(feature = "groups")]
 pub mod group_theory;
 

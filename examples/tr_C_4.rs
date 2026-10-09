@@ -4,7 +4,7 @@ use hccr::tikz::{ToTikz, TransferSystemTikzOptions};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let group = gap_sys::eval("CyclicGroup(4);")?;
     let subgroup_lattice = SubgroupGLattice::new(&group)?;
-    let systems = subgroup_lattice.transfer_systems_containment()?;
+    let systems = subgroup_lattice.transfer_systems();
     let mut options = TransferSystemTikzOptions::default();
     // The staggered middle branches remain legible with a tighter diagram.
     options.poset.y_spacing = 1.1;

@@ -26,15 +26,14 @@
 //! composition of group homomorphisms.
 
 use crate::bitvec_utils::is_subset;
-use crate::g_lattice::{GTransferLattice, GTransferSystem, GTransferUniverse, RawGTransferSystem};
-use crate::group_theory::GapSubgroup;
+use crate::g_lattice::{GLattice, GTransferLattice, GTransferSystem, GTransferUniverse};
 use crate::morphism::{MonotoneMap, PosetMap};
 use crate::poset::{Edge, ElementId};
 use crate::subgroup_morphism::SubgroupMaps;
 use bitvec::prelude::*;
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
+use std::rc::Rc;
 
 /// Errors produced while applying or materializing an equivariant transfer map.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,29 +96,25 @@ impl std::error::Error for GTransferMapError {}
 
 /// Computes the invariant transfer-system pushforward along a monotone map.
 ///
-/// The result is the least transfer system fixed by the codomain action that
-/// contains the image of every relation in `system`. The supplied codomain
-/// universe fixes the action, relation-orbit coordinates, and ownership of the
-/// result. This pointwise operation does not enumerate transfer systems.
+/// The result is the least transfer system on `codomain` fixed by its action
+/// that contains the image of every relation in `system`. The map's codomain
+/// must be the underlying lattice of `codomain`.
 /// For arbitrary monotone maps it need not commute with composition.
-pub fn pushforward<A, B, M>(
+pub fn pushforward<M>(
     map: &M,
-    system: &GTransferSystem<A>,
-    codomain: &Arc<GTransferUniverse<B>>,
-) -> Result<GTransferSystem<B>, GTransferMapError>
+    system: &GTransferSystem,
+    codomain: &GLattice,
+) -> Result<GTransferSystem, GTransferMapError>
 where
-    M: MonotoneMap<A, B> + ?Sized,
+    M: MonotoneMap + ?Sized,
 {
+    let codomain = codomain.transfer_universe();
     validate_domain(map, system.universe())?;
     validate_codomain(map, codomain)?;
 
     let mut generators = BitVec::repeat(false, codomain.relation_orbit_labels().len());
-    for source_orbit_id in system.raw().orbit_arrows().iter_ones() {
-        let relations = system
-            .universe()
-            .relation_orbit_relations(source_orbit_id)
-            .expect("selected relation-orbit id should belong to its universe");
-        for &source in relations {
+    for source_orbit_id in system.orbit_arrows().iter_ones() {
+        for &source in system.universe().relation_orbit_relations(source_orbit_id) {
             let image = image_edge(map, source);
             if image.is_identity() {
                 continue;
@@ -131,36 +126,36 @@ where
         }
     }
 
-    let raw = RawGTransferSystem::new(codomain.close_orbit_arrows(&generators));
-    Ok(GTransferSystem::new(raw, Arc::clone(codomain)))
+    Ok(GTransferSystem::new(
+        Rc::clone(codomain),
+        codomain.close(&generators),
+    ))
 }
 
 /// Computes the right-adjoint pullback on invariant transfer systems.
 ///
 /// A source relation orbit belongs to the result precisely when all of its
 /// conjugates and all of their restrictions map to relations in `system`.
-/// Equivalently, this is the greatest source-invariant transfer system whose
-/// pushforward is contained in `system`. The supplied domain universe fixes
-/// the result's action, coordinates, and ownership.
+/// Equivalently, this is the greatest invariant transfer system on `domain`
+/// whose pushforward is contained in `system`. The map's domain must be the
+/// underlying lattice of `domain`.
 /// For arbitrary monotone maps it need not commute with composition.
-pub fn pullback<A, B, M>(
+pub fn pullback<M>(
     map: &M,
-    system: &GTransferSystem<B>,
-    domain: &Arc<GTransferUniverse<A>>,
-) -> Result<GTransferSystem<A>, GTransferMapError>
+    system: &GTransferSystem,
+    domain: &GLattice,
+) -> Result<GTransferSystem, GTransferMapError>
 where
-    M: MonotoneMap<A, B> + ?Sized,
+    M: MonotoneMap + ?Sized,
 {
+    let domain = domain.transfer_universe();
     validate_codomain(map, system.universe())?;
     validate_domain(map, domain)?;
 
     let requirements = orbit_requirements(map, domain, system.universe())?;
-    let raw = raw_pullback(system.raw(), domain, &requirements);
-    debug_assert_eq!(
-        domain.close_orbit_arrows(raw.orbit_arrows()),
-        raw.orbit_arrows().clone()
-    );
-    Ok(GTransferSystem::new(raw, Arc::clone(domain)))
+    let arrows = raw_pullback(system.orbit_arrows(), &requirements);
+    debug_assert_eq!(domain.close(&arrows), arrows);
+    Ok(GTransferSystem::new(Rc::clone(domain), arrows))
 }
 
 /// Computes Rubin's `f_L` using the subgroup-image map of `f`.
@@ -169,23 +164,19 @@ where
 /// injective homomorphism, [`induction`] is its conventional name.
 pub fn image_pushforward(
     f: &SubgroupMaps,
-    system: &GTransferSystem<GapSubgroup>,
-    codomain: &Arc<GTransferUniverse<GapSubgroup>>,
-) -> Result<GTransferSystem<GapSubgroup>, GTransferMapError> {
+    system: &GTransferSystem,
+) -> Result<GTransferSystem, GTransferMapError> {
     validate_rubin_domain_action(f, system.universe())?;
-    validate_rubin_codomain_action(f, codomain)?;
-    pushforward(f.image_map(), system, codomain)
+    pushforward(f.image_map(), system, f.codomain())
 }
 
 /// Computes Rubin's `f_R^{-1}`, right adjoint to [`image_pushforward`].
 pub fn image_pullback(
     f: &SubgroupMaps,
-    system: &GTransferSystem<GapSubgroup>,
-    domain: &Arc<GTransferUniverse<GapSubgroup>>,
-) -> Result<GTransferSystem<GapSubgroup>, GTransferMapError> {
+    system: &GTransferSystem,
+) -> Result<GTransferSystem, GTransferMapError> {
     validate_rubin_codomain_action(f, system.universe())?;
-    validate_rubin_domain_action(f, domain)?;
-    pullback(f.image_map(), system, domain)
+    pullback(f.image_map(), system, f.domain())
 }
 
 /// Computes Rubin's `f_L^{-1}` using the subgroup-preimage map of `f`.
@@ -194,12 +185,10 @@ pub fn image_pullback(
 /// homomorphism it is inflation.
 pub fn preimage_pushforward(
     f: &SubgroupMaps,
-    system: &GTransferSystem<GapSubgroup>,
-    domain: &Arc<GTransferUniverse<GapSubgroup>>,
-) -> Result<GTransferSystem<GapSubgroup>, GTransferMapError> {
+    system: &GTransferSystem,
+) -> Result<GTransferSystem, GTransferMapError> {
     validate_rubin_codomain_action(f, system.universe())?;
-    validate_rubin_domain_action(f, domain)?;
-    pushforward(f.preimage_map(), system, domain)
+    pushforward(f.preimage_map(), system, f.domain())
 }
 
 /// Computes Rubin's `f_R`, right adjoint to [`preimage_pushforward`].
@@ -208,12 +197,10 @@ pub fn preimage_pushforward(
 /// homomorphism it is fixed points.
 pub fn preimage_pullback(
     f: &SubgroupMaps,
-    system: &GTransferSystem<GapSubgroup>,
-    codomain: &Arc<GTransferUniverse<GapSubgroup>>,
-) -> Result<GTransferSystem<GapSubgroup>, GTransferMapError> {
+    system: &GTransferSystem,
+) -> Result<GTransferSystem, GTransferMapError> {
     validate_rubin_domain_action(f, system.universe())?;
-    validate_rubin_codomain_action(f, codomain)?;
-    pullback(f.preimage_map(), system, codomain)
+    pullback(f.preimage_map(), system, f.codomain())
 }
 
 /// Induces a transfer system along an injective group homomorphism.
@@ -221,13 +208,12 @@ pub fn preimage_pullback(
 /// This is the conventional injective case of [`image_pushforward`].
 pub fn induction(
     f: &SubgroupMaps,
-    system: &GTransferSystem<GapSubgroup>,
-    codomain: &Arc<GTransferUniverse<GapSubgroup>>,
-) -> Result<GTransferSystem<GapSubgroup>, GTransferMapError> {
+    system: &GTransferSystem,
+) -> Result<GTransferSystem, GTransferMapError> {
     if !f.is_injective() {
         return Err(GTransferMapError::NotInjective);
     }
-    image_pushforward(f, system, codomain)
+    image_pushforward(f, system)
 }
 
 /// Restricts a transfer system along an arbitrary group homomorphism.
@@ -235,10 +221,9 @@ pub fn induction(
 /// This is an ergonomic name for [`preimage_pushforward`].
 pub fn restriction(
     f: &SubgroupMaps,
-    system: &GTransferSystem<GapSubgroup>,
-    domain: &Arc<GTransferUniverse<GapSubgroup>>,
-) -> Result<GTransferSystem<GapSubgroup>, GTransferMapError> {
-    preimage_pushforward(f, system, domain)
+    system: &GTransferSystem,
+) -> Result<GTransferSystem, GTransferMapError> {
+    preimage_pushforward(f, system)
 }
 
 /// Coinduces a transfer system along an arbitrary group homomorphism.
@@ -246,10 +231,9 @@ pub fn restriction(
 /// This is an ergonomic name for [`preimage_pullback`].
 pub fn coinduction(
     f: &SubgroupMaps,
-    system: &GTransferSystem<GapSubgroup>,
-    codomain: &Arc<GTransferUniverse<GapSubgroup>>,
-) -> Result<GTransferSystem<GapSubgroup>, GTransferMapError> {
-    preimage_pullback(f, system, codomain)
+    system: &GTransferSystem,
+) -> Result<GTransferSystem, GTransferMapError> {
+    preimage_pullback(f, system)
 }
 
 /// Inflates a transfer system along a surjective group homomorphism.
@@ -257,13 +241,12 @@ pub fn coinduction(
 /// Inflation is exactly transfer pushforward along subgroup preimage.
 pub fn inflation(
     f: &SubgroupMaps,
-    system: &GTransferSystem<GapSubgroup>,
-    domain: &Arc<GTransferUniverse<GapSubgroup>>,
-) -> Result<GTransferSystem<GapSubgroup>, GTransferMapError> {
+    system: &GTransferSystem,
+) -> Result<GTransferSystem, GTransferMapError> {
     if !f.is_surjective() {
         return Err(GTransferMapError::NotSurjective);
     }
-    preimage_pushforward(f, system, domain)
+    preimage_pushforward(f, system)
 }
 
 /// Takes fixed points along a surjective group homomorphism.
@@ -272,22 +255,94 @@ pub fn inflation(
 /// subgroup-preimage map.
 pub fn fixed_points(
     f: &SubgroupMaps,
-    system: &GTransferSystem<GapSubgroup>,
-    codomain: &Arc<GTransferUniverse<GapSubgroup>>,
-) -> Result<GTransferSystem<GapSubgroup>, GTransferMapError> {
+    system: &GTransferSystem,
+) -> Result<GTransferSystem, GTransferMapError> {
     if !f.is_surjective() {
         return Err(GTransferMapError::NotSurjective);
     }
-    preimage_pullback(f, system, codomain)
+    preimage_pullback(f, system)
+}
+
+impl SubgroupMaps {
+    /// Rubin's `f_L`; see [`image_pushforward`].
+    pub fn image_pushforward(
+        &self,
+        system: &GTransferSystem,
+    ) -> Result<GTransferSystem, GTransferMapError> {
+        image_pushforward(self, system)
+    }
+
+    /// Rubin's `f_R^{-1}`; see [`image_pullback`].
+    pub fn image_pullback(
+        &self,
+        system: &GTransferSystem,
+    ) -> Result<GTransferSystem, GTransferMapError> {
+        image_pullback(self, system)
+    }
+
+    /// Rubin's `f_L^{-1}`; see [`preimage_pushforward`].
+    pub fn preimage_pushforward(
+        &self,
+        system: &GTransferSystem,
+    ) -> Result<GTransferSystem, GTransferMapError> {
+        preimage_pushforward(self, system)
+    }
+
+    /// Rubin's `f_R`; see [`preimage_pullback`].
+    pub fn preimage_pullback(
+        &self,
+        system: &GTransferSystem,
+    ) -> Result<GTransferSystem, GTransferMapError> {
+        preimage_pullback(self, system)
+    }
+
+    /// Induction along an injective homomorphism; see [`induction`].
+    pub fn induction(
+        &self,
+        system: &GTransferSystem,
+    ) -> Result<GTransferSystem, GTransferMapError> {
+        induction(self, system)
+    }
+
+    /// Restriction along a homomorphism; see [`restriction`].
+    pub fn restriction(
+        &self,
+        system: &GTransferSystem,
+    ) -> Result<GTransferSystem, GTransferMapError> {
+        restriction(self, system)
+    }
+
+    /// Coinduction along a homomorphism; see [`coinduction`].
+    pub fn coinduction(
+        &self,
+        system: &GTransferSystem,
+    ) -> Result<GTransferSystem, GTransferMapError> {
+        coinduction(self, system)
+    }
+
+    /// Inflation along a surjective homomorphism; see [`inflation`].
+    pub fn inflation(
+        &self,
+        system: &GTransferSystem,
+    ) -> Result<GTransferSystem, GTransferMapError> {
+        inflation(self, system)
+    }
+
+    /// Fixed points along a surjective homomorphism; see [`fixed_points`].
+    pub fn fixed_points(
+        &self,
+        system: &GTransferSystem,
+    ) -> Result<GTransferSystem, GTransferMapError> {
+        fixed_points(self, system)
+    }
 }
 
 /// Materializes Rubin's `f_L` between containment lattices.
 pub fn image_pushforward_containment_map(
     f: &SubgroupMaps,
-    domain: &GTransferLattice<GapSubgroup>,
-    codomain: &GTransferLattice<GapSubgroup>,
-) -> Result<PosetMap<GTransferSystem<GapSubgroup>, GTransferSystem<GapSubgroup>>, GTransferMapError>
-{
+    domain: &GTransferLattice,
+    codomain: &GTransferLattice,
+) -> Result<PosetMap, GTransferMapError> {
     validate_rubin_domain_action(f, domain.universe())?;
     validate_rubin_codomain_action(f, codomain.universe())?;
     pushforward_containment_map(f.image_map(), domain, codomain)
@@ -296,10 +351,9 @@ pub fn image_pushforward_containment_map(
 /// Materializes Rubin's `f_R^{-1}` between containment lattices.
 pub fn image_pullback_containment_map(
     f: &SubgroupMaps,
-    codomain: &GTransferLattice<GapSubgroup>,
-    domain: &GTransferLattice<GapSubgroup>,
-) -> Result<PosetMap<GTransferSystem<GapSubgroup>, GTransferSystem<GapSubgroup>>, GTransferMapError>
-{
+    codomain: &GTransferLattice,
+    domain: &GTransferLattice,
+) -> Result<PosetMap, GTransferMapError> {
     validate_rubin_codomain_action(f, codomain.universe())?;
     validate_rubin_domain_action(f, domain.universe())?;
     pullback_containment_map(f.image_map(), codomain, domain)
@@ -308,10 +362,9 @@ pub fn image_pullback_containment_map(
 /// Materializes Rubin's `f_L^{-1}` between containment lattices.
 pub fn preimage_pushforward_containment_map(
     f: &SubgroupMaps,
-    codomain: &GTransferLattice<GapSubgroup>,
-    domain: &GTransferLattice<GapSubgroup>,
-) -> Result<PosetMap<GTransferSystem<GapSubgroup>, GTransferSystem<GapSubgroup>>, GTransferMapError>
-{
+    codomain: &GTransferLattice,
+    domain: &GTransferLattice,
+) -> Result<PosetMap, GTransferMapError> {
     validate_rubin_codomain_action(f, codomain.universe())?;
     validate_rubin_domain_action(f, domain.universe())?;
     pushforward_containment_map(f.preimage_map(), codomain, domain)
@@ -320,10 +373,9 @@ pub fn preimage_pushforward_containment_map(
 /// Materializes Rubin's `f_R` between containment lattices.
 pub fn preimage_pullback_containment_map(
     f: &SubgroupMaps,
-    domain: &GTransferLattice<GapSubgroup>,
-    codomain: &GTransferLattice<GapSubgroup>,
-) -> Result<PosetMap<GTransferSystem<GapSubgroup>, GTransferSystem<GapSubgroup>>, GTransferMapError>
-{
+    domain: &GTransferLattice,
+    codomain: &GTransferLattice,
+) -> Result<PosetMap, GTransferMapError> {
     validate_rubin_domain_action(f, domain.universe())?;
     validate_rubin_codomain_action(f, codomain.universe())?;
     pullback_containment_map(f.preimage_map(), domain, codomain)
@@ -332,43 +384,44 @@ pub fn preimage_pullback_containment_map(
 /// Constructs the pushforward map between containment lattices.
 ///
 /// Together with [`pullback_containment_map`], the returned map is the left
-/// adjoint. Endpoint labels are user-facing [`GTransferSystem`] values.
-pub fn pushforward_containment_map<A, B, M>(
+/// adjoint. Its endpoints are the lattices of G-transfer systems themselves.
+pub fn pushforward_containment_map<M>(
     map: &M,
-    domain: &GTransferLattice<A>,
-    codomain: &GTransferLattice<B>,
-) -> Result<PosetMap<GTransferSystem<A>, GTransferSystem<B>>, GTransferMapError>
+    domain: &GTransferLattice,
+    codomain: &GTransferLattice,
+) -> Result<PosetMap, GTransferMapError>
 where
-    M: MonotoneMap<A, B> + ?Sized,
+    M: MonotoneMap + ?Sized,
 {
     validate_domain(map, domain.universe())?;
     validate_codomain(map, codomain.universe())?;
 
-    let orbit_images = orbit_image_masks(map, domain.universe(), codomain.universe())?;
-    let target_ids = target_system_ids(codomain.raw_lattice().elements());
-    let mut closure_cache = HashMap::<BitVec, RawGTransferSystem>::new();
-    let mut images = Vec::with_capacity(domain.size());
-
-    for source in domain.raw_lattice().elements() {
-        let mut generators =
-            BitVec::repeat(false, codomain.universe().relation_orbit_labels().len());
-        for source_orbit_id in source.orbit_arrows().iter_ones() {
-            generators |= &orbit_images[source_orbit_id];
-        }
-        let image = closure_cache.entry(generators.clone()).or_insert_with(|| {
-            RawGTransferSystem::new(codomain.universe().close_orbit_arrows(&generators))
-        });
-        images.push(
-            target_ids
-                .get(image)
-                .copied()
-                .ok_or(GTransferMapError::PushforwardImageMissing)?,
-        );
-    }
+    let target = codomain.universe();
+    let orbit_images = orbit_image_masks(map, domain.universe(), target)?;
+    let mut closure_cache = HashMap::<BitVec, Option<ElementId>>::new();
+    let images = domain
+        .systems()
+        .iter()
+        .map(|source| {
+            let mut generators = BitVec::repeat(false, target.relation_orbit_labels().len());
+            for source_orbit_id in source.orbit_arrows().iter_ones() {
+                generators |= &orbit_images[source_orbit_id];
+            }
+            closure_cache
+                .entry(generators.clone())
+                .or_insert_with(|| {
+                    codomain.id_of(&GTransferSystem::new(
+                        Rc::clone(target),
+                        target.close(&generators),
+                    ))
+                })
+                .ok_or(GTransferMapError::PushforwardImageMissing)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(PosetMap::from_validated(
-        Arc::new(domain.to_system_poset()),
-        Arc::new(codomain.to_system_poset()),
+        domain.as_poset().clone(),
+        codomain.as_poset().clone(),
         images,
     ))
 }
@@ -376,56 +429,49 @@ where
 /// Constructs the right-adjoint pullback map between containment lattices.
 ///
 /// The first lattice lies over the monotone map's codomain and is therefore
-/// the domain of the returned map. Endpoint labels are user-facing
-/// [`GTransferSystem`] values.
-pub fn pullback_containment_map<A, B, M>(
+/// the domain of the returned map.
+pub fn pullback_containment_map<M>(
     map: &M,
-    codomain: &GTransferLattice<B>,
-    domain: &GTransferLattice<A>,
-) -> Result<PosetMap<GTransferSystem<B>, GTransferSystem<A>>, GTransferMapError>
+    codomain: &GTransferLattice,
+    domain: &GTransferLattice,
+) -> Result<PosetMap, GTransferMapError>
 where
-    M: MonotoneMap<A, B> + ?Sized,
+    M: MonotoneMap + ?Sized,
 {
     validate_codomain(map, codomain.universe())?;
     validate_domain(map, domain.universe())?;
 
     let requirements = orbit_requirements(map, domain.universe(), codomain.universe())?;
-    let target_ids = target_system_ids(domain.raw_lattice().elements());
     let images = codomain
-        .raw_lattice()
-        .elements()
+        .systems()
         .iter()
         .map(|source| {
-            let image = raw_pullback(source, domain.universe(), &requirements);
-            target_ids
-                .get(&image)
-                .copied()
+            let arrows = raw_pullback(source.orbit_arrows(), &requirements);
+            domain
+                .id_of(&GTransferSystem::new(Rc::clone(domain.universe()), arrows))
                 .ok_or(GTransferMapError::PullbackImageMissing)
         })
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(PosetMap::from_validated(
-        Arc::new(codomain.to_system_poset()),
-        Arc::new(domain.to_system_poset()),
+        codomain.as_poset().clone(),
+        domain.as_poset().clone(),
         images,
     ))
 }
 
-fn orbit_image_masks<A, B, M>(
+fn orbit_image_masks<M>(
     map: &M,
-    domain: &GTransferUniverse<A>,
-    codomain: &GTransferUniverse<B>,
+    domain: &GTransferUniverse,
+    codomain: &GTransferUniverse,
 ) -> Result<Vec<BitVec>, GTransferMapError>
 where
-    M: MonotoneMap<A, B> + ?Sized,
+    M: MonotoneMap + ?Sized,
 {
     (0..domain.relation_orbit_labels().len())
         .map(|source_orbit_id| {
             let mut images = BitVec::repeat(false, codomain.relation_orbit_labels().len());
-            for &source in domain
-                .relation_orbit_relations(source_orbit_id)
-                .expect("relation-orbit label should index its universe")
-            {
+            for &source in domain.relation_orbit_relations(source_orbit_id) {
                 let image = image_edge(map, source);
                 if image.is_identity() {
                     continue;
@@ -440,26 +486,22 @@ where
         .collect()
 }
 
-fn orbit_requirements<A, B, M>(
+fn orbit_requirements<M>(
     map: &M,
-    domain: &GTransferUniverse<A>,
-    codomain: &GTransferUniverse<B>,
+    domain: &GTransferUniverse,
+    codomain: &GTransferUniverse,
 ) -> Result<Vec<BitVec>, GTransferMapError>
 where
-    M: MonotoneMap<A, B> + ?Sized,
+    M: MonotoneMap + ?Sized,
 {
     let lattice = domain.lattice();
     (0..domain.relation_orbit_labels().len())
         .map(|source_orbit_id| {
             let mut requirements = BitVec::repeat(false, codomain.relation_orbit_labels().len());
-            for &source in domain
-                .relation_orbit_relations(source_orbit_id)
-                .expect("relation-orbit label should index its universe")
-            {
-                for restriction_target in
-                    lattice.as_poset().relation_matrix_transpose()[source.to].iter_ones()
+            for &source in domain.relation_orbit_relations(source_orbit_id) {
+                for restriction_target in lattice.relation_matrix_transpose()[source.to].iter_ones()
                 {
-                    let restriction_source = lattice.meet_id(source.from, restriction_target);
+                    let restriction_source = lattice.meet(source.from, restriction_target);
                     let restricted = Edge::new(restriction_source, restriction_target);
                     let image = image_edge(map, restricted);
                     if image.is_identity() {
@@ -479,63 +521,36 @@ where
         .collect()
 }
 
-fn raw_pullback<A>(
-    source: &RawGTransferSystem,
-    domain: &GTransferUniverse<A>,
-    requirements: &[BitVec],
-) -> RawGTransferSystem {
-    let mut arrows = BitVec::repeat(false, domain.relation_orbit_labels().len());
-    for (source_orbit_id, required_orbits) in requirements.iter().enumerate() {
-        if is_subset(required_orbits, source.orbit_arrows()) {
-            arrows.set(source_orbit_id, true);
-        }
-    }
-    RawGTransferSystem::new(arrows)
-}
-
-fn target_system_ids(systems: &[RawGTransferSystem]) -> HashMap<&RawGTransferSystem, ElementId> {
-    systems
+fn raw_pullback(source: &BitVec, requirements: &[BitVec]) -> BitVec {
+    requirements
         .iter()
-        .enumerate()
-        .map(|(id, raw)| (raw, id))
+        .map(|required_orbits| is_subset(required_orbits, source))
         .collect()
 }
 
-fn image_edge<A, B, M>(map: &M, edge: Edge) -> Edge
+fn image_edge<M>(map: &M, edge: Edge) -> Edge
 where
-    M: MonotoneMap<A, B> + ?Sized,
+    M: MonotoneMap + ?Sized,
 {
     Edge::new(map.images()[edge.from], map.images()[edge.to])
 }
 
-fn validate_domain<A, B, M>(
-    map: &M,
-    universe: &GTransferUniverse<A>,
-) -> Result<(), GTransferMapError>
+fn validate_domain<M>(map: &M, universe: &GTransferUniverse) -> Result<(), GTransferMapError>
 where
-    M: MonotoneMap<A, B> + ?Sized,
+    M: MonotoneMap + ?Sized,
 {
-    if map
-        .domain_poset()
-        .shares_order_coordinates_with(universe.lattice().as_poset())
-    {
+    if map.domain_poset() == universe.lattice().as_poset() {
         Ok(())
     } else {
         Err(GTransferMapError::DomainMismatch)
     }
 }
 
-fn validate_codomain<A, B, M>(
-    map: &M,
-    universe: &GTransferUniverse<B>,
-) -> Result<(), GTransferMapError>
+fn validate_codomain<M>(map: &M, universe: &GTransferUniverse) -> Result<(), GTransferMapError>
 where
-    M: MonotoneMap<A, B> + ?Sized,
+    M: MonotoneMap + ?Sized,
 {
-    if map
-        .codomain_poset()
-        .shares_order_coordinates_with(universe.lattice().as_poset())
-    {
+    if map.codomain_poset() == universe.lattice().as_poset() {
         Ok(())
     } else {
         Err(GTransferMapError::CodomainMismatch)
@@ -544,10 +559,10 @@ where
 
 fn validate_rubin_domain_action(
     f: &SubgroupMaps,
-    universe: &GTransferUniverse<GapSubgroup>,
+    universe: &GTransferUniverse,
 ) -> Result<(), GTransferMapError> {
-    if Arc::ptr_eq(
-        f.domain().g_lattice().action_coordinates(),
+    if Rc::ptr_eq(
+        f.domain().action_coordinates(),
         universe.action_coordinates(),
     ) {
         Ok(())
@@ -558,10 +573,10 @@ fn validate_rubin_domain_action(
 
 fn validate_rubin_codomain_action(
     f: &SubgroupMaps,
-    universe: &GTransferUniverse<GapSubgroup>,
+    universe: &GTransferUniverse,
 ) -> Result<(), GTransferMapError> {
-    if Arc::ptr_eq(
-        f.codomain().g_lattice().action_coordinates(),
+    if Rc::ptr_eq(
+        f.codomain().action_coordinates(),
         universe.action_coordinates(),
     ) {
         Ok(())

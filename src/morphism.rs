@@ -7,7 +7,6 @@
 use crate::lattice::Lattice;
 use crate::poset::{ElementId, Poset};
 use std::fmt;
-use std::sync::Arc;
 
 /// Errors that can occur while constructing a monotone map of posets.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +38,9 @@ pub enum PosetMapError {
         /// The image of `upper`.
         upper_image: ElementId,
     },
+    /// Two maps cannot be composed because the codomain of the first is not
+    /// the domain of the second.
+    NotComposable,
 }
 
 impl fmt::Display for PosetMapError {
@@ -63,6 +65,10 @@ impl fmt::Display for PosetMapError {
             } => write!(
                 f,
                 "map is not monotone: {lower} <= {upper}, but {lower_image} is not <= {upper_image}"
+            ),
+            PosetMapError::NotComposable => write!(
+                f,
+                "cannot compose maps: the codomain of the first is not the domain of the second"
             ),
         }
     }
@@ -145,12 +151,12 @@ mod sealed {
 /// that require only monotonicity can accept either kind of map without
 /// discarding the stronger lattice structure. This trait is sealed; construct
 /// one of those validated map types rather than implementing it directly.
-pub trait MonotoneMap<A, B>: sealed::Sealed {
+pub trait MonotoneMap: sealed::Sealed {
     /// Returns the domain's underlying poset.
-    fn domain_poset(&self) -> &Poset<A>;
+    fn domain_poset(&self) -> &Poset;
 
     /// Returns the codomain's underlying poset.
-    fn codomain_poset(&self) -> &Poset<B>;
+    fn codomain_poset(&self) -> &Poset;
 
     /// Returns the image vector of the underlying function.
     ///
@@ -171,103 +177,106 @@ pub trait MonotoneMap<A, B>: sealed::Sealed {
 
 /// A monotone map between finite posets.
 ///
-/// The domain and codomain are reference-counted so maps can be returned
-/// together with constructions such as products and coproducts.
-#[derive(Debug, Clone)]
-pub struct PosetMap<A, B> {
-    domain: Arc<Poset<A>>,
-    codomain: Arc<Poset<B>>,
+/// The map is stored by its values on element ids. Cloning a map is cheap
+/// apart from copying that vector, since the domain and codomain are shared
+/// handles.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PosetMap {
+    domain: Poset,
+    codomain: Poset,
     map: Vec<ElementId>,
 }
 
-impl<A, B> PosetMap<A, B> {
+impl PosetMap {
     /// Constructs a monotone map from its image vector.
     ///
     /// The vector must have length equal to the domain size, each image must be
     /// an element id in the codomain, and `x <= y` in the domain must imply
-    /// `f(x) <= f(y)` in the codomain.
+    /// `f(x) <= f(y)` in the codomain. A lattice may be passed wherever a
+    /// poset is expected.
     pub fn new(
-        domain: Arc<Poset<A>>,
-        codomain: Arc<Poset<B>>,
-        map: Vec<ElementId>,
+        domain: &Poset,
+        codomain: &Poset,
+        images: Vec<ElementId>,
     ) -> Result<Self, PosetMapError> {
-        validate_poset_map(domain.as_ref(), codomain.as_ref(), &map)?;
+        validate_poset_map(domain, codomain, &images)?;
         Ok(Self {
-            domain,
-            codomain,
-            map,
+            domain: domain.clone(),
+            codomain: codomain.clone(),
+            map: images,
         })
     }
 
-    /// Constructs a monotone map between the underlying posets of two lattices.
-    ///
-    /// The endpoint labels are cloned, while their immutable dense order
-    /// matrices remain shared with the lattices. This lets algorithms retain
-    /// the lattices' element-coordinate identity without copying quadratic
-    /// relation data.
-    pub fn between_lattices(
-        domain: &Lattice<A>,
-        codomain: &Lattice<B>,
-        map: Vec<ElementId>,
-    ) -> Result<Self, PosetMapError>
+    /// Constructs a monotone map from a function on element ids.
+    pub fn from_fn<F>(domain: &Poset, codomain: &Poset, f: F) -> Result<Self, PosetMapError>
     where
-        A: Clone,
-        B: Clone,
+        F: FnMut(ElementId) -> ElementId,
     {
-        Self::new(
-            Arc::new(domain.as_poset().clone()),
-            Arc::new(codomain.as_poset().clone()),
-            map,
-        )
+        Self::new(domain, codomain, domain.ids().map(f).collect())
     }
 
-    /// Returns the domain poset.
-    pub fn domain(&self) -> &Arc<Poset<A>> {
-        &self.domain
+    /// Returns the identity map of a poset.
+    pub fn identity(poset: &Poset) -> Self {
+        Self::from_validated(poset.clone(), poset.clone(), poset.ids().collect())
     }
 
-    /// Returns the codomain poset.
-    pub fn codomain(&self) -> &Arc<Poset<B>> {
-        &self.codomain
-    }
-
-    /// Returns the image vector for this map.
-    ///
-    /// The entry at index `i` is the image of element `i` in the domain.
-    pub fn map(&self) -> &[ElementId] {
-        &self.map
-    }
-
-    /// Applies the map to a domain element.
-    ///
-    /// Returns `None` when the supplied element id is outside the domain.
-    pub fn apply(&self, element: ElementId) -> Option<ElementId> {
-        self.map.get(element).copied()
-    }
-
-    pub(crate) fn from_validated(
-        domain: Arc<Poset<A>>,
-        codomain: Arc<Poset<B>>,
-        map: Vec<ElementId>,
-    ) -> Self {
-        debug_assert!(validate_poset_map(domain.as_ref(), codomain.as_ref(), &map).is_ok());
+    pub(crate) fn from_validated(domain: Poset, codomain: Poset, map: Vec<ElementId>) -> Self {
+        debug_assert!(validate_poset_map(&domain, &codomain, &map).is_ok());
         Self {
             domain,
             codomain,
             map,
         }
     }
-}
 
-impl<A, B> sealed::Sealed for PosetMap<A, B> {}
-
-impl<A, B> MonotoneMap<A, B> for PosetMap<A, B> {
-    fn domain_poset(&self) -> &Poset<A> {
-        self.domain.as_ref()
+    /// Returns the domain poset.
+    pub fn domain(&self) -> &Poset {
+        &self.domain
     }
 
-    fn codomain_poset(&self) -> &Poset<B> {
-        self.codomain.as_ref()
+    /// Returns the codomain poset.
+    pub fn codomain(&self) -> &Poset {
+        &self.codomain
+    }
+
+    /// Returns the image vector for this map.
+    ///
+    /// The entry at index `i` is the image of element `i` in the domain.
+    pub fn images(&self) -> &[ElementId] {
+        &self.map
+    }
+
+    /// Applies the map to a domain element.
+    ///
+    /// Panics if `element` is not an element id of the domain.
+    pub fn apply(&self, element: ElementId) -> ElementId {
+        self.map[element]
+    }
+
+    /// Returns the composite `self ∘ first`: apply `first`, then `self`.
+    ///
+    /// The codomain of `first` must equal the domain of `self`.
+    pub fn compose(&self, first: &impl MonotoneMap) -> Result<PosetMap, PosetMapError> {
+        if first.codomain_poset() != &self.domain {
+            return Err(PosetMapError::NotComposable);
+        }
+        Ok(Self::from_validated(
+            first.domain_poset().clone(),
+            self.codomain.clone(),
+            first.images().iter().map(|&x| self.map[x]).collect(),
+        ))
+    }
+}
+
+impl sealed::Sealed for PosetMap {}
+
+impl MonotoneMap for PosetMap {
+    fn domain_poset(&self) -> &Poset {
+        &self.domain
+    }
+
+    fn codomain_poset(&self) -> &Poset {
+        &self.codomain
     }
 
     fn images(&self) -> &[ElementId] {
@@ -280,111 +289,109 @@ impl<A, B> MonotoneMap<A, B> for PosetMap<A, B> {
 /// This is a function preserving bottom, top, binary meets, and binary joins.
 /// In finite lattices such a function is automatically monotone, but the
 /// constructor also checks monotonicity for clearer diagnostics.
-#[derive(Debug, Clone)]
-pub struct LatticeMap<A, B> {
-    domain: Arc<Lattice<A>>,
-    codomain: Arc<Lattice<B>>,
+#[derive(Clone, PartialEq, Eq)]
+pub struct LatticeMap {
+    domain: Lattice,
+    codomain: Lattice,
     map: Vec<ElementId>,
 }
 
-impl<A, B> LatticeMap<A, B> {
+impl LatticeMap {
     /// Constructs a lattice homomorphism from its image vector.
     ///
     /// The vector must define a monotone map of the underlying posets and must
     /// preserve bottom, top, all binary meets, and all binary joins.
     pub fn new(
-        domain: Arc<Lattice<A>>,
-        codomain: Arc<Lattice<B>>,
-        map: Vec<ElementId>,
+        domain: &Lattice,
+        codomain: &Lattice,
+        images: Vec<ElementId>,
     ) -> Result<Self, LatticeMapError> {
-        validate_poset_map(domain.as_poset(), codomain.as_poset(), &map)?;
-
-        let mapped_bottom = map[domain.bottom()];
-        if mapped_bottom != codomain.bottom() {
-            return Err(LatticeMapError::DoesNotPreserveBottom {
-                expected: codomain.bottom(),
-                actual: mapped_bottom,
-            });
-        }
-
-        let mapped_top = map[domain.top()];
-        if mapped_top != codomain.top() {
-            return Err(LatticeMapError::DoesNotPreserveTop {
-                expected: codomain.top(),
-                actual: mapped_top,
-            });
-        }
-
-        // Meet and join are commutative, and the diagonal laws are automatic.
-        for i in 0..domain.size() {
-            for j in (i + 1)..domain.size() {
-                let meet_image = map[domain.meet_id(i, j)];
-                let image_meet = codomain.meet_id(map[i], map[j]);
-                if meet_image != image_meet {
-                    return Err(LatticeMapError::DoesNotPreserveMeet { left: i, right: j });
-                }
-
-                let join_image = map[domain.join_id(i, j)];
-                let image_join = codomain.join_id(map[i], map[j]);
-                if join_image != image_join {
-                    return Err(LatticeMapError::DoesNotPreserveJoin { left: i, right: j });
-                }
-            }
-        }
-
+        validate_lattice_map(domain, codomain, &images)?;
         Ok(Self {
-            domain,
-            codomain,
-            map,
+            domain: domain.clone(),
+            codomain: codomain.clone(),
+            map: images,
         })
     }
 
+    /// Constructs a lattice homomorphism from a function on element ids.
+    pub fn from_fn<F>(domain: &Lattice, codomain: &Lattice, f: F) -> Result<Self, LatticeMapError>
+    where
+        F: FnMut(ElementId) -> ElementId,
+    {
+        Self::new(domain, codomain, domain.ids().map(f).collect())
+    }
+
+    /// Returns the identity homomorphism of a lattice.
+    pub fn identity(lattice: &Lattice) -> Self {
+        Self::from_validated(lattice.clone(), lattice.clone(), lattice.ids().collect())
+    }
+
+    pub(crate) fn from_validated(domain: Lattice, codomain: Lattice, map: Vec<ElementId>) -> Self {
+        debug_assert!(validate_lattice_map(&domain, &codomain, &map).is_ok());
+        Self {
+            domain,
+            codomain,
+            map,
+        }
+    }
+
     /// Returns the domain lattice.
-    pub fn domain(&self) -> &Arc<Lattice<A>> {
+    pub fn domain(&self) -> &Lattice {
         &self.domain
     }
 
     /// Returns the codomain lattice.
-    pub fn codomain(&self) -> &Arc<Lattice<B>> {
+    pub fn codomain(&self) -> &Lattice {
         &self.codomain
     }
 
     /// Returns the image vector for this homomorphism.
     ///
     /// The entry at index `i` is the image of element `i` in the domain.
-    pub fn map(&self) -> &[ElementId] {
+    pub fn images(&self) -> &[ElementId] {
         &self.map
     }
 
     /// Applies the homomorphism to a domain element.
     ///
-    /// Returns `None` when the supplied element id is outside the domain.
-    pub fn apply(&self, element: ElementId) -> Option<ElementId> {
-        self.map.get(element).copied()
+    /// Panics if `element` is not an element id of the domain.
+    pub fn apply(&self, element: ElementId) -> ElementId {
+        self.map[element]
+    }
+
+    /// Returns the composite `self ∘ first`: apply `first`, then `self`.
+    ///
+    /// The codomain of `first` must equal the domain of `self`.
+    pub fn compose(&self, first: &LatticeMap) -> Result<LatticeMap, PosetMapError> {
+        if first.codomain != self.domain {
+            return Err(PosetMapError::NotComposable);
+        }
+        Ok(Self::from_validated(
+            first.domain.clone(),
+            self.codomain.clone(),
+            first.map.iter().map(|&x| self.map[x]).collect(),
+        ))
     }
 
     /// Forgets the lattice structure and returns the underlying monotone map.
-    pub fn as_poset_map(&self) -> PosetMap<A, B>
-    where
-        A: Clone,
-        B: Clone,
-    {
+    pub fn as_poset_map(&self) -> PosetMap {
         PosetMap::from_validated(
-            Arc::new(self.domain.as_poset().clone()),
-            Arc::new(self.codomain.as_poset().clone()),
+            self.domain.as_poset().clone(),
+            self.codomain.as_poset().clone(),
             self.map.clone(),
         )
     }
 }
 
-impl<A, B> sealed::Sealed for LatticeMap<A, B> {}
+impl sealed::Sealed for LatticeMap {}
 
-impl<A, B> MonotoneMap<A, B> for LatticeMap<A, B> {
-    fn domain_poset(&self) -> &Poset<A> {
+impl MonotoneMap for LatticeMap {
+    fn domain_poset(&self) -> &Poset {
         self.domain.as_poset()
     }
 
-    fn codomain_poset(&self) -> &Poset<B> {
+    fn codomain_poset(&self) -> &Poset {
         self.codomain.as_poset()
     }
 
@@ -397,9 +404,93 @@ impl<A, B> MonotoneMap<A, B> for LatticeMap<A, B> {
     }
 }
 
-fn validate_poset_map<A, B>(
-    domain: &Poset<A>,
-    codomain: &Poset<B>,
+impl From<LatticeMap> for PosetMap {
+    fn from(map: LatticeMap) -> Self {
+        PosetMap::from_validated(map.domain.into(), map.codomain.into(), map.map)
+    }
+}
+
+fn fmt_map(
+    name: &str,
+    domain: &Poset,
+    codomain: &Poset,
+    map: &[ElementId],
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
+    write!(f, "{name} {{")?;
+    for (x, &y) in map.iter().enumerate() {
+        if x > 0 {
+            f.write_str(", ")?;
+        }
+        write!(f, "{} |-> {}", domain.label(x), codomain.label(y))?;
+    }
+    f.write_str("}")
+}
+
+impl fmt::Display for PosetMap {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt_map("PosetMap", &self.domain, &self.codomain, &self.map, f)
+    }
+}
+
+impl fmt::Debug for PosetMap {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+impl fmt::Display for LatticeMap {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt_map("LatticeMap", &self.domain, &self.codomain, &self.map, f)
+    }
+}
+
+impl fmt::Debug for LatticeMap {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+fn validate_lattice_map(
+    domain: &Lattice,
+    codomain: &Lattice,
+    map: &[ElementId],
+) -> Result<(), LatticeMapError> {
+    validate_poset_map(domain, codomain, map)?;
+
+    let mapped_bottom = map[domain.bottom()];
+    if mapped_bottom != codomain.bottom() {
+        return Err(LatticeMapError::DoesNotPreserveBottom {
+            expected: codomain.bottom(),
+            actual: mapped_bottom,
+        });
+    }
+
+    let mapped_top = map[domain.top()];
+    if mapped_top != codomain.top() {
+        return Err(LatticeMapError::DoesNotPreserveTop {
+            expected: codomain.top(),
+            actual: mapped_top,
+        });
+    }
+
+    // Meet and join are commutative, and the diagonal laws are automatic.
+    for i in 0..domain.size() {
+        for j in (i + 1)..domain.size() {
+            if map[domain.meet(i, j)] != codomain.meet(map[i], map[j]) {
+                return Err(LatticeMapError::DoesNotPreserveMeet { left: i, right: j });
+            }
+            if map[domain.join(i, j)] != codomain.join(map[i], map[j]) {
+                return Err(LatticeMapError::DoesNotPreserveJoin { left: i, right: j });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_poset_map(
+    domain: &Poset,
+    codomain: &Poset,
     map: &[ElementId],
 ) -> Result<(), PosetMapError> {
     if map.len() != domain.size() {

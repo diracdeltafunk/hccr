@@ -1,28 +1,27 @@
 use hccr::lattice::Lattice;
-use hccr::poset::{self, Edge, EdgeSet, Poset, compose, composition_closed, two_out_of_three};
-use std::sync::Arc;
+use hccr::poset::{Edge, EdgeSet, Poset, compose, composition_closed};
 
 /// Verifies that `Lattice`'s precomputed meet/join tables agree with the
 /// independent `Poset::meet` and `Poset::join` methods for every pair of
 /// elements.
-fn check_meets_and_joins_agree<A: Clone + std::fmt::Debug>(poset: Poset<A>) {
+fn check_meets_and_joins_agree(poset: Poset) {
     let lattice = Lattice::new(poset).expect("expected a valid lattice");
     let poset = lattice.as_poset();
     for i in 0..poset.size() {
         for j in 0..poset.size() {
-            let expected_meet = poset.meet(i, j).expect("should have meet");
-            let expected_join = poset.join(i, j).expect("should have join");
+            let expected_meet = poset.try_meet(i, j).expect("should have meet");
+            let expected_join = poset.try_join(i, j).expect("should have join");
             assert_eq!(
-                lattice.meet_id(i, j),
+                lattice.meet(i, j),
                 expected_meet,
                 "meet({i}, {j}): lattice returned {}, poset returned {expected_meet}",
-                lattice.meet_id(i, j),
+                lattice.meet(i, j),
             );
             assert_eq!(
-                lattice.join_id(i, j),
+                lattice.join(i, j),
                 expected_join,
                 "join({i}, {j}): lattice returned {}, poset returned {expected_join}",
-                lattice.join_id(i, j),
+                lattice.join(i, j),
             );
         }
     }
@@ -31,7 +30,7 @@ fn check_meets_and_joins_agree<A: Clone + std::fmt::Debug>(poset: Poset<A>) {
 #[test]
 fn lattice_meet_join_agree_with_poset_methods() {
     // Single element.
-    check_meets_and_joins_agree(Poset::from_edges(vec![0i32], []).unwrap());
+    check_meets_and_joins_agree(Poset::from_edges(vec![0i32], [] as [Edge; 0]).unwrap());
 
     // Chain: 0 ≤ 1 ≤ 2 ≤ 3.
     check_meets_and_joins_agree(
@@ -109,35 +108,38 @@ fn non_lattice_poset_is_rejected() {
 
 #[test]
 fn poset_product_and_disjoint_union_constructors_work() {
-    let left = Arc::new(Poset::chain(1).unwrap());
-    let right = Arc::new(Poset::chain(2).unwrap());
+    let left = Poset::chain(1);
+    let right = Poset::chain(2);
 
-    let product = poset::product(Arc::clone(&left), Arc::clone(&right)).unwrap();
-    assert_eq!(product.poset.size(), 6);
-    for source in 0..product.poset.size() {
-        for target in 0..product.poset.size() {
-            let &(source_left, source_right) = product.poset.element(source).unwrap();
-            let &(target_left, target_right) = product.poset.element(target).unwrap();
+    let (product, projections) = Poset::product_with_projections([&left, &right]);
+    assert_eq!(product.size(), 6);
+    for source in product.ids() {
+        for target in product.ids() {
+            let (source_left, source_right): (usize, usize) =
+                product.label(source).try_into().unwrap();
+            let (target_left, target_right): (usize, usize) =
+                product.label(target).try_into().unwrap();
             assert_eq!(
-                product.poset.leq(source, target),
+                product.leq(source, target),
                 left.leq(source_left, target_left) && right.leq(source_right, target_right),
             );
         }
     }
-    assert_eq!(product.left_projection.map(), &[0, 0, 0, 1, 1, 1]);
-    assert_eq!(product.right_projection.map(), &[0, 1, 2, 0, 1, 2]);
+    assert_eq!(projections[0].images(), &[0, 0, 0, 1, 1, 1]);
+    assert_eq!(projections[1].images(), &[0, 1, 2, 0, 1, 2]);
 
-    let coproduct = poset::disjoint_union(Arc::clone(&left), Arc::clone(&right)).unwrap();
-    assert_eq!(coproduct.poset.size(), 5);
-    assert!(coproduct.poset.leq(0, 1));
-    assert!(coproduct.poset.leq(2, 4));
-    assert!(!coproduct.poset.leq(0, 2));
-    assert!(!coproduct.poset.leq(2, 0));
-    assert_eq!(coproduct.left.map(), &[0, 1]);
-    assert_eq!(coproduct.right.map(), &[2, 3, 4]);
+    let (coproduct, inclusions) = Poset::disjoint_union_with_inclusions([&left, &right]);
+    assert_eq!(coproduct.size(), 5);
+    assert!(coproduct.leq(0, 1));
+    assert!(coproduct.leq(2, 4));
+    assert!(!coproduct.leq(0, 2));
+    assert!(!coproduct.leq(2, 0));
+    assert_eq!(inclusions[0].images(), &[0, 1]);
+    assert_eq!(inclusions[1].images(), &[2, 3, 4]);
+    assert_eq!(coproduct.id((1, 2)).unwrap(), 4);
 }
 
-fn lifting_condition(poset: &Poset<usize>, left: Edge, right: Edge) -> bool {
+fn lifting_condition(poset: &Poset, left: Edge, right: Edge) -> bool {
     !poset.leq(left.from, right.from)
         || !poset.leq(left.to, right.to)
         || poset.leq(left.to, right.from)
@@ -148,9 +150,9 @@ fn lifting_condition(poset: &Poset<usize>, left: Edge, right: Edge) -> bool {
 #[test]
 fn lifting_classes_satisfy_their_defining_conditions() {
     let posets = [
-        Poset::chain(2).unwrap(),
+        Poset::chain(2),
         Poset::from_edges(
-            (0..4).collect(),
+            0..4,
             [
                 Edge::new(0, 1),
                 Edge::new(0, 2),
@@ -225,7 +227,7 @@ fn relation_composition_and_closure_satisfy_their_definitions() {
     }
 }
 
-fn direct_two_out_of_three(poset: &Poset<usize>, class: &EdgeSet) -> bool {
+fn direct_two_out_of_three(poset: &Poset, class: &EdgeSet) -> bool {
     poset.all_relations_iter().all(|first| {
         poset
             .all_relations_iter()
@@ -246,9 +248,9 @@ fn direct_two_out_of_three(poset: &Poset<usize>, class: &EdgeSet) -> bool {
 #[test]
 fn two_out_of_three_satisfies_its_defining_condition() {
     let posets = [
-        Poset::chain(2).unwrap(),
+        Poset::chain(2),
         Poset::from_edges(
-            (0..4).collect(),
+            0..4,
             [
                 Edge::new(0, 1),
                 Edge::new(0, 2),
@@ -269,14 +271,11 @@ fn two_out_of_three_satisfies_its_defining_condition() {
                 .filter_map(|(id, edge)| ((class_bits >> id) & 1 == 1).then_some(edge))
                 .collect::<EdgeSet>();
             assert_eq!(
-                two_out_of_three(&poset, &class),
+                poset.two_out_of_three(&class),
                 direct_two_out_of_three(&poset, &class),
             );
         }
     }
 
-    assert!(!two_out_of_three(
-        &Poset::chain(1).unwrap(),
-        &EdgeSet::from([Edge::new(1, 0)]),
-    ));
+    assert!(!Poset::chain(1).two_out_of_three(&EdgeSet::from([Edge::new(1, 0)])));
 }

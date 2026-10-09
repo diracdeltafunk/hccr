@@ -1,98 +1,71 @@
 use hccr::lattice::Lattice;
 use hccr::poset::Edge;
 use hccr::transfer_lattice::CompatibilityFailure;
-use std::sync::Arc;
-
-fn is_raw_subset(left: &bitvec::vec::BitVec, right: &bitvec::vec::BitVec) -> bool {
-    left.iter_ones().all(|bit| right[bit])
-}
 
 #[test]
 fn saturated_closure_is_the_least_saturated_extension() {
-    let universe = Arc::new(Lattice::boolean(2).unwrap()).transfer_universe();
-    let systems = universe.transfer_systems();
+    let tr = Lattice::boolean(2).transfer_systems();
+    let systems = tr.systems();
 
-    for system in &systems {
+    for system in systems {
         let closure = system.saturated_closure();
         assert!(closure.is_saturated());
-        assert!(is_raw_subset(system.raw().arrows(), closure.raw().arrows()));
+        assert!(system <= &closure);
         assert_eq!(closure.saturated_closure(), closure);
 
-        for saturated_extension in systems.iter().filter(|candidate| {
-            candidate.is_saturated()
-                && is_raw_subset(system.raw().arrows(), candidate.raw().arrows())
-        }) {
-            assert!(is_raw_subset(
-                closure.raw().arrows(),
-                saturated_extension.raw().arrows()
-            ));
+        for saturated_extension in systems
+            .iter()
+            .filter(|candidate| candidate.is_saturated() && system <= candidate)
+        {
+            assert!(&closure <= saturated_extension);
         }
     }
 }
 
 #[test]
 fn cosaturated_coclosure_is_the_greatest_cosaturated_subsystem() {
-    let universe = Arc::new(Lattice::boolean(2).unwrap()).transfer_universe();
-    let systems = universe.transfer_systems();
+    let tr = Lattice::boolean(2).transfer_systems();
+    let systems = tr.systems();
 
-    for system in &systems {
+    for system in systems {
         let coclosure = system.cosaturated_coclosure();
         assert!(coclosure.is_cosaturated());
         assert!(coclosure.is_disklike());
-        assert!(is_raw_subset(
-            coclosure.raw().arrows(),
-            system.raw().arrows()
-        ));
+        assert!(&coclosure <= system);
         assert_eq!(coclosure.cosaturated_coclosure(), coclosure);
 
-        for cosaturated_subsystem in systems.iter().filter(|candidate| {
-            candidate.is_cosaturated()
-                && is_raw_subset(candidate.raw().arrows(), system.raw().arrows())
-        }) {
-            assert!(is_raw_subset(
-                cosaturated_subsystem.raw().arrows(),
-                coclosure.raw().arrows()
-            ));
+        for cosaturated_subsystem in systems
+            .iter()
+            .filter(|candidate| candidate.is_cosaturated() && candidate <= &system)
+        {
+            assert!(cosaturated_subsystem <= &coclosure);
         }
     }
 }
 
 #[test]
 fn saturated_systems_form_the_expected_containment_lattice() {
-    let universe = Arc::new(Lattice::boolean(2).unwrap()).transfer_universe();
-    let saturated = universe.saturated_transfer_systems();
-    let lattice = universe.saturated_containment_lattice().unwrap();
+    let lattice = Lattice::boolean(2).saturated_transfer_systems();
 
     // The Boolean square is the subgroup lattice of C_pq, which has seven
     // saturated transfer systems.
-    assert_eq!(saturated.len(), 7);
-    assert_eq!(lattice.size(), saturated.len());
-    assert!(lattice.systems().all(|system| system.is_saturated()));
+    assert_eq!(lattice.size(), 7);
+    assert!(lattice.systems().iter().all(|system| system.is_saturated()));
 
-    for left in 0..lattice.size() {
-        for right in 0..lattice.size() {
-            assert!(
-                lattice
-                    .system(lattice.meet_id(left, right))
-                    .unwrap()
-                    .is_saturated()
-            );
-            assert!(
-                lattice
-                    .system(lattice.join_id(left, right))
-                    .unwrap()
-                    .is_saturated()
-            );
+    for left in lattice.ids() {
+        for right in lattice.ids() {
+            assert!(lattice.system(lattice.meet(left, right)).is_saturated());
+            assert!(lattice.system(lattice.join(left, right)).is_saturated());
         }
     }
 }
 
 #[test]
 fn generated_bases_are_irredundant_and_minimum() {
-    let universe = Arc::new(Lattice::boolean(2).unwrap()).transfer_universe();
-    let proper_edges = universe.proper_edges();
+    let lattice = Lattice::boolean(2);
+    let proper_edges = lattice.proper_relations_iter().collect::<Vec<_>>();
 
-    for system in universe.transfer_systems() {
+    for system in lattice.transfer_systems().systems() {
         let basis = system.minimal_generating_set();
         assert_eq!(basis, system.minimum_generating_set());
         assert_eq!(basis.len(), system.generator_complexity());
@@ -120,44 +93,44 @@ fn generated_bases_are_irredundant_and_minimum() {
 
 #[test]
 fn lattice_complexity_and_width_have_their_defining_values() {
-    let lattice = Arc::new(Lattice::boolean(2).unwrap());
-    let universe = Arc::clone(&lattice).transfer_universe();
-    let systems = universe.transfer_systems();
-    let defining_complexity = systems
+    let lattice = Lattice::boolean(2);
+    let defining_complexity = lattice
+        .transfer_systems()
+        .systems()
         .iter()
         .map(|system| system.generator_complexity())
         .max()
         .unwrap();
-    let complete = universe
-        .generated_by(universe.proper_edges().iter().copied())
+    let complete = lattice
+        .transfer_system_generated_by(lattice.proper_relations_iter())
         .unwrap();
 
-    assert_eq!(universe.complexity(), defining_complexity);
-    assert_eq!(universe.width(), complete.generator_complexity());
+    assert_eq!(complete, lattice.complete_transfer_system());
+    assert_eq!(lattice.transfer_system_complexity(), defining_complexity);
     assert_eq!(
-        Arc::clone(&lattice).transfer_system_complexity(),
-        defining_complexity
+        lattice.transfer_system_width(),
+        complete.generator_complexity()
     );
-    assert_eq!(lattice.transfer_system_width(), universe.width());
 }
 
 #[test]
 fn compatibility_satisfies_the_standard_general_laws() {
-    let lattice = Arc::new(Lattice::boolean(2).unwrap());
-    let universe = Arc::clone(&lattice).transfer_universe();
-    let systems = universe.transfer_systems();
-    let complete = universe
-        .generated_by(universe.proper_edges().iter().copied())
+    let lattice = Lattice::boolean(2);
+    let tr = lattice.transfer_systems();
+    let systems = tr.systems();
+    let complete = lattice.complete_transfer_system();
+    let trivial = lattice
+        .transfer_system_generated_by(std::iter::empty::<Edge>())
         .unwrap();
-    let trivial = universe.generated_by(std::iter::empty::<Edge>()).unwrap();
+    assert_eq!(trivial, lattice.trivial_transfer_system());
 
-    for system in &systems {
+    for system in systems {
         assert!(complete.is_compatible_with(system));
         assert!(system.is_compatible_with(&trivial));
         assert_eq!(system.is_compatible_with(system), system.is_saturated());
     }
 
-    let enumerated = universe.compatible_pairs();
+    let enumerated = lattice.compatible_transfer_system_pairs();
     let defining_count = systems
         .iter()
         .flat_map(|additive| {
@@ -183,12 +156,19 @@ fn compatibility_satisfies_the_standard_general_laws() {
             }))
     );
 
-    let other_trivial = lattice
-        .transfer_universe()
-        .generated_by(std::iter::empty::<Edge>())
-        .unwrap();
+    let other_trivial = Lattice::chain(3).trivial_transfer_system();
     assert_eq!(
         trivial.compatibility_failure(&other_trivial),
-        Some(CompatibilityFailure::DifferentUniverses)
+        Some(CompatibilityFailure::DifferentLattices)
     );
+}
+
+#[test]
+fn transfer_systems_on_equal_lattices_are_interchangeable() {
+    let first = Lattice::boolean(2);
+    let second = Lattice::boolean(2);
+    let left = first.transfer_systems();
+    for system in second.transfer_systems().systems() {
+        assert!(left.id_of(system).is_some());
+    }
 }

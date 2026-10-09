@@ -225,6 +225,13 @@ impl GapSubgroup {
     }
 }
 
+impl fmt::Display for GapSubgroup {
+    /// Writes the subgroup as `H(class, element)`, using zero-based indices.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "H({},{})", self.conjugacy_class, self.class_element)
+    }
+}
+
 pub(crate) fn global_gap() -> Result<GlobalGapGuard, GroupTheoryError> {
     gap_sys::global().map_err(gap_error)
 }

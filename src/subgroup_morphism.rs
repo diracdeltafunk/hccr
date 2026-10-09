@@ -13,12 +13,11 @@
 //! because two subgroup lattices happen to be isomorphic.
 
 use crate::g_lattice::SubgroupGLattice;
-use crate::group_theory::{self, GapSubgroup, GroupTheoryError};
+use crate::group_theory::{self, GroupTheoryError};
 use crate::morphism::{PosetMap, PosetMapError};
 use crate::poset::ElementId;
 use gap_sys::GapValue;
 use std::fmt;
-use std::sync::Arc;
 
 /// The subgroup-lattice maps induced by a concrete GAP group homomorphism.
 ///
@@ -29,10 +28,10 @@ use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub struct SubgroupMaps {
     homomorphism: GapValue,
-    domain: Arc<SubgroupGLattice>,
-    codomain: Arc<SubgroupGLattice>,
-    image_map: PosetMap<GapSubgroup, GapSubgroup>,
-    preimage_map: PosetMap<GapSubgroup, GapSubgroup>,
+    domain: SubgroupGLattice,
+    codomain: SubgroupGLattice,
+    image_map: PosetMap,
+    preimage_map: PosetMap,
     is_injective: bool,
     is_surjective: bool,
 }
@@ -125,8 +124,8 @@ impl SubgroupMaps {
     /// different subgroup enumeration or conjugation action.
     pub fn new(
         homomorphism: &GapValue,
-        domain: Arc<SubgroupGLattice>,
-        codomain: Arc<SubgroupGLattice>,
+        domain: &SubgroupGLattice,
+        codomain: &SubgroupGLattice,
     ) -> Result<Self, SubgroupMapError> {
         let mut gap = group_theory::global_gap()?;
         let data = group_theory::subgroup_maps_data(
@@ -144,21 +143,13 @@ impl SubgroupMaps {
             },
         )?;
 
-        let image_map = PosetMap::between_lattices(
-            domain.lattice().as_ref(),
-            codomain.lattice().as_ref(),
-            data.image_map,
-        )?;
-        let preimage_map = PosetMap::between_lattices(
-            codomain.lattice().as_ref(),
-            domain.lattice().as_ref(),
-            data.preimage_map,
-        )?;
+        let image_map = PosetMap::new(domain.lattice(), codomain.lattice(), data.image_map)?;
+        let preimage_map = PosetMap::new(codomain.lattice(), domain.lattice(), data.preimage_map)?;
 
         Ok(Self {
             homomorphism: homomorphism.clone(),
-            domain,
-            codomain,
+            domain: domain.clone(),
+            codomain: codomain.clone(),
             image_map,
             preimage_map,
             is_injective: data.is_injective,
@@ -172,22 +163,22 @@ impl SubgroupMaps {
     }
 
     /// Returns the precise subgroup G-lattice used as the domain.
-    pub fn domain(&self) -> &Arc<SubgroupGLattice> {
+    pub fn domain(&self) -> &SubgroupGLattice {
         &self.domain
     }
 
     /// Returns the precise subgroup G-lattice used as the codomain.
-    pub fn codomain(&self) -> &Arc<SubgroupGLattice> {
+    pub fn codomain(&self) -> &SubgroupGLattice {
         &self.codomain
     }
 
     /// Returns the monotone map `K |-> f(K)` from `Sub(G)` to `Sub(H)`.
-    pub fn image_map(&self) -> &PosetMap<GapSubgroup, GapSubgroup> {
+    pub fn image_map(&self) -> &PosetMap {
         &self.image_map
     }
 
     /// Returns the monotone map `J |-> f^{-1}(J)` from `Sub(H)` to `Sub(G)`.
-    pub fn preimage_map(&self) -> &PosetMap<GapSubgroup, GapSubgroup> {
+    pub fn preimage_map(&self) -> &PosetMap {
         &self.preimage_map
     }
 
@@ -202,12 +193,12 @@ impl SubgroupMaps {
     }
 
     /// Tests whether `candidate` is the exact stored domain G-lattice.
-    pub fn has_domain(&self, candidate: &Arc<SubgroupGLattice>) -> bool {
-        Arc::ptr_eq(&self.domain, candidate)
+    pub fn has_domain(&self, candidate: &SubgroupGLattice) -> bool {
+        self.domain == *candidate
     }
 
     /// Tests whether `candidate` is the exact stored codomain G-lattice.
-    pub fn has_codomain(&self, candidate: &Arc<SubgroupGLattice>) -> bool {
-        Arc::ptr_eq(&self.codomain, candidate)
+    pub fn has_codomain(&self, candidate: &SubgroupGLattice) -> bool {
+        self.codomain == *candidate
     }
 }
