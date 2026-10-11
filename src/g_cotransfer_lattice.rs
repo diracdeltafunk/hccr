@@ -1,9 +1,12 @@
 //! Cotransfer systems invariant under a finite group action.
 //!
-//! A G-cotransfer system is a cotransfer system whose arrows are closed under
-//! the given action. As for G-transfer systems, it is stored as a bitvector of
-//! non-identity relation orbits. Its FCA closure is the left-class closure
-//! `llc(rlc(-))`, dual to the right-class closure used for G-transfer systems.
+//! A G-cotransfer system is a cotransfer system that contains, with each
+//! relation, its whole orbit under the action. As for G-transfer systems, it is
+//! stored as a set of non-identity relation orbits. Where a G-transfer system is
+//! closed under taking the right lifting class of its left lifting class (see
+//! [`Poset::left_lifting_class`](crate::poset::Poset::left_lifting_class)), a
+//! G-cotransfer system is closed under the dual operation: the left lifting
+//! class of its right lifting class.
 
 use crate::bitvec_utils::{is_subset, set_partial_cmp};
 use crate::cotransfer_lattice::CotransferSystem;

@@ -41,7 +41,8 @@
 //!     let (_, inclusions) = Lattice::horizontal_join_with_inclusions([&c3, &c3, &c3])?;
 //!     let middle = &inclusions[1];
 //!     let s = c3.transfer_system_generated_by([(0, 3)])?;
-//!     assert!(s.pushforward(middle)?.contains_relation((middle.apply(0), middle.apply(3)).into()));
+//!     let image = (middle.apply(0), middle.apply(3));
+//!     assert!(s.pushforward(middle)?.contains_relation(image.into()));
 //!     Ok(())
 //! }
 //! ```
@@ -65,15 +66,42 @@
 //! pushout-closed duals, and [`model_structure`] constructs model structures
 //! from suitable intervals of transfer systems. [`transfer_morphism`]
 //! constructs the pushforward and pullback operations induced by monotone
-//! maps, which are described in [`morphism`]. [`tikz`] draws all of these.
+//! maps, which are described in [`morphism`].
 //!
 //! Errors from every module convert into the single type [`Error`], so
 //! `fn main() -> hccr::Result<()>` with `?` works throughout.
 //!
+//! # Drawing
+//!
+//! [`tikz`] draws posets, lattices and lattices of transfer systems as TikZ
+//! pictures, with a choice of layouts. Lattices of transfer systems show each
+//! transfer system as a small picture of the underlying lattice:
+//!
+//! ```
+//! use hccr::prelude::*;
+//!
+//! let picture = chain(2).transfer_systems().to_tikz();
+//! let latex = picture.to_standalone_document();
+//! assert!(latex.contains("\\begin{tikzpicture}"));
+//! ```
+//!
+//! # Formal concept analysis
+//!
+//! Transfer systems are enumerated as the formal concepts of a formal context,
+//! using the [`fcars`] crate, which is re-exported. The same bridge is
+//! available directly: [`Lattice::from_formal_context`](lattice::Lattice::from_formal_context)
+//! builds a concept lattice, and
+//! [`Lattice::standard_context`](lattice::Lattice::standard_context) goes the
+//! other way.
+//!
 //! # Groups
 //!
 //! The optional `groups` feature adds finite group actions and invariant
-//! transfer and cotransfer systems, using GAP for the group theory. GAP is
+//! transfer and cotransfer systems, using GAP for the group theory:
+//! `g_lattice` for lattices with a group action, such as subgroup lattices;
+//! `g_transfer_lattice` and `g_cotransfer_lattice` for invariant transfer and
+//! cotransfer systems; and `subgroup_morphism` and `g_transfer_morphism` for
+//! maps induced by group homomorphisms, including Rubin's functors. GAP is
 //! re-exported as `hccr::gap`, so no separate dependency is needed:
 //!
 //! ```no_run

@@ -1,8 +1,10 @@
 //! Order-preserving maps and lattice homomorphisms.
 //!
-//! A map is represented by its values on element ids: the entry `map[i]` is the
-//! image of the element `i`.  Constructors validate the relevant mathematical
-//! axioms before producing a [`crate::morphism::PosetMap`] or [`crate::morphism::LatticeMap`].
+//! A map is given by its values on element ids: entry `i` of the image vector is
+//! the image of element `i`. The constructors check the axioms, so every
+//! [`PosetMap`] is monotone and every [`LatticeMap`] preserves meets, joins,
+//! bottom and top. Both implement [`MonotoneMap`], which is what the
+//! transfer-system operations in [`crate::transfer_morphism`] accept.
 
 use crate::lattice::Lattice;
 use crate::poset::{ElementId, Poset};

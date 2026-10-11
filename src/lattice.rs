@@ -10,6 +10,14 @@
 //! A `Lattice` is a cheap-to-clone handle around a [`Poset`] whose meet and
 //! join tables have been computed. Every poset method is available on a
 //! lattice directly, because `Lattice` dereferences to `Poset`.
+//!
+//! Besides constructors and standard constructions (chains, Boolean lattices,
+//! products, horizontal joins), lattices connect to formal concept analysis:
+//! [`Lattice::standard_context`] gives the formal context of join-irreducibles
+//! against meet-irreducibles, and [`Lattice::from_formal_context`] builds the
+//! concept lattice of any context. Transfer systems, cotransfer systems and
+//! model structures on a lattice are reached through its methods, such as
+//! [`Lattice::transfer_systems`].
 
 use crate::bitvec_utils::is_subset;
 use crate::label::Label;

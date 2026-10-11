@@ -1,29 +1,32 @@
-//! Transfer-system maps between finite lattices with group actions.
+//! G-transfer systems along maps between finite lattices with group actions.
 //!
 //! These are the action-invariant analogues of the operations in
-//! [`crate::transfer_morphism`]. For a monotone map `u: L -> M`,
-//! [`GTransferSystem::pushforward`] maps all arrows, closes under the transfer axioms, and adds
-//! their whole target orbits. [`GTransferSystem::pullback`] is its right adjoint on invariant
-//! transfer systems: it returns the greatest invariant source system whose
-//! pushforward is contained in the given target system.
+//! [`crate::transfer_morphism`]. For a monotone map `u: L -> M` of the
+//! underlying lattices, [`GTransferSystem::pushforward`] maps every relation,
+//! closes under the transfer axioms, and adds the whole orbits of the image
+//! relations. [`GTransferSystem::pullback`] is its right adjoint: it returns the
+//! greatest invariant system on `L` whose pushforward is contained in the given
+//! one. For arbitrary monotone maps these need not respect composition.
 //!
 //! A group homomorphism `f: G -> H` gives two monotone maps between subgroup
-//! lattices: direct image sends `K <= G` to `f(K) <= H`, and inverse image
-//! sends `J <= H` to `f^-1(J) <= G`. Applying pushforward and pullback to these
-//! two maps gives Rubin's four functors:
+//! lattices: direct image sends `K <= G` to `f(K) <= H`, and inverse image sends
+//! `J <= H` to `f^-1(J) <= G`. Pushing forward and pulling back along these two
+//! maps gives Rubin's four functors, which are methods of [`SubgroupMaps`] and do
+//! respect composition of homomorphisms:
 //!
 //! | subgroup map | pushforward | pullback |
 //! | --- | --- | --- |
-//! | `K |-> f(K)` | `f_L` | `f_R^{-1}` |
-//! | `K |-> f^{-1}(K)` | `f_L^{-1}` | `f_R` |
+//! | `K |-> f(K)` | `f_L` ([`SubgroupMaps::image_pushforward`]) | `f_R^{-1}` ([`SubgroupMaps::image_pullback`]) |
+//! | `J |-> f^{-1}(J)` | `f_L^{-1}` ([`SubgroupMaps::preimage_pushforward`]) | `f_R` ([`SubgroupMaps::preimage_pullback`]) |
 //!
-//! In particular, Rubin's restriction `f_L^{-1}` is pushforward along the
-//! subgroup-preimage map. It is not the generated inverse image along the
-//! subgroup-image map.
+//! In particular, Rubin's restriction `f_L^{-1}` is the pushforward along the
+//! inverse-image map, not the generated inverse image along the direct-image
+//! map. [`SubgroupMaps`] also provides the classical names: induction,
+//! restriction, coinduction, inflation and fixed points.
 //!
-//! The generic action-aware operations below need not commute with composition
-//! of arbitrary monotone maps. Rubin's four operations do commute with
-//! composition of group homomorphisms.
+//! The free functions in this module package these operations as maps between
+//! lattices of G-transfer systems, for example
+//! [`image_pushforward_containment_map`].
 
 use crate::bitvec_utils::is_subset;
 use crate::g_lattice::GLattice;

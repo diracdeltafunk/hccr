@@ -9,7 +9,7 @@ abstract: >-
 authors:
   - family-names: Spitz
     given-names: Ben
-version: 0.1.0
+version: 0.3.0
 repository-code: "https://github.com/diracdeltafunk/hccr"
 license: MIT
 keywords:

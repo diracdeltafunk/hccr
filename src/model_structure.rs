@@ -1,19 +1,23 @@
 //! Model structures on finite lattices.
 //!
-//! A model structure is encoded by an interval `R <= R'` of transfer
-//! systems satisfying one additional condition.  Its five classes of maps
-//! are
+//! A model structure on a finite lattice, viewed as a category, is determined
+//! by an interval `R <= R'` of transfer systems satisfying one extra condition.
+//! Write `llc(S)` for the left lifting class of a class of relations `S` (see
+//! [`Poset::left_lifting_class`](crate::poset::Poset::left_lifting_class)). The
+//! five classes of maps are
 //!
 //! - acyclic fibrations `R`;
 //! - fibrations `R'`;
 //! - cofibrations `llc(R)`;
 //! - acyclic cofibrations `llc(R')`; and
-//! - weak equivalences `R ∘ llc(R')`.
+//! - weak equivalences `R ∘ llc(R')`, the composites of an acyclic cofibration
+//!   followed by an acyclic fibration.
 //!
-//! The final class must have the 2-out-of-3 property.  This module validates
-//! that condition at construction time, so every [`ModelStructure`] value is
-//! a genuine model structure rather than merely a pair of weak factorization
-//! systems.
+//! The extra condition is that the weak equivalences have the 2-out-of-3
+//! property. [`ModelStructure::new`] checks it, so every [`ModelStructure`] is a
+//! genuine model structure rather than merely a pair of weak factorization
+//! systems. [`Lattice::model_structures`](crate::lattice::Lattice::model_structures)
+//! lists them all.
 
 use crate::cotransfer_lattice::CotransferSystem;
 use crate::lattice::Lattice;

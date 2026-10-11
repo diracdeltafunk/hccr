@@ -2,11 +2,11 @@
 //!
 //! A partial order is a relation `<=` that is reflexive (`x <= x`),
 //! antisymmetric (`x <= y` and `y <= x` imply `x = y`), and transitive. A
-//! [`Poset`] stores the whole relation and its transpose
-//! as dense Boolean matrices: `relation[i][j]` means `i <= j`. Storing all
-//! comparable pairs, rather than only the edges of a Hasse diagram, makes tests
-//! such as comparability and the computation of upper and lower sets
-//! inexpensive for small finite posets.
+//! [`Poset`] stores the whole relation, not just its covers, so questions
+//! about single elements are cheap: [`Poset::leq`], [`Poset::down_set`],
+//! [`Poset::upper_covers`], [`Poset::interval`] and so on. Questions about the
+//! whole order return an [`EdgeSet`]: [`Poset::relations`],
+//! [`Poset::proper_relations`] and [`Poset::covers`].
 //!
 //! Every element has a [`Label`], unique within its poset, and a stable
 //! position called its [`ElementId`]. Algorithms work with ids; labels are for

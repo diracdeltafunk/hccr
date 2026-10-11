@@ -1,43 +1,41 @@
-//! Transfer-system maps induced by monotone maps between finite lattices.
+//! Transfer systems along monotone maps between finite lattices.
 //!
-//! A monotone map `f: L -> M` sends a relation `x <= y` to
-//! `f(x) <= f(y)`. Sending every arrow of a transfer system this way may lose
-//! restriction closure, so
-//! [`TransferSystem::pushforward`] takes the least transfer system containing the image arrows.
-//! Its right adjoint [`TransferSystem::pullback`] takes the greatest transfer system contained
-//! in the pointwise inverse image. In
-//! symbols, for transfer systems `S` on `L` and `T` on `M`,
-//! `pushforward(S) <= T` exactly when `S <= pullback(T)`.
+//! A monotone map `f: L -> M` sends a relation `x <= y` to `f(x) <= f(y)`.
+//! Sending every relation of a transfer system this way may break restriction
+//! closure, so there are three operations, all methods of [`TransferSystem`]:
 //!
-//! There is also a superficially similar operation,
-//! [`TransferSystem::generated_inverse_image`], which takes the *least* transfer system
-//! containing the pointwise inverse image. It is generally different from the
-//! pullback and is not right adjoint to pushforward.
+//! - [`TransferSystem::pushforward`] takes the least transfer system on `M`
+//!   containing the image relations;
+//! - [`TransferSystem::pullback`] takes the greatest transfer system on `L`
+//!   contained in the inverse image. It is right adjoint to pushforward: for
+//!   transfer systems `S` on `L` and `T` on `M`, `pushforward(S) <= T` exactly
+//!   when `S <= pullback(T)`;
+//! - [`TransferSystem::generated_inverse_image`] takes the *least* transfer
+//!   system containing the inverse image. In general it differs from the
+//!   pullback and is not adjoint to pushforward, but the two agree when `f`
+//!   preserves meets, for instance for every
+//!   [`LatticeMap`](crate::morphism::LatticeMap).
 //!
-//! For a meet-preserving map, including every
-//! [`crate::morphism::LatticeMap`], the raw inverse image is already a transfer
-//! system, so the two inverse-image operations agree. For the
-//! composition-closed order, monotonicity is checked separately for every
-//! operation.
+//! For merely monotone maps these operations need not respect composition,
+//! because closing at an intermediate lattice can change the result. They do
+//! respect composition of lattice homomorphisms.
 //!
-//! For merely monotone maps, these constructions need not respect
-//! composition: transfer closure at an intermediate lattice can change the
-//! result. They are functorial when the maps are lattice homomorphisms.
-//!
-//! The same operations are available as methods:
-//! [`TransferSystem::pushforward`], [`TransferSystem::pullback`], and
-//! [`TransferSystem::generated_inverse_image`].
+//! The free functions in this module package the same operations as maps of
+//! posets: between the containment lattices `Tr(L)` and `Tr(M)` (for example
+//! [`pushforward_containment_map`]), and, when monotone, between the
+//! composition-closed orders (for example [`try_pushforward_composition_map`],
+//! which reports why it fails when the operation is not monotone).
 //!
 //! ```
 //! use hccr::lattice::Lattice;
 //! use hccr::morphism::LatticeMap;
 //!
-//! // The quotient [2] -> [1] identifying the bottom and middle elements.
-//! let c3 = Lattice::chain(2);
-//! let c2 = Lattice::chain(1);
-//! let quotient = LatticeMap::new(&c3, &c2, vec![0, 0, 1])?;
+//! // The quotient of the chain 0 < 1 < 2 onto 0 < 1 identifying 0 and 1.
+//! let three = Lattice::chain(2);
+//! let two = Lattice::chain(1);
+//! let quotient = LatticeMap::new(&three, &two, vec![0, 0, 1])?;
 //!
-//! let system = c3.transfer_system_generated_by([(1, 2)])?;
+//! let system = three.transfer_system_generated_by([(1, 2)])?;
 //! let image = system.pushforward(&quotient)?;
 //! assert!(image.contains_relation((0, 1).into()));
 //! assert!(system <= image.pullback(&quotient)?);
