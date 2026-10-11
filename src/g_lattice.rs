@@ -41,7 +41,7 @@ use crate::group_theory::{self, GapAction, GapSubgroup, GroupTheoryError, PointO
 use crate::label::Label;
 use crate::lattice::{Lattice, LatticeError};
 use crate::morphism::LatticeMapError;
-use crate::poset::{Edge, EdgeSet, ElementId, Poset, PosetError};
+use crate::poset::{Edge, EdgeSet, ElementId, Poset, PosetError, covers_of};
 use crate::transfer_lattice::{TransferSystem, fmt_relations};
 use bitvec::prelude::*;
 use fcars::FormalContext;
@@ -628,7 +628,11 @@ impl GLattice {
         for (generator, permutation) in element_generator_permutations.iter().enumerate() {
             validate_lattice_automorphism(generator, lattice, permutation)?;
         }
-        let relations = lattice.as_poset().all_relations_iter().collect::<Vec<_>>();
+        let relations = lattice
+            .as_poset()
+            .relations()
+            .into_iter()
+            .collect::<Vec<_>>();
         let relation_ids = relation_id_matrix(lattice.size(), &relations);
         let relation_generator_permutations = relation_generator_permutations(
             &relations,
@@ -697,7 +701,11 @@ impl GLattice {
             &generator_images,
             lattice.size(),
         )?;
-        let relations = lattice.as_poset().all_relations_iter().collect::<Vec<_>>();
+        let relations = lattice
+            .as_poset()
+            .relations()
+            .into_iter()
+            .collect::<Vec<_>>();
         let relation_ids = relation_id_matrix(lattice.size(), &relations);
         let relation_generator_permutations =
             relation_generator_permutations(&relations, &relation_ids, &generator_images)?;
@@ -1163,8 +1171,10 @@ impl SubgroupGLattice {
 
     /// Returns TeX math-mode labels for GAP's structure descriptions.
     ///
-    /// These labels are cached in lattice element order and are suitable for
-    /// [`crate::tikz::GlyphNodeDisplay::raw`]. For example, GAP's `"C2"`
+    /// These labels are cached in lattice element order. Wrapped in
+    /// [`crate::tikz::TikzLabel::raw`], they can label the nodes of a drawing,
+    /// as in [`crate::tikz::PosetDrawing::for_each_glyph`]. For example, GAP's
+    /// `"C2"`
     /// becomes `"$C_{2}$"`, and `"C2 x C3"` becomes
     /// `"$C_{2} \\times C_{3}$"`.
     pub fn subgroup_structure_descriptions_tex(&self) -> &[String] {
@@ -1213,7 +1223,7 @@ impl GTransferUniverse {
             .iter()
             .map(|orbit| orbit.iter().map(|edge| edge.reversed()).collect::<Vec<_>>())
             .collect::<Vec<_>>();
-        let opposite_relations = opposite_lattice.all_relations_iter().collect::<Vec<_>>();
+        let opposite_relations = opposite_lattice.relations().into_iter().collect::<Vec<_>>();
         let opposite_relation_ids =
             relation_id_matrix(opposite_lattice.size(), &opposite_relations);
         let labels = self
@@ -1410,25 +1420,33 @@ impl GTransferSystem {
             .collect()
     }
 
-    /// Returns the underlying lattice relations belonging to this G-transfer system.
-    ///
-    /// Each selected orbit contributes all of its relations.  If
-    /// `include_identities` is true, identity relations `x <= x` are included
-    /// as well.
-    pub fn relations(&self, include_identities: bool) -> EdgeSet {
-        let mut result = EdgeSet::new();
-        if include_identities {
-            result.extend(self.lattice().ids().map(|id| Edge::new(id, id)));
-        }
-        for orbit_label_id in self.orbit_arrows.iter_ones() {
-            result.extend(
+    /// Returns every relation of this G-transfer system, identities included.
+    pub fn relations(&self) -> EdgeSet {
+        let mut result = self.proper_relations();
+        result.extend(self.lattice().ids().map(|id| Edge::new(id, id)));
+        result
+    }
+
+    /// Returns the non-identity relations of this G-transfer system.
+    pub fn proper_relations(&self) -> EdgeSet {
+        // Each selected orbit contributes all of its relations.
+        self.orbit_arrows
+            .iter_ones()
+            .flat_map(|orbit_label_id| {
                 self.universe
                     .relation_orbit_relations(orbit_label_id)
                     .iter()
-                    .copied(),
-            );
-        }
-        result
+                    .copied()
+            })
+            .collect()
+    }
+
+    /// Returns the covers of this G-transfer system, regarded as a partial
+    /// order on the elements of the lattice: the relations `x -> z` in it with
+    /// no `y` such that `x -> y` and `y -> z` are both in it. These need not
+    /// be covers in the lattice.
+    pub fn covers(&self) -> EdgeSet {
+        covers_of(&self.proper_relations())
     }
 
     /// Returns whether every relation of this system belongs to `other`.
@@ -1445,7 +1463,7 @@ impl GTransferSystem {
     /// in this way.
     pub fn underlying_transfer_system(&self) -> TransferSystem {
         self.lattice()
-            .transfer_system_generated_by(self.relations(false))
+            .transfer_system_generated_by(self.proper_relations())
             .expect("a G-transfer system is an ordinary transfer system")
     }
 
@@ -1613,7 +1631,7 @@ impl GTransferSystem {
         }
 
         let mut multiplicative_relations = multiplicative
-            .relations(false)
+            .proper_relations()
             .into_iter()
             .collect::<Vec<_>>();
         multiplicative_relations.sort_unstable();
@@ -1675,7 +1693,7 @@ impl PartialOrd for GTransferSystem {
 
 impl fmt::Display for GTransferSystem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut relations = self.relations(false).into_iter().collect::<Vec<_>>();
+        let mut relations = self.proper_relations().into_iter().collect::<Vec<_>>();
         relations.sort_unstable();
         fmt_relations(self.lattice(), relations, f)
     }

@@ -25,7 +25,7 @@ use crate::morphism::PosetMap;
 use crate::transfer_lattice::TransferUniverse;
 use bitvec::prelude::*;
 use std::borrow::Borrow;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::ops::Range;
 use std::sync::{Arc, OnceLock};
@@ -81,8 +81,8 @@ impl fmt::Display for Edge {
     }
 }
 
-/// A set of ordered relations in a finite poset.
-pub type EdgeSet = HashSet<Edge>;
+/// A set of ordered relations in a finite poset, iterated in sorted order.
+pub type EdgeSet = BTreeSet<Edge>;
 
 /// Errors that can occur while validating or constructing a finite poset.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -453,7 +453,7 @@ impl Poset {
                     .iter()
                     .map(|label| Label::from((index, label))),
             );
-            for edge in summand.all_relations_iter() {
+            for edge in summand.relations() {
                 relation[offset + edge.from].set(offset + edge.to, true);
             }
         }
@@ -701,27 +701,27 @@ impl Poset {
         (0..self.size()).all(|i| (i + 1..self.size()).all(|j| self.leq(i, j) || self.leq(j, i)))
     }
 
-    /// Iterates over all ordered pairs `x <= y`, including identities.
-    ///
-    /// Relations are yielded in row-major order with respect to the internal
-    /// matrix: increasing lower element, then increasing upper element.
-    pub fn all_relations_iter(&self) -> impl Iterator<Item = Edge> + '_ {
+    /// Returns every relation `x <= y`, identities included.
+    pub fn relations(&self) -> EdgeSet {
         self.data
             .relation
             .iter()
             .enumerate()
             .flat_map(|(from, row)| row.iter_ones().map(move |to| Edge { from, to }))
+            .collect()
     }
 
-    /// Iterates over all non-identity ordered pairs `x < y`.
-    pub fn proper_relations_iter(&self) -> impl Iterator<Item = Edge> + '_ {
-        self.all_relations_iter().filter(|edge| !edge.is_identity())
+    /// Returns every non-identity relation `x < y`.
+    pub fn proper_relations(&self) -> EdgeSet {
+        self.relations()
+            .into_iter()
+            .filter(|edge| !edge.is_identity())
+            .collect()
     }
 
-    /// Returns the cover relations in the Hasse diagram.
-    ///
-    /// A relation `x < y` is a cover when no `z` satisfies `x < z < y`.
-    pub fn cover_relations(&self) -> EdgeSet {
+    /// Returns the cover relations: the relations `x < y` with no `z`
+    /// satisfying `x < z < y`. These are the edges of the Hasse diagram.
+    pub fn covers(&self) -> EdgeSet {
         let mut result = EdgeSet::new();
         for (from, upper_set) in self.data.relation.iter().enumerate() {
             let mut covers = upper_set.clone();
@@ -736,13 +736,6 @@ impl Poset {
             result.extend(covers.iter_ones().map(|to| Edge::new(from, to)));
         }
         result
-    }
-
-    /// Returns the cover relations in the Hasse diagram, sorted.
-    pub fn sorted_cover_relations(&self) -> Vec<Edge> {
-        let mut covers = self.cover_relations().into_iter().collect::<Vec<_>>();
-        covers.sort_unstable();
-        covers
     }
 
     /// Returns all minimal elements.
@@ -867,7 +860,7 @@ impl Poset {
             write!(f, "{label}")?;
         }
         f.write_str("} with covers [")?;
-        for (index, edge) in self.sorted_cover_relations().into_iter().enumerate() {
+        for (index, edge) in self.covers().into_iter().enumerate() {
             if index > 0 {
                 f.write_str(", ")?;
             }
@@ -915,6 +908,24 @@ impl fmt::Debug for Poset {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
     }
+}
+
+/// Returns the covers of a partial order given by its non-identity
+/// relations: those `x < z` with no `y` satisfying `x < y < z`.
+pub(crate) fn covers_of(proper_relations: &EdgeSet) -> EdgeSet {
+    let mut above: HashMap<ElementId, Vec<ElementId>> = HashMap::new();
+    for edge in proper_relations {
+        above.entry(edge.from).or_default().push(edge.to);
+    }
+    proper_relations
+        .iter()
+        .copied()
+        .filter(|edge| {
+            !above[&edge.from].iter().any(|&middle| {
+                middle != edge.to && proper_relations.contains(&Edge::new(middle, edge.to))
+            })
+        })
+        .collect()
 }
 
 /// Computes the composites of arrows in `class2` followed by arrows in `class1`.

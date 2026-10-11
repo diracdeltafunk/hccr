@@ -452,7 +452,7 @@ impl Lattice {
             row.set(top, true);
         }
         for (factor, map) in factors.iter().zip(&maps) {
-            for edge in factor.all_relations_iter() {
+            for edge in factor.relations() {
                 relation[map[edge.from]].set(map[edge.to], true);
             }
         }

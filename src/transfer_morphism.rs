@@ -672,7 +672,7 @@ fn validate_composition_images(
     target: &TransferPoset,
     images: &[ElementId],
 ) -> Result<(), CompositionMapError> {
-    for source_cover in source.sorted_cover_relations() {
+    for source_cover in source.covers() {
         let lower_image = images[source_cover.from];
         let upper_image = images[source_cover.to];
         if target.leq(lower_image, upper_image) {

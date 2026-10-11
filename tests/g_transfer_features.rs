@@ -19,8 +19,8 @@ fn equivariant_saturation_cosaturation_and_bases_obey_their_universal_properties
         assert!(contained(system, &saturated));
         assert_eq!(saturated.saturated_closure(), saturated);
         assert_eq!(
-            saturated.relations(false),
-            underlying.saturated_closure().edges(false)
+            saturated.proper_relations(),
+            underlying.saturated_closure().proper_relations()
         );
         for candidate in systems
             .iter()
@@ -36,8 +36,8 @@ fn equivariant_saturation_cosaturation_and_bases_obey_their_universal_properties
         assert!(contained(&cosaturated, system));
         assert_eq!(cosaturated.cosaturated_coclosure(), cosaturated);
         assert_eq!(
-            cosaturated.relations(false),
-            underlying.cosaturated_coclosure().edges(false)
+            cosaturated.proper_relations(),
+            underlying.cosaturated_coclosure().proper_relations()
         );
         for candidate in systems
             .iter()
@@ -145,7 +145,9 @@ fn saturated_g_transfer_systems_form_the_claimed_containment_lattice_and_pairs_e
 }
 
 fn contained(lower: &GTransferSystem, upper: &GTransferSystem) -> bool {
-    let by_relations = lower.relations(false).is_subset(&upper.relations(false));
+    let by_relations = lower
+        .proper_relations()
+        .is_subset(&upper.proper_relations());
     assert_eq!(by_relations, lower <= upper);
     by_relations
 }

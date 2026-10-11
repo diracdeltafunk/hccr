@@ -63,7 +63,7 @@ fn saturated_systems_form_the_expected_containment_lattice() {
 #[test]
 fn generated_bases_are_irredundant_and_minimum() {
     let lattice = Lattice::boolean(2);
-    let proper_edges = lattice.proper_relations_iter().collect::<Vec<_>>();
+    let proper_edges = lattice.proper_relations().into_iter().collect::<Vec<_>>();
 
     for system in lattice.transfer_systems().systems() {
         let basis = system.minimal_generating_set();
@@ -102,7 +102,7 @@ fn lattice_complexity_and_width_have_their_defining_values() {
         .max()
         .unwrap();
     let complete = lattice
-        .transfer_system_generated_by(lattice.proper_relations_iter())
+        .transfer_system_generated_by(lattice.proper_relations())
         .unwrap();
 
     assert_eq!(complete, lattice.complete_transfer_system());

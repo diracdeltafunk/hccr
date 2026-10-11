@@ -214,7 +214,7 @@ impl LayeredCoverGraph {
                     (best_x, best_score) = (x, candidate_score);
                 }
             }
-        } else {
+        } else if (k * k).saturating_mul(work) <= EXHAUSTIVE_BUDGET {
             // Too many chains to try every assignment: swap pairs of
             // directions while that helps.
             let mut improved = true;
@@ -272,7 +272,8 @@ impl LayeredCoverGraph {
 }
 
 /// Above this many segment comparisons, chains are assigned directions by
-/// local search instead of by trying every permutation.
+/// local search instead of by trying every permutation, and above it per
+/// round of local search, in their initial order.
 const EXHAUSTIVE_BUDGET: usize = 50_000_000;
 
 /// How close, as a fraction of the spacing, an edge may pass to a node that is

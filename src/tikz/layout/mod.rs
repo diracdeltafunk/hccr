@@ -3,7 +3,7 @@ mod coordinates;
 mod geometry;
 mod layered;
 
-use crate::poset::{Edge, ElementId};
+use crate::poset::{Edge, ElementId, Poset};
 use std::collections::{BTreeSet, HashMap};
 
 use additive::IrreducibleChains;
@@ -188,6 +188,43 @@ pub enum LayoutCoordinates {
     /// The ordering stage only breaks ties between colliding elements. Use
     /// with [`LayoutLevels::JoinIrreducibles`] for a truly additive drawing.
     Additive,
+}
+
+/// A way of placing the elements of a poset in the plane.
+///
+/// Implemented by [`PosetLayout`] and by every closure
+/// `Fn(&Poset) -> Vec<(f64, f64)>`, so a custom layout is just a function:
+///
+/// ```
+/// use hccr::prelude::*;
+///
+/// // Every element on one diagonal line.
+/// let diagonal = |poset: &Poset| poset.ids().map(|id| (id as f64, id as f64)).collect();
+/// let drawing = chain(3).drawing_with(diagonal);
+/// assert_eq!(drawing.positions[2], (2.0, 2.0));
+/// ```
+pub trait LayoutAlgorithm {
+    /// The position of each element, indexed by [`ElementId`], in layout
+    /// units: elements of a level are one unit apart and each height step is
+    /// one unit.
+    fn positions(&self, poset: &Poset) -> Vec<(f64, f64)>;
+}
+
+impl LayoutAlgorithm for PosetLayout {
+    fn positions(&self, poset: &Poset) -> Vec<(f64, f64)> {
+        let covers: Vec<Edge> = poset.covers().into_iter().collect();
+        let positions = layout_with_covers(poset.size(), &covers, 1.0, 1.0, *self);
+        poset.ids().map(|id| positions[&id]).collect()
+    }
+}
+
+impl<F> LayoutAlgorithm for F
+where
+    F: Fn(&Poset) -> Vec<(f64, f64)>,
+{
+    fn positions(&self, poset: &Poset) -> Vec<(f64, f64)> {
+        self(poset)
+    }
 }
 
 pub(super) fn layout_with_covers(
@@ -380,9 +417,6 @@ mod tests {
     use crate::lattice::Lattice;
     use crate::poset::Poset;
 
-    const X_SPACING: f64 = 1.8;
-    const Y_SPACING: f64 = 1.4;
-
     fn all_layouts() -> Vec<PosetLayout> {
         let mut layouts = Vec::new();
         for levels in [
@@ -465,28 +499,27 @@ mod tests {
 
     /// Every layout is a valid Hasse diagram: each element gets a finite
     /// position, each cover relation points strictly upwards, and elements
-    /// at the same height are at least `x_spacing` apart.
+    /// at the same height are at least one unit apart.
     #[test]
     fn every_layout_draws_a_hasse_diagram() {
         for (name, poset, _) in examples() {
-            let covers = poset.sorted_cover_relations();
+            let covers = poset.covers();
             for layout in all_layouts() {
-                let coords =
-                    layout_with_covers(poset.size(), &covers, X_SPACING, Y_SPACING, layout);
+                let coords = layout.positions(&poset);
                 let context = format!("{name} with {layout:?}");
                 assert_eq!(coords.len(), poset.size(), "{context}");
                 for id in poset.ids() {
-                    let (x, y) = coords[&id];
+                    let (x, y) = coords[id];
                     assert!(x.is_finite() && y.is_finite(), "{context}");
                 }
                 for edge in &covers {
-                    assert!(coords[&edge.from].1 < coords[&edge.to].1, "{context}");
+                    assert!(coords[edge.from].1 < coords[edge.to].1, "{context}");
                 }
                 for a in poset.ids() {
                     for b in poset.ids().filter(|&b| b > a) {
-                        let ((xa, ya), (xb, yb)) = (coords[&a], coords[&b]);
+                        let ((xa, ya), (xb, yb)) = (coords[a], coords[b]);
                         if (ya - yb).abs() < 1e-9 {
-                            assert!((xa - xb).abs() >= X_SPACING - 1e-9, "{context}");
+                            assert!((xa - xb).abs() >= 1.0 - 1e-9, "{context}");
                         }
                     }
                 }
@@ -497,7 +530,7 @@ mod tests {
     /// On a distributive lattice, every layout draws each element at its rank
     /// (for a distributive lattice the rank of `x` is also the number of
     /// join-irreducibles below it), and so does every layout of an antichain.
-    /// So every cover relation rises by exactly `y_spacing`, and the minimal
+    /// So every cover relation rises by exactly one unit, and the minimal
     /// elements are at height zero.
     #[test]
     fn distributive_lattices_are_drawn_by_rank() {
@@ -505,20 +538,19 @@ mod tests {
             if !distributive {
                 continue;
             }
-            let covers = poset.sorted_cover_relations();
+            let covers = poset.covers();
             for layout in all_layouts() {
-                let coords =
-                    layout_with_covers(poset.size(), &covers, X_SPACING, Y_SPACING, layout);
+                let coords = layout.positions(&poset);
                 for edge in &covers {
-                    let rise = coords[&edge.to].1 - coords[&edge.from].1;
-                    assert!((rise - Y_SPACING).abs() < 1e-9, "{name} with {layout:?}");
+                    let rise = coords[edge.to].1 - coords[edge.from].1;
+                    assert!((rise - 1.0).abs() < 1e-9, "{name} with {layout:?}");
                 }
                 for id in poset.ids() {
                     if poset
                         .ids()
                         .all(|other| other == id || !poset.leq(other, id))
                     {
-                        assert!(coords[&id].1.abs() < 1e-9, "{name} with {layout:?}");
+                        assert!(coords[id].1.abs() < 1e-9, "{name} with {layout:?}");
                     }
                 }
             }

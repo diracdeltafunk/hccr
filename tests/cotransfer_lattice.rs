@@ -18,7 +18,7 @@ fn representative_lattices() -> Vec<Lattice> {
 
 fn assert_cotransfer_axioms(system: &CotransferSystem) {
     let lattice = system.lattice();
-    let arrows = system.edges(true);
+    let arrows = system.relations();
 
     for &first in &arrows {
         for &second in &arrows {
@@ -57,7 +57,7 @@ fn cotransfer_generation_enumeration_and_opposite_conversion_obey_their_laws()
 
             let opposite = system.opposite_transfer_system();
             assert_eq!(*opposite.lattice(), lattice.opposite());
-            for edge in system.edges(true) {
+            for edge in system.relations() {
                 assert!(opposite.contains_relation(edge.reversed()));
             }
             let round_trip = lattice.cotransfer_system_from_opposite(&opposite)?;
@@ -99,7 +99,7 @@ fn generated_cotransfer_system_is_the_least_pushout_closed_system() {
         .cotransfer_system_generated_by([Edge::new(0, 2)])
         .unwrap();
     assert_eq!(
-        generated.edges(false),
+        generated.proper_relations(),
         [Edge::new(0, 2), Edge::new(1, 2)].into_iter().collect()
     );
 }

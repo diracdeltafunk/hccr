@@ -13,7 +13,7 @@
 use crate::bitvec_utils::{is_subset, set_partial_cmp};
 use crate::label::Label;
 use crate::lattice::Lattice;
-use crate::poset::{Edge, EdgeSet, ElementId, Poset};
+use crate::poset::{Edge, EdgeSet, ElementId, Poset, covers_of};
 use crate::transfer_lattice::{TransferSystem, fmt_relations};
 use bitvec::prelude::*;
 use std::cmp::Ordering;
@@ -237,26 +237,28 @@ impl CotransferSystem {
             .is_some_and(|edge_id| self.arrows[edge_id])
     }
 
-    /// Returns all selected relations, optionally including identities.
-    pub fn edges(&self, include_identities: bool) -> EdgeSet {
-        let mut result = EdgeSet::new();
-        if include_identities {
-            result.extend(self.lattice.ids().map(|id| Edge::new(id, id)));
-        }
-        result.extend(self.sorted_proper_edges());
+    /// Returns every relation of this cotransfer system, identities included.
+    pub fn relations(&self) -> EdgeSet {
+        let mut result = self.proper_relations();
+        result.extend(self.lattice.ids().map(|id| Edge::new(id, id)));
         result
     }
 
-    /// Returns the non-identity relations, sorted by `(from, to)`.
-    pub fn sorted_proper_edges(&self) -> Vec<Edge> {
+    /// Returns the non-identity relations of this cotransfer system.
+    pub fn proper_relations(&self) -> EdgeSet {
         let universe = self.universe();
-        let mut edges = self
-            .arrows
+        self.arrows
             .iter_ones()
             .map(|edge_id| universe.proper_edges[edge_id])
-            .collect::<Vec<_>>();
-        edges.sort_unstable();
-        edges
+            .collect()
+    }
+
+    /// Returns the covers of this cotransfer system, regarded as a partial order on the
+    /// elements of the lattice: the relations `x -> z` in it with no `y`
+    /// such that `x -> y` and `y -> z` are both in it. These need not be
+    /// covers in the lattice.
+    pub fn covers(&self) -> EdgeSet {
+        covers_of(&self.proper_relations())
     }
 
     /// Returns the corresponding transfer system on `L^op`.
@@ -272,7 +274,7 @@ impl CotransferSystem {
     /// Together with [`TransferSystem::left_lifting_cotransfer`], this realizes
     /// the order-reversing duality `coTr(L) ~= Tr(L)^op`.
     pub fn right_lifting_transfer(&self) -> TransferSystem {
-        let arrows = self.lattice.rlc(&self.edges(true));
+        let arrows = self.lattice.rlc(&self.relations());
         self.lattice
             .transfer_system_generated_by(arrows)
             .expect("a right lifting class consists of lattice relations")
@@ -285,7 +287,7 @@ impl TransferSystem {
     ///
     /// Applying [`CotransferSystem::right_lifting_transfer`] recovers `self`.
     pub fn left_lifting_cotransfer(&self) -> CotransferSystem {
-        let arrows = self.lattice().llc(&self.edges(true));
+        let arrows = self.lattice().llc(&self.relations());
         self.lattice()
             .cotransfer_system_generated_by(arrows)
             .expect("a left lifting class consists of lattice relations")
@@ -312,7 +314,7 @@ impl PartialOrd for CotransferSystem {
 
 impl fmt::Display for CotransferSystem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt_relations(&self.lattice, self.sorted_proper_edges(), f)
+        fmt_relations(&self.lattice, self.proper_relations(), f)
     }
 }
 

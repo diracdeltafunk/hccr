@@ -274,7 +274,7 @@ fn check_quotient_inflation_and_fixed_points() -> TestResult {
         let inflated = pushforward(maps.preimage_map(), &quotient_system, maps.domain())?;
         assert_eq!(inflation(&maps, &quotient_system)?, inflated);
 
-        for edge in source_lattice.as_poset().all_relations_iter() {
+        for edge in source_lattice.as_poset().relations() {
             let quotient_edge = Edge::new(
                 maps.image_map().apply(edge.from),
                 maps.image_map().apply(edge.to),
@@ -300,7 +300,7 @@ fn check_quotient_inflation_and_fixed_points() -> TestResult {
     for source_system in domain.clone() {
         let fixed = pullback(maps.preimage_map(), &source_system, maps.codomain())?;
         assert_eq!(fixed_points(&maps, &source_system)?, fixed);
-        for edge in maps.codomain().lattice().as_poset().all_relations_iter() {
+        for edge in maps.codomain().lattice().as_poset().relations() {
             let lifted = Edge::new(
                 maps.preimage_map().apply(edge.from),
                 maps.preimage_map().apply(edge.to),

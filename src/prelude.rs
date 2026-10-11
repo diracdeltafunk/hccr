@@ -15,7 +15,7 @@ pub use crate::lattice::{Lattice, boolean, chain, horizontal_join, product};
 pub use crate::model_structure::ModelStructure;
 pub use crate::morphism::{LatticeMap, MonotoneMap, PosetMap};
 pub use crate::poset::{Edge, EdgeSet, ElementId, Poset};
-pub use crate::tikz::ToTikz;
+pub use crate::tikz::Draw;
 pub use crate::transfer_lattice::{TransferLattice, TransferPoset, TransferSystem};
 pub use crate::{Error, Result};
 

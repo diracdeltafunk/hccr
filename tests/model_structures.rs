@@ -11,7 +11,7 @@ fn bottom_and_top(lattice: &Lattice) -> (TransferSystem, TransferSystem) {
 }
 
 fn ambient_edges(lattice: &Lattice) -> EdgeSet {
-    lattice.all_relations_iter().collect()
+    lattice.relations().into_iter().collect()
 }
 
 fn check_model_category_laws(lattice: Lattice) {
@@ -31,10 +31,10 @@ fn check_model_category_laws(lattice: Lattice) {
             assert!(recovered_fibrations == *model.fibrations());
 
             let ambient = ambient_edges(&lattice);
-            let cofibrations = model.cofibrations().edges(true);
-            let acyclic_cofibrations = model.acyclic_cofibrations().edges(true);
-            let fibrations = model.fibrations().edges(true);
-            let acyclic_fibrations = model.acyclic_fibrations().edges(true);
+            let cofibrations = model.cofibrations().relations();
+            let acyclic_cofibrations = model.acyclic_cofibrations().relations();
+            let fibrations = model.fibrations().relations();
+            let acyclic_fibrations = model.acyclic_fibrations().relations();
 
             assert_eq!(cofibrations, lattice.llc(&acyclic_fibrations));
             assert_eq!(acyclic_cofibrations, lattice.llc(&fibrations));
@@ -102,7 +102,7 @@ fn constructor_recognizes_exactly_the_intervals_in_the_model_structure_order() {
     }
 
     let model_structures = lattice.model_structures();
-    assert_eq!(model_structures.len(), order.all_relations_iter().count());
+    assert_eq!(model_structures.len(), order.relations().len());
 }
 
 #[test]
@@ -172,8 +172,8 @@ fn invalid_intervals_return_mathematical_witnesses() {
         .expect("the three-element chain has a premodel structure failing 2-out-of-3");
 
     let proposed_weak_equivalences = compose(
-        &acyclic_fibrations.edges(true),
-        &lattice.llc(&fibrations.edges(true)),
+        &acyclic_fibrations.relations(),
+        &lattice.llc(&fibrations.relations()),
     );
     let membership = [failure.first, failure.second, failure.composite]
         .map(|edge| proposed_weak_equivalences.contains(&edge));

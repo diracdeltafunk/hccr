@@ -1,47 +1,46 @@
-//! TikZ rendering for finite posets, lattices, and transfer-system diagrams.
+//! TikZ drawings of finite posets, lattices, and posets of transfer systems.
 //!
-//! The module provides a small typed TikZ abstract syntax tree together with
-//! convenience renderers for Hasse diagrams. The default layout uses centered
-//! feasible heights and layered crossing reduction, retaining the best
-//! straight-line geometry found among the ranked and optimized candidates;
-//! [`PosetLayout`] describes the alternatives.
-//! Cover relations are drawn unless full relations are requested.
+//! Drawing goes through three stages, each of which can be stopped at and
+//! adjusted:
+//!
+//! 1. a [`LayoutAlgorithm`] places the elements: a [`PosetLayout`], or any
+//!    closure from a poset to positions;
+//! 2. the result is a [`PosetDrawing`], plain data listing the position and
+//!    node of each element and the edges to draw, which can be edited freely;
+//! 3. [`PosetDrawing::to_tikz`] renders it as a [`TikzPicture`].
+//!
+//! Everything drawable implements [`Draw`], which supplies a default drawing:
+//!
+//! ```
+//! use hccr::prelude::*;
+//! use hccr::tikz::PosetLayout;
+//!
+//! let tr = chain(2).transfer_systems();
+//! // The default drawing.
+//! let picture = tr.to_tikz();
+//! // A different layout, wider spacing, and glyphs drawn on the Hasse
+//! // diagram of the base lattice.
+//! let picture = tr
+//!     .drawing_with(PosetLayout::BALANCED)
+//!     .spacing(3.0, 3.0)
+//!     .glyph_edges(tr.base_lattice().covers())
+//!     .to_tikz();
+//! ```
+//!
+//! Plain posets and lattices put their labels at the nodes; posets of transfer
+//! systems put a [`Glyph`], a small drawing of the base lattice with the
+//! transfer system highlighted.
 
+mod drawing;
 mod edge_routing;
+mod glyph;
 mod layout;
-mod poset;
 mod syntax;
-mod transfer;
 
-pub use layout::{LayoutCoordinates, LayoutLevels, LayoutOrdering, PosetLayout};
-pub use poset::{PosetTikzOptions, poset_to_tikz_with};
+pub use drawing::{Draw, DrawnEdge, Node, NodeContent, PosetDrawing, Route};
+pub use glyph::Glyph;
+pub use layout::{LayoutAlgorithm, LayoutCoordinates, LayoutLevels, LayoutOrdering, PosetLayout};
 pub use syntax::{
     TikzCircle, TikzCoord, TikzDrawCommand, TikzItem, TikzLabel, TikzNode, TikzOptions, TikzPath,
     TikzPathOperation, TikzPicture, TikzScope, TikzStyle, escape_tikz,
 };
-pub use transfer::{
-    GlyphNodeDisplay, RelationDisplay, TransferSystemGlyphOptions, TransferSystemTikzOptions,
-    transfer_system_lattice_to_tikz, transfer_system_lattice_to_tikz_with,
-    transfer_system_order_to_tikz, transfer_system_order_to_tikz_with,
-    transfer_system_tikz_options,
-};
-#[cfg(feature = "groups")]
-pub use transfer::{g_transfer_system_lattice_to_tikz, g_transfer_system_lattice_to_tikz_with};
-
-/// A type that can be rendered as a TikZ picture.
-///
-/// Each renderable type chooses its own associated option type. Call
-/// [`ToTikz::to_tikz`] for the mathematical default, or
-/// [`ToTikz::to_tikz_with`] to control layout and styling explicitly.
-pub trait ToTikz {
-    /// The options accepted by [`ToTikz::to_tikz_with`].
-    type Options: Default;
-
-    /// Renders `self` as a TikZ picture with explicit options.
-    fn to_tikz_with(&self, options: &Self::Options) -> TikzPicture;
-
-    /// Renders `self` using [`Default::default`] for its associated options.
-    fn to_tikz(&self) -> TikzPicture {
-        self.to_tikz_with(&Self::Options::default())
-    }
-}
