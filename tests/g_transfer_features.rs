@@ -1,8 +1,9 @@
 #![cfg(feature = "groups")]
 
 use hccr::g_lattice::GLattice;
-use hccr::g_transfer_lattice::GTransferSystem;
+use hccr::g_transfer_lattice::{GTransferSystem, GTransferSystemError};
 use hccr::lattice::Lattice;
+use hccr::poset::Edge;
 use std::error::Error;
 
 #[test]
@@ -142,6 +143,62 @@ fn saturated_g_transfer_systems_form_the_claimed_containment_lattice_and_pairs_e
     assert!(pairs.iter().all(|(additive, multiplicative)| {
         additive.compatibility_failure(multiplicative).is_none()
     }));
+    Ok(())
+}
+
+#[test]
+fn minimal_generating_set_checks_reject_invalid_relations_even_with_identities()
+-> Result<(), Box<dyn Error>> {
+    let g_lattice = swapping_diamond()?;
+    let size = g_lattice.size();
+    let top = g_lattice.top();
+    let left = g_lattice.id("left")?;
+    let right = g_lattice.id("right")?;
+    let system = g_lattice.complete_transfer_system();
+    let cosystem = g_lattice.complete_cotransfer_system();
+
+    // An out-of-range identity edge is invalid input, not a redundant generator.
+    let out_of_range = Edge::new(size, size);
+    assert_eq!(
+        system.is_minimal_generating_set([out_of_range]),
+        Err(GTransferSystemError::EdgeOutOfBounds {
+            edge: out_of_range,
+            lattice_size: size,
+        })
+    );
+    assert_eq!(
+        system.is_minimal_generating_set([out_of_range]).is_err(),
+        system.is_generated_by([out_of_range]).is_err()
+    );
+    assert_eq!(
+        system.is_minimal_generating_set([out_of_range]).is_err(),
+        cosystem.is_minimal_generating_set([out_of_range]).is_err()
+    );
+
+    // An invalid generator is reported even when an identity is also supplied.
+    let identity = Edge::new(top, top);
+    let non_relation = Edge::new(left, right);
+    assert_eq!(
+        system.is_minimal_generating_set([identity, non_relation]),
+        Err(GTransferSystemError::NotLatticeRelation { edge: non_relation })
+    );
+    assert_eq!(
+        system.is_minimal_generating_set([identity, Edge::new(top, size)]),
+        Err(GTransferSystemError::EdgeOutOfBounds {
+            edge: Edge::new(top, size),
+            lattice_size: size,
+        })
+    );
+
+    // A valid identity still makes a generating collection redundant.
+    let mut generators = system
+        .minimal_generating_set()
+        .iter()
+        .map(|label| label.canonical_representative())
+        .collect::<Vec<_>>();
+    assert!(system.is_minimal_generating_set(generators.iter().copied())?);
+    generators.push(identity);
+    assert!(!system.is_minimal_generating_set(generators)?);
     Ok(())
 }
 

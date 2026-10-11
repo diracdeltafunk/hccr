@@ -33,8 +33,8 @@ use hccr::prelude::*;
 fn main() -> hccr::Result<()> {
     // The horizontal join [3] * [3] * [3] has 298 transfer systems.
     let c3 = chain(3);
-    let fusion = horizontal_join([&c3, &c3, &c3])?;
-    assert_eq!(fusion.transfer_systems().size(), 298);
+    let joined = horizontal_join([&c3, &c3, &c3])?;
+    assert_eq!(joined.transfer_systems().size(), 298);
 
     // Lattices can also be given by labels and cover relations.
     let pentagon = Lattice::from_covers(

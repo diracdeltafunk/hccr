@@ -21,10 +21,11 @@ use std::fmt;
 
 /// The subgroup-lattice maps induced by a concrete GAP group homomorphism.
 ///
-/// Construction calls GAP to compute all subgroup images and inverse images,
-/// then caches the resulting element-id vectors as [`PosetMap`]s. Cloning this
-/// value shares its endpoint lattices and GAP roots; it does not repeat those
-/// computations.
+/// For a group homomorphism `f: G -> H`, these are the monotone maps
+/// `K |-> f(K)` from `Sub(G)` to `Sub(H)` and `J |-> f^{-1}(J)` from `Sub(H)`
+/// to `Sub(G)`, together with the two [`SubgroupGLattice`]s they connect. GAP
+/// computes all images and inverse images once, at construction; cloning
+/// repeats none of this work.
 #[derive(Debug, Clone)]
 pub struct SubgroupMaps {
     homomorphism: GapValue,
@@ -174,7 +175,9 @@ impl SubgroupMaps {
     /// GAP's `Source(homomorphism)` and `Range(homomorphism)` must be the exact
     /// group objects underlying `domain` and `codomain`, respectively. This
     /// protects the element ids in the cached maps from being paired with a
-    /// different subgroup enumeration or conjugation action.
+    /// different subgroup enumeration or conjugation action. Otherwise this
+    /// returns [`SubgroupMapError::SourceMismatch`] or
+    /// [`SubgroupMapError::RangeMismatch`].
     pub fn new(
         homomorphism: &GapValue,
         domain: &SubgroupGLattice,
@@ -245,12 +248,14 @@ impl SubgroupMaps {
         self.is_surjective
     }
 
-    /// Tests whether `candidate` is the exact stored domain G-lattice.
+    /// Returns whether `candidate` is the same object as the stored domain,
+    /// not merely an equal or isomorphic subgroup lattice.
     pub fn has_domain(&self, candidate: &SubgroupGLattice) -> bool {
         self.domain == *candidate
     }
 
-    /// Tests whether `candidate` is the exact stored codomain G-lattice.
+    /// Returns whether `candidate` is the same object as the stored codomain,
+    /// not merely an equal or isomorphic subgroup lattice.
     pub fn has_codomain(&self, candidate: &SubgroupGLattice) -> bool {
         self.codomain == *candidate
     }

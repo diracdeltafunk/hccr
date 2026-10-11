@@ -2,14 +2,15 @@
 //!
 //! A `G`-lattice is a finite lattice `L` together with an action of a finite
 //! group `G`: every `g` in `G` permutes the elements of `L`, preserving meets,
-//! joins, bottom, and top. Such a permutation is a lattice automorphism. Acting
-//! on both endpoints sends a relation `x <= y` to `g.x <= g.y`, so `G` also
-//! acts on the set of lattice relations.
+//! joins, bottom, and top. Such a permutation is a lattice automorphism.
+//! Following GAP, `G` acts on the right: `g` sends `x` to `x^g`, and
+//! `x^(gh) = (x^g)^h`. Acting on both endpoints sends a relation `x <= y` to
+//! `x^g <= y^g`, so `G` also acts on the set of lattice relations.
 //!
 //! The **orbit** of a relation is the set of all its translates under `G`. Its
 //! **stabilizer** consists of the group elements that leave it fixed, and a
 //! **transporter** from `r` to `s` is a chosen group element satisfying
-//! `g.r = s`. This module precomputes those data. The action is stored both as
+//! `r^g = s`. This module precomputes those data. The action is stored both as
 //! GAP homomorphisms to permutation groups and as validated Rust permutations
 //! of lattice element ids.
 //! GAP values stored in these structures are [`gap_sys::GapValue`]s, so they
@@ -48,12 +49,16 @@ use std::rc::Rc;
 /// A finite lattice equipped with an action of a finite GAP group.
 ///
 /// The action of `G` on lattice elements is required to be by lattice
-/// automorphisms, so it preserves all order-theoretic structure. The induced
-/// action on all relations of the lattice is precomputed, together with
-/// relation orbits and GAP stabilizer/transporter data for those orbits.
+/// automorphisms, so it preserves all order-theoretic structure. Following
+/// GAP, `G` acts on the right: `g` sends `x` to `x^g`, and `gh` acts as
+/// first `g`, then `h`. The induced action on all relations of the lattice
+/// is precomputed, together with relation orbits and GAP
+/// stabilizer/transporter data for those orbits.
 ///
 /// This is a cheap-to-clone handle. It dereferences to the underlying
 /// [`Lattice`], so lattice methods such as `size` and `leq` apply directly.
+/// Equality and hashing are by identity: separately constructed G-lattices
+/// are never equal, even when they present the same action.
 #[derive(Clone)]
 pub struct GLattice {
     pub(crate) data: Rc<GLatticeData>,
@@ -82,10 +87,10 @@ pub(crate) struct GLatticeData {
 
 /// One orbit of the `G`-action on lattice relations.
 ///
-/// Relation orbits include identity relations. The canonical representative
-/// is simply the relation with smallest deterministic relation id in the
-/// orbit; this choice supplies stable output and is not an additional
-/// mathematical structure.
+/// [`GLattice::relation_orbits`] lists the orbits of all relations, including
+/// the orbits of identity relations `x <= x`. The canonical representative is
+/// the relation with the smallest relation id (see [`GLattice::relation`]) in
+/// the orbit; this choice only makes output stable.
 pub struct RelationOrbit {
     canonical_relation_id: usize,
     canonical_representative: Edge,
@@ -97,20 +102,27 @@ pub struct RelationOrbit {
 
 /// A chosen group element carrying an orbit representative to a relation.
 ///
-/// For each relation in a [`RelationOrbit`], one transporter is stored.  The
-/// stored GAP element sends the canonical representative of that orbit to the
-/// transporter's relation under the induced relation action.
+/// For each relation `s` in a [`RelationOrbit`], one transporter is stored: a
+/// group element `g` with `r^g = s`, where `r` is the canonical representative
+/// of the orbit and `G` acts on the right, as in GAP.
 pub struct RelationTransporter {
     relation_id: usize,
     relation: Edge,
     group_element: GapValue,
 }
 
-/// A compact label for a relation orbit in a G-transfer-system context.
+/// A label for a non-identity relation orbit of a [`GLattice`].
 ///
-/// Labels are ordered by orbit id and remember the canonical representative so
-/// generated diagrams and diagnostics can refer back to an actual relation
-/// `x <= y` in the underlying lattice.
+/// A label records the orbit id (see [`GLattice::relation_orbits`]), the
+/// orbit's canonical representative, and that representative's relation id,
+/// so diagrams and diagnostics can refer back to an actual relation `x <= y`.
+/// Labels name orbits in G-transfer and G-cotransfer systems and their
+/// generating sets. Labels are ordered by orbit id.
+///
+/// Labels of a G-transfer system obtained from
+/// [`GCotransferSystem::opposite_transfer_system`](crate::g_cotransfer_lattice::GCotransferSystem::opposite_transfer_system)
+/// refer to relations of the opposite lattice `L^op`, with relation ids
+/// numbered in `L^op`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RelationOrbitLabel {
     orbit_id: usize,
@@ -120,20 +132,15 @@ pub struct RelationOrbitLabel {
 
 /// The subgroup lattice of a finite GAP group with the conjugation action.
 ///
-/// Its elements are all actual subgroups, ordered by inclusion. An element
-/// `g` acts by sending a subgroup `H` to the conjugate `g H g^-1`; conjugation
-/// preserves inclusion, intersections, and generated joins, hence acts by
-/// lattice automorphisms. This wrapper keeps both the Rust [`GLattice`] and the
-/// GAP objects used to construct it alive.
-/// The subgroup lattice of a finite GAP group with the conjugation action.
-///
 /// Its elements are all actual subgroups, ordered by inclusion, and labelled
-/// by [`GapSubgroup`] values. An element `g` acts by sending a subgroup `H` to
-/// the conjugate `g H g^-1`; conjugation preserves inclusion, intersections,
-/// and generated joins, hence acts by lattice automorphisms.
+/// by [`GapSubgroup`] values. An element `g` acts by GAP's right conjugation
+/// action `H |-> H^g = g^-1 H g`, so `gh` acts as first `g`, then `h`.
+/// Conjugation preserves inclusion, intersections, and generated joins, hence
+/// acts by lattice automorphisms.
 ///
 /// This is a cheap-to-clone handle. It dereferences to its [`GLattice`], and
-/// through that to the underlying [`Lattice`].
+/// through that to the underlying [`Lattice`]. Equality and hashing are by
+/// identity: separately constructed subgroup G-lattices are never equal.
 #[derive(Clone)]
 pub struct SubgroupGLattice {
     data: Rc<SubgroupGLatticeData>,
@@ -459,6 +466,9 @@ impl From<GroupTheoryError> for GLatticeError {
 
 impl RelationOrbitLabel {
     /// Constructs a relation-orbit label.
+    ///
+    /// No validation is performed; labels are normally obtained from
+    /// [`GLattice::non_identity_relation_orbit_labels`].
     pub fn new(
         orbit_id: usize,
         canonical_relation_id: usize,
@@ -488,15 +498,16 @@ impl RelationOrbitLabel {
 }
 
 impl GLattice {
-    /// Constructs a G-lattice from a GAP homomorphism to a permutation group.
+    /// Constructs a G-lattice from a GAP homomorphism `φ` from `group` to a
+    /// permutation group on the points `[1..n]`, where `n = lattice.size()`.
     ///
-    /// The homomorphism is interpreted as an action of `group` on the element
-    /// ids `[1..n]` of the lattice, using GAP's one-based point convention.
-    /// Each generator image is extracted, converted to zero-based Rust element
-    /// ids, and validated as a lattice automorphism.  The induced action on
-    /// lattice relations is then built automatically. Finally, GAP computes
-    /// relation orbits, stabilizers, and transporters, which are cached in the
-    /// result.
+    /// GAP point `i + 1` stands for element id `i`. As in GAP, `g` acts on the
+    /// right, sending element `x` to `x^φ(g)`. The generators of `group` must
+    /// lie in the source of `homomorphism`.
+    ///
+    /// Returns an error if `group` is infinite, if `homomorphism` is not a
+    /// group homomorphism, or if some generator does not act by a lattice
+    /// automorphism.
     pub fn from_gap_homomorphism(
         lattice: &Lattice,
         group: &GapValue,
@@ -556,13 +567,16 @@ impl GLattice {
         )
     }
 
-    /// Constructs a G-lattice from Rust permutations for GAP generators.
+    /// Constructs a G-lattice in which the `k`-th generator of GAP's
+    /// `GeneratorsOfGroup(group)` sends element `x` to
+    /// `generator_images[k][x]`.
     ///
-    /// The `generator_images` vector must list one zero-based permutation of
-    /// lattice element ids for each generator returned by GAP's
-    /// `GeneratorsOfGroup(group)`.  The constructor validates that each
-    /// permutation is a lattice automorphism and that GAP accepts these images
-    /// as defining a homomorphism from `group`.
+    /// As in GAP, the action is on the right. Returns an error if `group` is
+    /// infinite, if the number of images differs from the number of
+    /// generators, if some image is not a permutation of the element ids or
+    /// not a lattice automorphism, or if GAP rejects the images as defining a
+    /// homomorphism from `group`
+    /// ([`GLatticeError::HomomorphismByImagesFailed`]).
     pub fn from_generator_images(
         lattice: &Lattice,
         group: &GapValue,
@@ -666,17 +680,21 @@ impl GLattice {
         &self.data.relation_image_group
     }
 
-    /// Returns the validated generator permutations on lattice elements.
+    /// Returns the generator permutations on lattice elements.
     ///
-    /// Each inner vector is a zero-based permutation of element ids.
+    /// Entry `k` belongs to the `k`-th generator of GAP's
+    /// `GeneratorsOfGroup(group)`, which sends element `x` to
+    /// `element_generator_permutations()[k][x]`.
     pub fn element_generator_permutations(&self) -> &[Vec<ElementId>] {
         &self.data.element_generator_permutations
     }
 
     /// Returns the induced generator permutations on relation ids.
     ///
-    /// Each inner vector is a zero-based permutation of the relation ids (see
-    /// [`GLattice::relation`]).
+    /// Entry `k` belongs to the `k`-th generator of GAP's
+    /// `GeneratorsOfGroup(group)`, which sends the relation with id `i` (see
+    /// [`GLattice::relation`]) to the one with id
+    /// `relation_generator_permutations()[k][i]`.
     pub fn relation_generator_permutations(&self) -> &[Vec<usize>] {
         &self.data.relation_generator_permutations
     }
@@ -702,7 +720,10 @@ impl GLattice {
             .flatten()
     }
 
-    /// Returns the precomputed orbits of the action on all relations.
+    /// Returns the orbits of the action on all relations, identities included.
+    ///
+    /// Orbits are listed in increasing order of canonical relation id; the
+    /// index of an orbit in this slice is its *orbit id*.
     pub fn relation_orbits(&self) -> &[RelationOrbit] {
         &self.data.relation_orbits
     }
@@ -721,10 +742,11 @@ impl GLattice {
             .map(|relation_id| self.relation_orbit_by_id(relation_id))
     }
 
-    /// Returns labels for the non-identity relation orbits.
+    /// Returns labels for the non-identity relation orbits, in increasing
+    /// orbit id.
     ///
-    /// These labels are the objects and attributes of the G-transfer-system
-    /// formal context.
+    /// These labels are the objects and attributes of
+    /// [`GLattice::transfer_context`].
     pub fn non_identity_relation_orbit_labels(&self) -> Vec<RelationOrbitLabel> {
         self.data
             .relation_orbits
@@ -814,6 +836,9 @@ impl SubgroupGLattice {
     /// Constructs the subgroup lattice of the finite group described by a GAP
     /// expression, with the conjugation action.
     ///
+    /// Returns [`GLatticeError::Gap`] if GAP cannot evaluate `expression`, and
+    /// otherwise behaves as [`SubgroupGLattice::new`].
+    ///
     /// ```no_run
     /// use hccr::g_lattice::SubgroupGLattice;
     ///
@@ -829,6 +854,12 @@ impl SubgroupGLattice {
     }
 
     /// Constructs the subgroup lattice of a finite GAP group with conjugation action.
+    ///
+    /// Element ids run through GAP's
+    /// `ConjugacyClassesSubgroups(LatticeSubgroups(group))` class by class, and
+    /// within a class in `ClassElementLattice` order. Each element is labelled
+    /// by its [`GapSubgroup`]. Returns [`GLatticeError::GroupIsNotFinite`] if
+    /// `group` is infinite.
     pub fn new(group: &GapValue) -> Result<Self, GLatticeError> {
         let mut gap = group_theory::global_gap()?;
         let data = group_theory::subgroup_lattice_data(&mut gap, group)?;
@@ -881,12 +912,13 @@ impl SubgroupGLattice {
         &self.data.conjugacy_classes
     }
 
-    /// Returns the rooted GAP list of subgroup objects in lattice element order.
+    /// Returns GAP's list of the subgroups, in element-id order: position
+    /// `i + 1` of the list holds element `i`.
     pub fn subgroup_list(&self) -> &GapValue {
         &self.data.subgroup_list
     }
 
-    /// Returns the rooted GAP subgroup objects in lattice element order.
+    /// Returns the GAP subgroups, in element-id order.
     pub fn subgroups(&self) -> &[GapValue] {
         &self.data.subgroups
     }
@@ -969,6 +1001,8 @@ impl std::hash::Hash for GLattice {
 }
 
 impl PartialEq for SubgroupGLattice {
+    /// Subgroup G-lattices are equal only when they are the same object, as
+    /// for [`GLattice`].
     fn eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.data, &other.data)
     }
@@ -997,37 +1031,42 @@ impl RelationOrbit {
         self.canonical_representative
     }
 
-    /// Returns the relation ids in this orbit.
+    /// Returns the relation ids in this orbit, in increasing order.
     pub fn relation_ids(&self) -> &[usize] {
         &self.relation_ids
     }
 
     /// Returns the relations in this orbit.
+    ///
+    /// Their order matches [`RelationOrbit::relation_ids`].
     pub fn relations(&self) -> EdgeSet {
         self.relations.iter().copied().collect()
     }
 
-    /// Returns the stabilizer in the original GAP group of the canonical representative.
+    /// Returns the stabilizer in `G` of the canonical representative
+    /// `x <= y`, as a GAP subgroup.
     ///
-    /// This subgroup is computed as the preimage of the stabilizer in the
-    /// relation image group.
+    /// This is the intersection of the stabilizers of `x` and `y`.
     pub fn stabilizer(&self) -> &GapValue {
         &self.stabilizer
     }
 
-    /// Returns chosen transporters from the canonical representative to each relation.
+    /// Returns chosen transporters from the canonical representative to each
+    /// relation of the orbit, in the order of [`RelationOrbit::relation_ids`].
     pub fn transporters(&self) -> &[RelationTransporter] {
         &self.transporters
     }
 
-    /// Returns the transporter targeting a relation id.
+    /// Returns the transporter targeting a relation id, or `None` if that
+    /// relation is not in this orbit.
     pub fn transporter_for_relation_id(&self, relation_id: usize) -> Option<&RelationTransporter> {
         self.transporters
             .iter()
             .find(|transporter| transporter.relation_id == relation_id)
     }
 
-    /// Returns the transporter targeting a relation.
+    /// Returns the transporter targeting a relation, or `None` if that
+    /// relation is not in this orbit.
     pub fn transporter_for_relation(&self, relation: Edge) -> Option<&RelationTransporter> {
         self.transporters
             .iter()
@@ -1046,19 +1085,19 @@ impl RelationTransporter {
         self.relation
     }
 
-    /// Returns the GAP group element carrying the orbit representative to the target relation.
+    /// Returns a GAP group element `g` with `r^g = s`, where `r` is the orbit's
+    /// canonical representative and `s` is the target relation.
     pub fn group_element(&self) -> &GapValue {
         &self.group_element
     }
 }
 
-/// Converts GAP's documented `StructureDescription` notation to TeX math mode.
+/// Converts a GAP `StructureDescription` string to TeX math mode, including
+/// the surrounding `$`.
 ///
-/// GAP uses an intentionally small grammar: named groups have an adjacent
-/// numeric parameter, `x` denotes a direct product, `:` a semidirect product,
-/// and `.` an extension. This function preserves the raw GAP description
-/// while typesetting its parameters as subscripts and its operations with
-/// standard mathematical symbols.
+/// Numeric parameters become subscripts (`C2` becomes `C_{2}`); `x`, `:`, and
+/// `.` (direct product, semidirect product, and extension) become `\times`,
+/// `\rtimes`, and `\cdot`; and TeX special characters are escaped.
 pub fn structure_description_to_tex(description: &str) -> String {
     let mut result = String::from("$");
     let mut characters = description.chars().peekable();

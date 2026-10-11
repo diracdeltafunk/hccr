@@ -19,7 +19,7 @@
 //! model structures on a lattice are reached through its methods, such as
 //! [`Lattice::transfer_systems`].
 
-use crate::bitvec_utils::is_subset;
+use crate::bitvec_utils::{intersection, is_subset, union_assign, union_within_equals};
 use crate::label::Label;
 use crate::morphism::LatticeMap;
 use crate::poset::{ElementId, Poset, PosetError, product_coordinates};
@@ -230,17 +230,44 @@ impl Lattice {
         self.bottom() == self.top()
     }
 
-    /// Returns whether the lattice is a horizontal join of chains (see
-    /// [`Lattice::horizontal_join`]): any two incomparable elements have meet
-    /// [`bottom()`](Lattice::bottom) and join [`top()`](Lattice::top).
+    /// Returns whether the lattice is a horizontal join of total orders (see
+    /// [`Lattice::horizontal_join`]). Equivalently:
+    ///
+    /// 1. comparability is an equivalence relation on the elements other than
+    ///    [`bottom()`](Lattice::bottom) and [`top()`](Lattice::top); or
+    /// 2. any two incomparable elements have meet `bottom()` and join `top()`.
+    ///
+    /// The one-element lattice and the two-element chain count as horizontal
+    /// joins of no total orders.
     #[must_use]
-    pub fn is_fusion_of_total_orders(&self) -> bool {
-        (0..self.size()).all(|i| {
-            (i + 1..self.size()).all(|j| {
-                self.comparable(i, j)
-                    || (self.meet(i, j) == self.bottom() && self.join(i, j) == self.top())
-            })
-        })
+    pub fn is_horizontal_join_of_total_orders(&self) -> bool {
+        // Check characterization 1 class by class. Each element other than
+        // bottom and top is checked once, against the class of the first
+        // element it is comparable to, so this takes `size()^2 / usize::BITS`
+        // word operations.
+        let up_sets = self.relation_matrix();
+        let down_sets = self.relation_matrix_transpose();
+        let mut interior = BitVec::repeat(true, self.size());
+        interior.set(self.bottom(), false);
+        interior.set(self.top(), false);
+
+        let mut seen = BitVec::repeat(false, self.size());
+        for x in interior.iter_ones() {
+            if seen[x] {
+                continue;
+            }
+            let mut class = up_sets[x].clone();
+            union_assign(&mut class, &down_sets[x]);
+            let class = intersection(&class, &interior);
+            if !class
+                .iter_ones()
+                .all(|y| union_within_equals(&up_sets[y], &down_sets[y], &interior, &class))
+            {
+                return false;
+            }
+            union_assign(&mut seen, &class);
+        }
+        true
     }
 
     /// Returns the join-irreducible elements, in increasing order of id:
@@ -507,7 +534,7 @@ impl Lattice {
         (product, projections)
     }
 
-    /// Constructs the horizontal join (fusion) of finitely many nontrivial
+    /// Constructs the horizontal join of finitely many nontrivial
     /// lattices.
     ///
     /// The factors are placed side by side, with all of their bottoms
@@ -599,14 +626,14 @@ impl Lattice {
                 relation[map[edge.from]].set(map[edge.to], true);
             }
         }
-        let fusion = Lattice::new(Poset::from_validated(labels, relation))
+        let joined = Lattice::new(Poset::from_validated(labels, relation))
             .expect("a horizontal join of nontrivial lattices is a lattice");
         let inclusions = factors
             .iter()
             .zip(maps)
-            .map(|(factor, map)| LatticeMap::from_validated(factor.clone(), fusion.clone(), map))
+            .map(|(factor, map)| LatticeMap::from_validated(factor.clone(), joined.clone(), map))
             .collect();
-        Ok((fusion, inclusions))
+        Ok((joined, inclusions))
     }
 }
 

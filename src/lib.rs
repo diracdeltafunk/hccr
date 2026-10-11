@@ -17,7 +17,7 @@
 //! fn main() -> hccr::Result<()> {
 //!     // Build lattices from standard constructions...
 //!     let c3 = chain(3);
-//!     let fusion = horizontal_join([&c3, &c3, &c3])?;
+//!     let joined = horizontal_join([&c3, &c3, &c3])?;
 //!     let square = product([chain(1), chain(1)]);
 //!
 //!     // ...or from labels and cover relations.
@@ -27,12 +27,12 @@
 //!     )?;
 //!
 //!     // Elements are named by labels, and found again by label.
-//!     let x = fusion.id((1, 2))?;
-//!     assert!(fusion.leq(x, fusion.top()));
+//!     let x = joined.id((1, 2))?;
+//!     assert!(joined.leq(x, joined.top()));
 //!     assert_eq!(square.label(square.top()).to_string(), "(1, 1)");
 //!
 //!     // Transfer systems.
-//!     assert_eq!(fusion.transfer_systems().size(), 298);
+//!     assert_eq!(joined.transfer_systems().size(), 298);
 //!     assert_eq!(pentagon.transfer_system_count(), 26);
 //!     let t = pentagon.transfer_system_generated_by([pentagon.edge("a", "1")?])?;
 //!     assert_eq!(t.to_string(), "{0 -> c, a -> b, a -> 1}");

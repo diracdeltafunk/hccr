@@ -311,17 +311,17 @@ fn constructions_have_the_expected_order_structure() {
     // The horizontal join glues the factors along their bottoms and tops and
     // makes elements of different factors incomparable otherwise.
     let c3 = chain(3);
-    let (fusion, inclusions) = Lattice::horizontal_join_with_inclusions([&c3, &c3]).unwrap();
-    assert_eq!(fusion.size(), 6);
-    assert!(fusion.is_fusion_of_total_orders());
+    let (joined, inclusions) = Lattice::horizontal_join_with_inclusions([&c3, &c3]).unwrap();
+    assert_eq!(joined.size(), 6);
+    assert!(joined.is_horizontal_join_of_total_orders());
     for inclusion in &inclusions {
-        assert_eq!(inclusion.apply(c3.bottom()), fusion.bottom());
-        assert_eq!(inclusion.apply(c3.top()), fusion.top());
+        assert_eq!(inclusion.apply(c3.bottom()), joined.bottom());
+        assert_eq!(inclusion.apply(c3.top()), joined.top());
     }
     for x in 1..3 {
         for y in 1..3 {
             let (a, b) = (inclusions[0].apply(x), inclusions[1].apply(y));
-            assert!(!fusion.leq(a, b) && !fusion.leq(b, a));
+            assert!(!joined.leq(a, b) && !joined.leq(b, a));
         }
     }
 
@@ -552,15 +552,15 @@ fn hashes_are_unchanged_by_lazily_computed_structure() {
     assert!(systems.contains(&system));
 }
 
-/// A nontrivial lattice is a horizontal join of chains exactly when, after
-/// removing bottom and top, comparability is an equivalence relation on the
-/// remaining elements: they split into chains with no relations between
-/// different chains. Equivalently, any two incomparable elements have meet
-/// bottom and join top. `is_fusion_of_total_orders` must agree with this
-/// definition on examples and non-examples.
+/// A lattice is a horizontal join of total orders exactly when comparability
+/// is an equivalence relation on its elements other than bottom and top, and
+/// exactly when any two incomparable elements have meet bottom and join top.
+/// `is_horizontal_join_of_total_orders` must agree with both
+/// characterizations, whatever the element ids, including on lattices with
+/// more than 64 elements.
 #[test]
-fn fusion_of_total_orders_matches_definition() {
-    fn interior_is_disjoint_union_of_chains(lattice: &Lattice) -> bool {
+fn horizontal_join_of_total_orders_matches_definition() {
+    fn comparability_is_an_equivalence_on_the_interior(lattice: &Lattice) -> bool {
         let interior = lattice
             .ids()
             .filter(|&x| x != lattice.bottom() && x != lattice.top())
@@ -575,25 +575,37 @@ fn fusion_of_total_orders_matches_definition() {
         })
     }
 
+    fn incomparables_meet_at_bottom_and_join_at_top(lattice: &Lattice) -> bool {
+        lattice.ids().all(|x| {
+            lattice.ids().all(|y| {
+                lattice.comparable(x, y)
+                    || (lattice.meet(x, y) == lattice.bottom()
+                        && lattice.join(x, y) == lattice.top())
+            })
+        })
+    }
+
+    /// The same lattice with its element ids permuted.
+    fn scrambled(lattice: &Lattice) -> Lattice {
+        let mut order = lattice.ids().collect::<Vec<_>>();
+        order.sort_by_key(|&x| (x % 3, std::cmp::Reverse(x)));
+        Lattice::from_covers(
+            order.iter().map(|&x| lattice.label(x).clone()),
+            lattice.covers().iter().map(|edge| {
+                (
+                    lattice.label(edge.from).clone(),
+                    lattice.label(edge.to).clone(),
+                )
+            }),
+        )
+        .unwrap()
+    }
+
     let pentagon = Lattice::from_covers(
         ["0", "a", "b", "c", "1"],
         [("0", "a"), ("a", "b"), ("b", "1"), ("0", "c"), ("c", "1")],
     )
     .unwrap();
-    let examples = [
-        Lattice::horizontal_join([Lattice::chain(3), Lattice::chain(1), Lattice::chain(2)])
-            .unwrap(),
-        Lattice::horizontal_join(std::iter::empty::<Lattice>()).unwrap(),
-        Lattice::chain(4),
-        Lattice::boolean(1),
-        Lattice::boolean(2),
-        pentagon,
-    ];
-    for lattice in &examples {
-        assert!(interior_is_disjoint_union_of_chains(lattice), "{lattice}");
-        assert!(lattice.is_fusion_of_total_orders(), "{lattice}");
-    }
-
     // Incomparable b and c have meet bottom but join d, not top.
     let joined_below_top = Lattice::from_covers(
         ["bot", "b", "c", "d", "top"],
@@ -606,26 +618,52 @@ fn fusion_of_total_orders_matches_definition() {
         ],
     )
     .unwrap();
-    // Incomparable b and c have join top but meet a, not bottom.
-    let met_above_bottom = Lattice::from_covers(
-        ["bot", "a", "b", "c", "top"],
-        [
-            ("bot", "a"),
-            ("a", "b"),
-            ("a", "c"),
-            ("b", "top"),
-            ("c", "top"),
-        ],
-    )
-    .unwrap();
+    let large =
+        Lattice::horizontal_join([Lattice::chain(40), Lattice::chain(30), Lattice::chain(5)])
+            .unwrap();
+    let large_with_cube =
+        Lattice::horizontal_join([Lattice::chain(40), Lattice::boolean(3), Lattice::chain(30)])
+            .unwrap();
+
+    let examples = [
+        Lattice::chain(0),
+        Lattice::chain(1),
+        Lattice::chain(4),
+        Lattice::boolean(2),
+        Lattice::horizontal_join([Lattice::chain(3), Lattice::chain(1), Lattice::chain(2)])
+            .unwrap(),
+        Lattice::horizontal_join(std::iter::empty::<Lattice>()).unwrap(),
+        pentagon,
+        Lattice::horizontal_join([Lattice::chain(2), Lattice::boolean(2)]).unwrap(),
+        large.clone(),
+    ];
     let non_examples = [
         joined_below_top,
-        met_above_bottom,
         Lattice::boolean(3),
         Lattice::product([Lattice::chain(2), Lattice::chain(1)]),
+        Lattice::horizontal_join([Lattice::chain(2), Lattice::boolean(3)]).unwrap(),
+        large_with_cube,
+        Lattice::product([large, Lattice::chain(1)]),
     ];
-    for lattice in &non_examples {
-        assert!(!interior_is_disjoint_union_of_chains(lattice), "{lattice}");
-        assert!(!lattice.is_fusion_of_total_orders(), "{lattice}");
+    for (lattices, expected) in [(&examples[..], true), (&non_examples[..], false)] {
+        for lattice in lattices {
+            for lattice in [lattice.clone(), lattice.opposite(), scrambled(lattice)] {
+                assert_eq!(
+                    comparability_is_an_equivalence_on_the_interior(&lattice),
+                    expected,
+                    "{lattice}"
+                );
+                assert_eq!(
+                    incomparables_meet_at_bottom_and_join_at_top(&lattice),
+                    expected,
+                    "{lattice}"
+                );
+                assert_eq!(
+                    lattice.is_horizontal_join_of_total_orders(),
+                    expected,
+                    "{lattice}"
+                );
+            }
+        }
     }
 }

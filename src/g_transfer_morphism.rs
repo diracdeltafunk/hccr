@@ -42,24 +42,39 @@ use std::rc::Rc;
 /// Errors produced while applying or materializing an equivariant transfer map.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GTransferMapError {
-    /// The input expected to lie over the monotone map's domain does not.
+    /// An input does not lie over the domain of the map.
+    ///
+    /// For [`SubgroupMaps`] methods, and for the containment-map functions
+    /// that take one, "domain" means the domain `f.domain()` of the group
+    /// homomorphism `f`, not of the induced monotone map.
     DomainMismatch,
-    /// The input expected to lie over the monotone map's codomain does not.
+    /// An input does not lie over the codomain of the map.
+    ///
+    /// For [`SubgroupMaps`] methods, and for the containment-map functions
+    /// that take one, "codomain" means the codomain `f.codomain()` of the
+    /// group homomorphism `f`, not of the induced monotone map.
     CodomainMismatch,
-    /// A proper source relation did not map to an indexed codomain relation.
+    /// The image of a proper source relation is not a relation of the
+    /// codomain lattice.
     InvalidImageRelation {
         /// The source relation.
         source: Edge,
         /// Its purported image.
         image: Edge,
     },
-    /// A computed pushforward was absent from an enumerated codomain order.
+    /// The pushforward of some system is not an element of the supplied
+    /// codomain [`GTransferLattice`], which can happen when that is a
+    /// sublattice such as
+    /// [`GLattice::saturated_transfer_systems`].
     PushforwardImageMissing,
-    /// A computed pullback was absent from an enumerated domain order.
+    /// The pullback of some system is not an element of the supplied domain
+    /// [`GTransferLattice`], which can happen when that is a sublattice such
+    /// as [`GLattice::saturated_transfer_systems`].
     PullbackImageMissing,
-    /// An operation called induction requires an injective group homomorphism.
+    /// Induction was requested along a non-injective group homomorphism.
     NotInjective,
-    /// Inflation and fixed points require a surjective group homomorphism.
+    /// Inflation or fixed points was requested along a non-surjective group
+    /// homomorphism.
     NotSurjective,
 }
 
@@ -228,10 +243,14 @@ impl GTransferSystem {
     /// Computes the invariant pushforward of this G-transfer system along a
     /// monotone map out of its lattice.
     ///
-    /// The result is the least transfer system on `codomain` fixed by its
-    /// action that contains the image of every relation in this system. The
-    /// map's codomain must be the underlying lattice of `codomain`.
-    /// For arbitrary monotone maps it need not commute with composition.
+    /// Writing `u` for `map`, the result is the least G-transfer system on
+    /// `codomain` containing `u(x) -> u(y)` for every relation `x -> y` of
+    /// this system. The map need not be equivariant. For arbitrary monotone
+    /// maps this operation need not commute with composition.
+    ///
+    /// Returns [`GTransferMapError::DomainMismatch`] if the map's domain is
+    /// not this system's lattice, and [`GTransferMapError::CodomainMismatch`]
+    /// if its codomain is not the underlying lattice of `codomain`.
     pub fn pushforward<M>(
         &self,
         map: &M,
@@ -246,12 +265,16 @@ impl GTransferSystem {
     /// Computes the right-adjoint pullback of this G-transfer system along a
     /// monotone map into its lattice.
     ///
-    /// A source relation orbit belongs to the result precisely when all of its
-    /// conjugates and all of their restrictions map to relations in this
-    /// system. Equivalently, this is the greatest invariant transfer system on
-    /// `domain` whose pushforward is contained in this one. The map's domain
-    /// must be the underlying lattice of `domain`.
-    /// For arbitrary monotone maps it need not commute with composition.
+    /// A relation orbit of `domain` belongs to the result exactly when every
+    /// relation in it, and every restriction of such a relation, maps to a
+    /// relation of this system. Equivalently, this is the greatest G-transfer
+    /// system on `domain` whose pushforward is contained in this one. For
+    /// arbitrary monotone maps this operation need not commute with
+    /// composition.
+    ///
+    /// Returns [`GTransferMapError::CodomainMismatch`] if the map's codomain
+    /// is not this system's lattice, and [`GTransferMapError::DomainMismatch`]
+    /// if its domain is not the underlying lattice of `domain`.
     pub fn pullback<M>(
         &self,
         map: &M,
@@ -265,10 +288,14 @@ impl GTransferSystem {
 }
 
 impl SubgroupMaps {
-    /// Computes Rubin's `f_L` using the subgroup-image map of `f`.
+    /// Pushes a G-transfer system on `self.domain()` forward along
+    /// `K |-> f(K)`, giving an H-transfer system on `self.codomain()`
+    /// (Rubin's `f_L`).
     ///
     /// This construction is defined for every group homomorphism. For an
-    /// injective homomorphism, [`SubgroupMaps::induction`] is its conventional name.
+    /// injective homomorphism, [`SubgroupMaps::induction`] is its conventional
+    /// name. Returns [`GTransferMapError::DomainMismatch`] if `system` is not
+    /// on `self.domain()`.
     pub fn image_pushforward(
         &self,
         system: &GTransferSystem,
@@ -276,7 +303,13 @@ impl SubgroupMaps {
         image_pushforward(self, system)
     }
 
-    /// Computes Rubin's `f_R^{-1}`, right adjoint to [`SubgroupMaps::image_pushforward`].
+    /// Pulls an H-transfer system on `self.codomain()` back along
+    /// `K |-> f(K)`, giving a G-transfer system on `self.domain()` (Rubin's
+    /// `f_R^{-1}`).
+    ///
+    /// This is right adjoint to [`SubgroupMaps::image_pushforward`]. Returns
+    /// [`GTransferMapError::CodomainMismatch`] if `system` is not on
+    /// `self.codomain()`.
     pub fn image_pullback(
         &self,
         system: &GTransferSystem,
@@ -284,10 +317,14 @@ impl SubgroupMaps {
         image_pullback(self, system)
     }
 
-    /// Computes Rubin's `f_L^{-1}` using the subgroup-preimage map of `f`.
+    /// Pushes an H-transfer system on `self.codomain()` forward along
+    /// `J |-> f^{-1}(J)`, giving a G-transfer system on `self.domain()`
+    /// (Rubin's `f_L^{-1}`).
     ///
-    /// This is restriction along an arbitrary group homomorphism. For a quotient
-    /// homomorphism it is inflation.
+    /// This is restriction along an arbitrary group homomorphism. For a
+    /// quotient homomorphism it is inflation. Returns
+    /// [`GTransferMapError::CodomainMismatch`] if `system` is not on
+    /// `self.codomain()`.
     pub fn preimage_pushforward(
         &self,
         system: &GTransferSystem,
@@ -295,10 +332,15 @@ impl SubgroupMaps {
         preimage_pushforward(self, system)
     }
 
-    /// Computes Rubin's `f_R`, right adjoint to [`SubgroupMaps::preimage_pushforward`].
+    /// Pulls a G-transfer system on `self.domain()` back along
+    /// `J |-> f^{-1}(J)`, giving an H-transfer system on `self.codomain()`
+    /// (Rubin's `f_R`).
     ///
-    /// This is coinduction along an arbitrary group homomorphism. For a quotient
-    /// homomorphism it is fixed points.
+    /// This is right adjoint to [`SubgroupMaps::preimage_pushforward`], and is
+    /// coinduction along an arbitrary group homomorphism. For a quotient
+    /// homomorphism it is fixed points. Returns
+    /// [`GTransferMapError::DomainMismatch`] if `system` is not on
+    /// `self.domain()`.
     pub fn preimage_pullback(
         &self,
         system: &GTransferSystem,
@@ -308,7 +350,9 @@ impl SubgroupMaps {
 
     /// Induces a transfer system along an injective group homomorphism.
     ///
-    /// This is the conventional injective case of [`SubgroupMaps::image_pushforward`].
+    /// This is the conventional injective case of
+    /// [`SubgroupMaps::image_pushforward`]. Returns
+    /// [`GTransferMapError::NotInjective`] if `f` is not injective.
     pub fn induction(
         &self,
         system: &GTransferSystem,
@@ -338,7 +382,9 @@ impl SubgroupMaps {
 
     /// Inflates a transfer system along a surjective group homomorphism.
     ///
-    /// Inflation is exactly transfer pushforward along subgroup preimage.
+    /// This is [`SubgroupMaps::preimage_pushforward`], restricted to
+    /// surjective `f`. Returns [`GTransferMapError::NotSurjective`] if `f` is
+    /// not surjective.
     pub fn inflation(
         &self,
         system: &GTransferSystem,
@@ -348,8 +394,9 @@ impl SubgroupMaps {
 
     /// Takes fixed points along a surjective group homomorphism.
     ///
-    /// This is the right adjoint to [`SubgroupMaps::inflation`], realized by pullback along the
-    /// subgroup-preimage map.
+    /// This is the right adjoint to [`SubgroupMaps::inflation`]: it is
+    /// [`SubgroupMaps::preimage_pullback`], restricted to surjective `f`.
+    /// Returns [`GTransferMapError::NotSurjective`] if `f` is not surjective.
     pub fn fixed_points(
         &self,
         system: &GTransferSystem,
@@ -359,6 +406,10 @@ impl SubgroupMaps {
 }
 
 /// Materializes Rubin's `f_L` between containment lattices.
+///
+/// `domain` must be a lattice of G-transfer systems on `f.domain()` and
+/// `codomain` one on `f.codomain()`. The returned [`PosetMap`] goes from
+/// `domain` to `codomain`.
 pub fn image_pushforward_containment_map(
     f: &SubgroupMaps,
     domain: &GTransferLattice,
@@ -370,6 +421,10 @@ pub fn image_pushforward_containment_map(
 }
 
 /// Materializes Rubin's `f_R^{-1}` between containment lattices.
+///
+/// `codomain` must be a lattice of H-transfer systems on `f.codomain()` and
+/// `domain` one on `f.domain()`. The returned [`PosetMap`] goes from the first
+/// lattice argument, `codomain`, to the second, `domain`.
 pub fn image_pullback_containment_map(
     f: &SubgroupMaps,
     codomain: &GTransferLattice,
@@ -381,6 +436,10 @@ pub fn image_pullback_containment_map(
 }
 
 /// Materializes Rubin's `f_L^{-1}` between containment lattices.
+///
+/// `codomain` must be a lattice of H-transfer systems on `f.codomain()` and
+/// `domain` one on `f.domain()`. The returned [`PosetMap`] goes from the first
+/// lattice argument, `codomain`, to the second, `domain`.
 pub fn preimage_pushforward_containment_map(
     f: &SubgroupMaps,
     codomain: &GTransferLattice,
@@ -392,6 +451,10 @@ pub fn preimage_pushforward_containment_map(
 }
 
 /// Materializes Rubin's `f_R` between containment lattices.
+///
+/// `domain` must be a lattice of G-transfer systems on `f.domain()` and
+/// `codomain` one on `f.codomain()`. The returned [`PosetMap`] goes from
+/// `domain` to `codomain`.
 pub fn preimage_pullback_containment_map(
     f: &SubgroupMaps,
     domain: &GTransferLattice,
@@ -402,10 +465,12 @@ pub fn preimage_pullback_containment_map(
     pullback_containment_map(f.preimage_map(), domain, codomain)
 }
 
-/// Constructs the pushforward map between containment lattices.
+/// Returns the map `system |-> system.pushforward(map, ..)` as a [`PosetMap`]
+/// from `domain` to `codomain`.
 ///
-/// Together with [`pullback_containment_map`], the returned map is the left
-/// adjoint. Its endpoints are the lattices of G-transfer systems themselves.
+/// `domain` and `codomain` are lattices of G-transfer systems over the
+/// domain and codomain of `map`. On full lattices of G-transfer systems this
+/// map is left adjoint to [`pullback_containment_map`].
 pub fn pushforward_containment_map<M>(
     map: &M,
     domain: &GTransferLattice,
@@ -447,10 +512,12 @@ where
     ))
 }
 
-/// Constructs the right-adjoint pullback map between containment lattices.
+/// Returns the map `system |-> system.pullback(map, ..)` as a [`PosetMap`]
+/// from `codomain` to `domain`.
 ///
-/// The first lattice lies over the monotone map's codomain and is therefore
-/// the domain of the returned map.
+/// The first lattice argument, `codomain`, lies over the codomain of `map`
+/// and is the domain of the returned map. On full lattices of G-transfer
+/// systems this map is right adjoint to [`pushforward_containment_map`].
 pub fn pullback_containment_map<M>(
     map: &M,
     codomain: &GTransferLattice,
