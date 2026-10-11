@@ -55,8 +55,15 @@ pub enum LatticeError {
     /// A finite lattice must have at least one element.
     Empty,
     /// The poset has no element below every other element.
+    ///
+    /// Not produced in practice: a nonempty finite poset in which every pair
+    /// has a meet and a join always has a bottom, so
+    /// [`LatticeError::NotALattice`] is reported instead.
     MissingBottom,
     /// The poset has no element above every other element.
+    ///
+    /// Not produced in practice, for the same reason as
+    /// [`LatticeError::MissingBottom`].
     MissingTop,
     /// A pair of elements lacks a meet or a join.
     NotALattice {
@@ -93,9 +100,10 @@ impl From<PosetError> for LatticeError {
 /// Errors that can occur while forming a horizontal join of lattices.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HorizontalJoinError {
-    /// A factor has bottom equal to top.
+    /// A factor is the one-element lattice, which cannot be horizontally
+    /// joined.
     TrivialFactor {
-        /// The position of the offending factor.
+        /// The zero-based position of the offending factor.
         factor: usize,
     },
 }
@@ -116,9 +124,13 @@ impl std::error::Error for HorizontalJoinError {}
 impl Lattice {
     /// Constructs a lattice from a finite poset.
     ///
-    /// This checks every pair of elements for a meet and a join, stores the
-    /// results in lookup tables, and locates bottom and top. The result shares
-    /// the poset's data, so its element ids and labels are those of the poset.
+    /// The result shares the poset's data, so element ids and labels are
+    /// unchanged.
+    ///
+    /// # Errors
+    ///
+    /// [`LatticeError::Empty`] for the empty poset; [`LatticeError::NotALattice`]
+    /// naming the first pair found without a meet or a join.
     pub fn new(poset: Poset) -> Result<Self, LatticeError> {
         poset
             .data()
@@ -131,6 +143,11 @@ impl Lattice {
 
     /// Constructs a lattice from labels and generating relations named by
     /// label. See [`Poset::from_covers`].
+    ///
+    /// # Errors
+    ///
+    /// Fails as [`Poset::from_covers`] does, or as [`Lattice::new`] does if
+    /// the resulting poset is not a lattice.
     pub fn from_covers<I, C, L, M>(labels: I, covers: C) -> Result<Self, LatticeError>
     where
         I: IntoIterator,
@@ -144,6 +161,11 @@ impl Lattice {
 
     /// Constructs a lattice from your own values and an order predicate on
     /// them. See [`Poset::from_elements_by`].
+    ///
+    /// # Errors
+    ///
+    /// Fails as [`Poset::from_elements_by`] does, or as [`Lattice::new`] does
+    /// if the resulting poset is not a lattice.
     pub fn from_elements_by<I, F>(elements: I, leq: F) -> Result<Self, LatticeError>
     where
         I: IntoIterator,
@@ -178,14 +200,14 @@ impl Lattice {
         self.poset
     }
 
-    /// Returns the meet `left /\ right`.
+    /// Returns the meet (greatest lower bound) `left /\ right`.
     ///
     /// Panics if either id is out of bounds.
     pub fn meet(&self, left: ElementId, right: ElementId) -> ElementId {
         self.tables().meet[left][right]
     }
 
-    /// Returns the join `left \/ right`.
+    /// Returns the join (least upper bound) `left \/ right`.
     ///
     /// Panics if either id is out of bounds.
     pub fn join(&self, left: ElementId, right: ElementId) -> ElementId {
@@ -208,30 +230,29 @@ impl Lattice {
         self.bottom() == self.top()
     }
 
-    /// Returns whether the lattice is a horizontal join of chains.
-    ///
-    /// Equivalently, any two incomparable non-bottom elements have meet equal
-    /// to bottom.
+    /// Returns whether the lattice is a horizontal join of chains (see
+    /// [`Lattice::horizontal_join`]): any two incomparable elements have meet
+    /// [`bottom()`](Lattice::bottom) and join [`top()`](Lattice::top).
     #[must_use]
     pub fn is_fusion_of_total_orders(&self) -> bool {
         (0..self.size()).all(|i| {
             (i + 1..self.size()).all(|j| {
-                let meet = self.meet(i, j);
-                meet == i || meet == j || meet == self.bottom()
+                self.comparable(i, j)
+                    || (self.meet(i, j) == self.bottom() && self.join(i, j) == self.top())
             })
         })
     }
 
-    /// Returns the join-irreducible elements: those with exactly one lower
-    /// cover. In increasing order of id.
+    /// Returns the join-irreducible elements, in increasing order of id:
+    /// those with exactly one lower cover.
     pub fn join_irreducibles(&self) -> Vec<ElementId> {
         self.ids()
             .filter(|&x| self.lower_covers(x).len() == 1)
             .collect()
     }
 
-    /// Returns the meet-irreducible elements: those with exactly one upper
-    /// cover. In increasing order of id.
+    /// Returns the meet-irreducible elements, in increasing order of id:
+    /// those with exactly one upper cover.
     pub fn meet_irreducibles(&self) -> Vec<ElementId> {
         self.ids()
             .filter(|&x| self.upper_covers(x).len() == 1)
@@ -263,8 +284,10 @@ impl Lattice {
     /// concepts, ordered by inclusion of extents.
     ///
     /// Each concept is labelled by the pair `(extent, intent)`, as sets of
-    /// object and attribute labels. Every finite lattice is the concept lattice
-    /// of its [standard context](Lattice::standard_context).
+    /// object and attribute labels. Concepts are ordered by extent size, so
+    /// the bottom concept has id 0 and the top the largest id. Every finite
+    /// lattice is the concept lattice of its
+    /// [standard context](Lattice::standard_context).
     ///
     /// ```
     /// use hccr::prelude::*;
@@ -407,7 +430,8 @@ impl Lattice {
     /// Constructs the direct product of finitely many lattices.
     ///
     /// Elements are tuples `(x_0, ..., x_{k-1})`; the order, meet, and join
-    /// are computed componentwise.
+    /// are computed componentwise. Labels and ids are as in
+    /// [`Poset::product`].
     pub fn product<I>(factors: I) -> Self
     where
         I: IntoIterator,
@@ -502,8 +526,14 @@ impl Lattice {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     ///
-    /// Joining no lattices gives the two-element chain `bot < top`, the
-    /// unit for this operation.
+    /// The element `bot` has id 0 and `top` the largest id. A two-element
+    /// factor contributes no elements, and joining no lattices gives the
+    /// two-element chain `bot < top`, the unit for this operation.
+    ///
+    /// # Errors
+    ///
+    /// [`HorizontalJoinError::TrivialFactor`] if some factor has only one
+    /// element.
     pub fn horizontal_join<I>(factors: I) -> Result<Self, HorizontalJoinError>
     where
         I: IntoIterator,
@@ -514,6 +544,10 @@ impl Lattice {
 
     /// Constructs the horizontal join of finitely many nontrivial lattices
     /// together with its inclusions, one for each factor.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Lattice::horizontal_join`].
     pub fn horizontal_join_with_inclusions<I>(
         factors: I,
     ) -> Result<(Self, Vec<LatticeMap>), HorizontalJoinError>
@@ -657,18 +691,22 @@ impl fmt::Debug for Lattice {
     }
 }
 
-/// The chain `[top] = {0 < 1 < ... < top}`; see [`Lattice::chain`].
+/// Constructs the chain `[top] = {0 < 1 < ... < top}`; shorthand for
+/// [`Lattice::chain`].
 pub fn chain(top: usize) -> Lattice {
     Lattice::chain(top)
 }
 
-/// The Boolean lattice of subsets of `{0, ..., rank - 1}`; see
-/// [`Lattice::boolean`].
+/// Constructs the Boolean lattice of subsets of `{0, ..., rank - 1}`;
+/// shorthand for [`Lattice::boolean`].
+///
+/// Panics as [`Lattice::boolean`] does.
 pub fn boolean(rank: usize) -> Lattice {
     Lattice::boolean(rank)
 }
 
-/// The direct product of finitely many lattices; see [`Lattice::product`].
+/// Constructs the direct product of finitely many lattices; shorthand for
+/// [`Lattice::product`].
 pub fn product<I>(factors: I) -> Lattice
 where
     I: IntoIterator,
@@ -677,8 +715,12 @@ where
     Lattice::product(factors)
 }
 
-/// The horizontal join of finitely many nontrivial lattices; see
-/// [`Lattice::horizontal_join`].
+/// Constructs the horizontal join of finitely many nontrivial lattices;
+/// shorthand for [`Lattice::horizontal_join`].
+///
+/// # Errors
+///
+/// As for [`Lattice::horizontal_join`].
 pub fn horizontal_join<I>(factors: I) -> Result<Lattice, HorizontalJoinError>
 where
     I: IntoIterator,

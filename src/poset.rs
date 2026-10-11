@@ -37,7 +37,10 @@ use std::sync::{Arc, OnceLock};
 /// poset, not an isomorphism-invariant mathematical name.
 pub type ElementId = usize;
 
-/// An ordered relation `from <= to` between elements of a poset.
+/// An ordered pair of element ids, read as the relation `from <= to`.
+///
+/// An `Edge` does not by itself certify that `from <= to` holds in any
+/// poset; use [`Poset::leq`] to check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Edge {
     /// The lower element of the relation.
@@ -47,17 +50,17 @@ pub struct Edge {
 }
 
 impl Edge {
-    /// Constructs the relation `from <= to`.
+    /// Constructs the edge `from <= to`.
     pub fn new(from: ElementId, to: ElementId) -> Self {
         Self { from, to }
     }
 
-    /// Returns whether this relation is an identity relation `x <= x`.
+    /// Returns whether this is an identity edge `x <= x`.
     pub fn is_identity(self) -> bool {
         self.from == self.to
     }
 
-    /// Returns the reversed relation `to <= from`.
+    /// Returns the edge `to <= from`, with the endpoints swapped.
     pub fn reversed(self) -> Self {
         Self::new(self.to, self.from)
     }
@@ -81,13 +84,16 @@ impl fmt::Display for Edge {
     }
 }
 
-/// A set of ordered relations in a finite poset, iterated in sorted order.
+/// A set of edges, iterated in lexicographic order of `(from, to)`.
 pub type EdgeSet = BTreeSet<Edge>;
 
-/// Errors that can occur while validating or constructing a finite poset.
+/// Errors that can occur while constructing a finite poset or looking up its
+/// elements.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PosetError {
     /// The relation matrix has the wrong number of rows.
+    ///
+    /// Not produced by the public constructors, which never take a matrix.
     RelationHeight {
         /// The number of rows required by the element list.
         expected: usize,
@@ -95,6 +101,8 @@ pub enum PosetError {
         actual: usize,
     },
     /// A row of the relation matrix has the wrong number of columns.
+    ///
+    /// Not produced by the public constructors, which never take a matrix.
     RelationWidth {
         /// The row whose width is invalid.
         row: usize,
@@ -124,7 +132,9 @@ pub enum PosetError {
         /// The upper element that should be above `lower`.
         upper: ElementId,
     },
-    /// An edge references an element outside the poset.
+    /// An edge, or an element id, refers to an element outside the poset.
+    ///
+    /// For a single element id `i`, the edge is `i <= i`.
     EdgeOutOfBounds {
         /// The invalid edge.
         edge: Edge,
@@ -246,8 +256,11 @@ impl Poset {
     /// # Ok::<(), hccr::poset::PosetError>(())
     /// ```
     ///
-    /// An arbitrary predicate is allowed, but one that is not a partial order
-    /// produces a [`PosetError`].
+    /// # Errors
+    ///
+    /// Fails if `leq` is not a partial order on the given elements, or with
+    /// [`PosetError::DuplicateLabel`] if two elements convert to the same
+    /// label.
     pub fn from_elements_by<I, F>(elements: I, leq: F) -> Result<Self, PosetError>
     where
         I: IntoIterator,
@@ -263,6 +276,12 @@ impl Poset {
     }
 
     /// Constructs the poset defined by Rust's `PartialOrd` relation.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `<=` is not a partial order on the given values (for example,
+    /// floats including NaN), or with [`PosetError::DuplicateLabel`] if two
+    /// values have the same label.
     pub fn from_partial_ord<I>(elements: I) -> Result<Self, PosetError>
     where
         I: IntoIterator,
@@ -271,13 +290,18 @@ impl Poset {
         Self::from_elements_by(elements, |a, b| a <= b)
     }
 
-    /// Produces the smallest partial order containing the given relations,
+    /// Constructs the smallest partial order containing the given edges,
     /// which are named by element id.
     ///
-    /// The supplied edges may be a Hasse diagram, a redundant collection of
-    /// comparable pairs, or any other generating relation. Identity edges are
-    /// added and transitive consequences are computed. Generators that create
-    /// a directed cycle return [`PosetError::NotAntisymmetric`].
+    /// The edges may be a Hasse diagram, a redundant collection of comparable
+    /// pairs, or any other generating relation; identities and transitive
+    /// consequences are added.
+    ///
+    /// # Errors
+    ///
+    /// [`PosetError::EdgeOutOfBounds`] if an edge names an id `>=
+    /// labels.len()`; [`PosetError::NotAntisymmetric`] if the edges contain a
+    /// directed cycle; [`PosetError::DuplicateLabel`] if two labels coincide.
     pub fn from_edges<I, E>(labels: I, edges: E) -> Result<Self, PosetError>
     where
         I: IntoIterator,
@@ -302,11 +326,16 @@ impl Poset {
         Self::from_relation(labels, relation)
     }
 
-    /// Produces the smallest partial order containing the given relations,
+    /// Constructs the smallest partial order containing the given relations,
     /// which are named by label.
     ///
     /// Typically the relations are the cover relations of a Hasse diagram,
     /// but any generating set of relations is allowed.
+    ///
+    /// # Errors
+    ///
+    /// [`PosetError::UnknownLabel`] if a pair names a label not in `labels`;
+    /// otherwise as [`Poset::from_edges`].
     ///
     /// ```
     /// use hccr::poset::Poset;
@@ -361,11 +390,13 @@ impl Poset {
         Self::from_validated((0..size).map(Label::from).collect(), relation)
     }
 
-    /// Constructs the direct product of finitely many posets.
+    /// Constructs the direct product of finitely many posets, with the
+    /// componentwise order.
     ///
-    /// Elements are tuples `(x_0, ..., x_{k-1})` with componentwise order,
-    /// listed in lexicographic order of their ids. The product of no posets
-    /// is the one-element poset labelled `()`.
+    /// The element `(x_0, ..., x_{k-1})` is labelled by the tuple of its
+    /// factors' labels (a 1-tuple when `k = 1`), and ids follow the
+    /// lexicographic order of the factor ids. The product of no posets is the
+    /// one-element poset labelled `()`.
     pub fn product<I>(factors: I) -> Self
     where
         I: IntoIterator,
@@ -490,9 +521,12 @@ impl Poset {
 
     /// Returns the same ordered set with new labels.
     ///
-    /// The function receives each element's id and current label. The new
-    /// labels must again be distinct. For example, `|_, label| ("x", label)`
-    /// tags every label.
+    /// The function receives each element's id and current label. For
+    /// example, `|_, label| ("x", label)` tags every label.
+    ///
+    /// # Errors
+    ///
+    /// [`PosetError::DuplicateLabel`] if two new labels coincide.
     pub fn relabelled<F, L>(&self, mut f: F) -> Result<Self, PosetError>
     where
         F: FnMut(ElementId, Label) -> L,
@@ -512,9 +546,15 @@ impl Poset {
         )
     }
 
-    /// Returns the subposet on the given elements, which keep their labels.
+    /// Returns the induced subposet on the given elements: they keep their
+    /// labels and their order from `self`.
     ///
     /// Ids in the result follow the order in which the elements are given.
+    ///
+    /// # Errors
+    ///
+    /// [`PosetError::EdgeOutOfBounds`] (with edge `i <= i`) if an id `i` is
+    /// out of bounds; [`PosetError::NotAntisymmetric`] if an id is repeated.
     pub fn subposet<I>(&self, elements: I) -> Result<Self, PosetError>
     where
         I: IntoIterator<Item = ElementId>,
@@ -593,6 +633,9 @@ impl Poset {
 
     /// Returns the id of the element with the given label.
     ///
+    /// Fails with [`PosetError::UnknownLabel`] if no element has this label;
+    /// see [`Poset::try_id`] for an `Option`.
+    ///
     /// ```
     /// use hccr::poset::Poset;
     ///
@@ -615,8 +658,11 @@ impl Poset {
         self.data.index.get(&label.into()).copied()
     }
 
-    /// Returns the relation `lower <= upper` between the elements with the
-    /// given labels. This does not check that the relation holds.
+    /// Returns the [`Edge`] from the element labelled `lower` to the element
+    /// labelled `upper`.
+    ///
+    /// Does not check that `lower <= upper` holds. Fails with
+    /// [`PosetError::UnknownLabel`] if either label is absent.
     pub fn edge(
         &self,
         lower: impl Into<Label>,
@@ -648,7 +694,8 @@ impl Poset {
         self.data.relation[left][right]
     }
 
-    /// Returns a bottom element, if one exists.
+    /// Returns the bottom element (below every element), or `None` if there
+    /// is none.
     pub fn try_bottom(&self) -> Option<ElementId> {
         self.data
             .relation
@@ -656,7 +703,8 @@ impl Poset {
             .position(|row| row.count_ones() == self.size())
     }
 
-    /// Returns a top element, if one exists.
+    /// Returns the top element (above every element), or `None` if there is
+    /// none.
     pub fn try_top(&self) -> Option<ElementId> {
         self.data
             .relation_transpose
@@ -695,7 +743,8 @@ impl Poset {
             .find(|&candidate| is_subset(&upper_bounds, &self.data.relation[candidate]))
     }
 
-    /// Returns whether every pair of elements has both meet and join.
+    /// Returns whether the poset is a lattice: nonempty, with a meet and a
+    /// join for every pair of elements.
     #[must_use]
     pub fn is_lattice(&self) -> bool {
         crate::lattice::Lattice::new(self.clone()).is_ok()
@@ -778,23 +827,23 @@ impl Poset {
         .collect()
     }
 
-    /// Returns the elements covered by `x`: those `y < x` with no `z`
-    /// satisfying `y < z < x`. In increasing order of id.
+    /// Returns the elements covered by `x`, in increasing order of id: those
+    /// `y < x` with no `z` satisfying `y < z < x`.
     ///
     /// Panics if `x` is out of bounds.
     pub fn lower_covers(&self, x: ElementId) -> Vec<ElementId> {
         covers_in(&self.data.relation_transpose, x)
     }
 
-    /// Returns the elements covering `x`: those `y > x` with no `z`
-    /// satisfying `x < z < y`. In increasing order of id.
+    /// Returns the elements covering `x`, in increasing order of id: those
+    /// `y > x` with no `z` satisfying `x < z < y`.
     ///
     /// Panics if `x` is out of bounds.
     pub fn upper_covers(&self, x: ElementId) -> Vec<ElementId> {
         covers_in(&self.data.relation, x)
     }
 
-    /// Returns all minimal elements.
+    /// Returns all minimal elements, in increasing order of id.
     pub fn minimal_elements(&self) -> Vec<ElementId> {
         self.data
             .relation_transpose
@@ -804,7 +853,7 @@ impl Poset {
             .collect()
     }
 
-    /// Returns all maximal elements.
+    /// Returns all maximal elements, in increasing order of id.
     pub fn maximal_elements(&self) -> Vec<ElementId> {
         self.data
             .relation
@@ -814,17 +863,16 @@ impl Poset {
             .collect()
     }
 
-    /// Computes the left lifting class of a set of arrows.
+    /// Returns the left lifting class of `arrows`: the relations `x <= y`
+    /// that have the left lifting property against every `a <= b` in
+    /// `arrows`.
     ///
-    /// Regard a poset as a category with one arrow `x -> y` exactly when
-    /// `x <= y`. An arrow is in the left lifting class when it has the left
-    /// lifting property against every arrow in `arrows`: every commutative
-    /// square admits a diagonal filler. Because a poset has at most one arrow
-    /// between two objects, this reduces to the Boolean condition
-    ///
-    /// `!(edge1.from <= edge2.from) || !(edge1.to <= edge2.to) || edge1.to <= edge2.from`.
-    ///
+    /// Regard the poset as a category with one arrow `x -> y` exactly when
+    /// `x <= y`. Every commutative square from `x <= y` to `a <= b` has a
+    /// diagonal filler exactly when `x <= a` and `y <= b` imply `y <= a`.
     /// Identity relations are always included.
+    ///
+    /// Panics if an arrow in `arrows` has an out-of-bounds id.
     pub fn left_lifting_class(&self, arrows: &EdgeSet) -> EdgeSet {
         let mut excluded = vec![BitVec::repeat(false, self.size()); self.size()];
         for edge in arrows {
@@ -849,19 +897,22 @@ impl Poset {
         result
     }
 
-    /// Computes the right lifting class of a set of arrows.
+    /// Returns the right lifting class of `arrows`: the relations `x <= y`
+    /// that have the right lifting property against every `a <= b` in
+    /// `arrows`, that is, `a <= x` and `b <= y` imply `b <= x`.
     ///
-    /// This is dual to [`Poset::left_lifting_class`]: it returns all relations `edge2` that
-    /// satisfy the lifting condition against every `edge1` in `arrows`.
-    /// Identity relations are always included.
+    /// This is dual to [`Poset::left_lifting_class`]. Identity relations are
+    /// always included.
+    ///
+    /// Panics if an arrow in `arrows` has an out-of-bounds id.
     pub fn right_lifting_class(&self, arrows: &EdgeSet) -> EdgeSet {
         let mut excluded = vec![BitVec::repeat(false, self.size()); self.size()];
         for edge in arrows {
             if edge.is_identity() {
                 continue;
             }
-            // Dually, x <= y fails to lift against a <= b exactly when
-            // x <= a, y <= b, and y !<= a.
+            // Dually, x <= y fails to have the right lifting property
+            // against a <= b exactly when a <= x, b <= y, and b !<= x.
             let mut possible_froms = self.data.relation[edge.from].clone();
             difference_assign(&mut possible_froms, &self.data.relation[edge.to]);
             for from in possible_froms.iter_ones() {
@@ -884,6 +935,9 @@ impl Poset {
     /// `y <= z`, and their composite `x <= z` belong to `class`, then all
     /// three must belong to it. Returns `false` if `class` contains an edge
     /// that is not a relation of this poset.
+    ///
+    /// Identity relations count like any others: a class containing `x <= z`
+    /// must also contain `x <= x` and `z <= z` to pass.
     #[must_use]
     pub fn satisfies_two_out_of_three(&self, class: &EdgeSet) -> bool {
         if class.iter().any(|edge| {
@@ -954,11 +1008,11 @@ impl PartialEq for Poset {
 
 impl Eq for Poset {}
 
-/// Hashes the labels, which equal posets share.
-///
-/// A poset caches derived data in `OnceLock`s, so clippy's `mutable_key_type`
-/// lint flags it (and types containing it) as a hash key. That is a false
-/// positive: hashing and equality depend only on data that never changes.
+/// Hashes only the labels, which is consistent with `Eq`.
+//
+// A poset caches derived data in `OnceLock`s, so clippy's `mutable_key_type`
+// lint flags it (and types containing it) as a hash key. That is a false
+// positive: hashing and equality depend only on data that never changes.
 impl std::hash::Hash for Poset {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         // Equal posets have equal labels, so hashing the labels alone is
@@ -1014,11 +1068,8 @@ pub(crate) fn covers_of(proper_relations: &EdgeSet) -> EdgeSet {
         .collect()
 }
 
-/// Computes the composites of arrows in `class2` followed by arrows in `class1`.
-///
-/// Thus `x <= y` from `class2` and `y <= z` from `class1` contribute
-/// `x <= z`. Arrows that cannot be joined at their middle endpoint contribute
-/// nothing.
+/// Returns `class1 ∘ class2`: all `x <= z` with `x <= y` in `class2` and
+/// `y <= z` in `class1`.
 pub fn compose(class1: &EdgeSet, class2: &EdgeSet) -> EdgeSet {
     let class2_by_target = sources_by_target(class2);
     let mut result = EdgeSet::new();

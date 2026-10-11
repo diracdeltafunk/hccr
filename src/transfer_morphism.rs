@@ -47,33 +47,45 @@ use crate::lattice::Lattice;
 use crate::morphism::{MonotoneMap, PosetMap};
 use crate::poset::{Edge, ElementId};
 use crate::transfer_lattice::{
-    TransferLattice, TransferPoset, TransferSystem, factorization_failure_between,
+    TransferLattice, TransferOrder, TransferPoset, TransferSystem, factorization_failure_between,
 };
 use bitvec::prelude::*;
 use std::collections::HashMap;
 use std::fmt;
 
-/// Errors produced while applying or materializing an induced transfer-system map.
+/// Errors produced while computing a transfer system along a monotone map, or
+/// a map between orders of transfer systems.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransferMapError {
-    /// The input expected to lie over the monotone map's domain does not.
+    /// A transfer system, or order of transfer systems, that should live on
+    /// the monotone map's domain lives on a different lattice.
     DomainMismatch,
-    /// The input expected to lie over the monotone map's codomain does not.
+    /// A transfer system, or order of transfer systems, that should live on
+    /// the monotone map's codomain lives on a different lattice.
     CodomainMismatch,
     /// The monotone map's domain or codomain is not a lattice.
     NotALattice,
-    /// A proper source relation did not map to an indexed codomain relation.
+    /// The image `f(x) -> f(y)` of a relation `x -> y` of the domain is not a
+    /// relation of the codomain.
+    ///
+    /// This would mean the map is not monotone, so it cannot occur for the
+    /// validated maps [`PosetMap`] and
+    /// [`LatticeMap`](crate::morphism::LatticeMap).
     InvalidImageRelation {
-        /// The source relation.
+        /// The relation `x -> y` of the domain.
         source: Edge,
-        /// Its purported image.
+        /// Its image `f(x) -> f(y)`.
         image: Edge,
     },
-    /// A computed pushforward was absent from an enumerated codomain order.
+    /// The pushforward of some transfer system is not an element of the
+    /// supplied order on the map's codomain (for example, because that order
+    /// is [`Lattice::saturated_transfer_systems`]).
     PushforwardImageMissing,
-    /// A computed pullback was absent from an enumerated codomain order.
+    /// The pullback of some transfer system is not an element of the supplied
+    /// order on the map's domain.
     PullbackImageMissing,
-    /// A computed generated inverse image was absent from an enumerated order.
+    /// The generated inverse image of some transfer system is not an element
+    /// of the supplied order on the map's domain.
     GeneratedInverseImageMissing,
 }
 
@@ -82,11 +94,11 @@ impl fmt::Display for TransferMapError {
         match self {
             TransferMapError::DomainMismatch => write!(
                 formatter,
-                "the supplied transfer-system data does not use the monotone map's domain coordinates"
+                "a transfer system or order that should live on the map's domain lives on a different lattice"
             ),
             TransferMapError::CodomainMismatch => write!(
                 formatter,
-                "the supplied transfer-system data does not use the monotone map's codomain coordinates"
+                "a transfer system or order that should live on the map's codomain lives on a different lattice"
             ),
             TransferMapError::NotALattice => write!(
                 formatter,
@@ -94,20 +106,20 @@ impl fmt::Display for TransferMapError {
             ),
             TransferMapError::InvalidImageRelation { source, image } => write!(
                 formatter,
-                "source relation {} <= {} maps to unindexed codomain relation {} <= {}",
+                "relation {} -> {} maps to {} -> {}, which is not a relation of the codomain",
                 source.from, source.to, image.from, image.to
             ),
             TransferMapError::PushforwardImageMissing => write!(
                 formatter,
-                "the computed pushforward is absent from the enumerated codomain order"
+                "a pushforward is not an element of the supplied order on the map's codomain"
             ),
             TransferMapError::PullbackImageMissing => write!(
                 formatter,
-                "the computed pullback is absent from the enumerated codomain order"
+                "a pullback is not an element of the supplied order on the map's domain"
             ),
             TransferMapError::GeneratedInverseImageMissing => write!(
                 formatter,
-                "the computed generated inverse image is absent from the enumerated codomain order"
+                "a generated inverse image is not an element of the supplied order on the map's domain"
             ),
         }
     }
@@ -115,20 +127,29 @@ impl fmt::Display for TransferMapError {
 
 impl std::error::Error for TransferMapError {}
 
-/// Failure to make an induced function monotone for the composition-closed order.
+/// Failure to construct an induced map between composition-closed orders of
+/// transfer systems.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompositionMapError {
-    /// The lattice, universe, or enumerated-order data are incompatible.
+    /// Computing the induced map itself failed; see [`TransferMapError`].
     Transfer(TransferMapError),
-    /// A source cover is sent to a pair that is not composition-closed comparable.
+    /// A supplied [`TransferPoset`] is not a composition-closed order, that is,
+    /// it was not returned by
+    /// [`Lattice::transfer_systems_composition_closed`].
+    NotCompositionClosedOrder,
+    /// The induced function is not monotone: it sends a cover of the source
+    /// order to a pair that is not related in the target order.
     NotMonotone {
-        /// The cover relation in the source transfer-system order.
+        /// The cover `S -> S'` of the source order, given by element ids of
+        /// the source [`TransferPoset`] (not of the underlying lattice).
         source_cover: Edge,
-        /// The image of the cover's lower endpoint.
+        /// The image of `S`, as an element id of the target [`TransferPoset`].
         lower_image: ElementId,
-        /// The image of the cover's upper endpoint.
+        /// The image of `S'`, as an element id of the target [`TransferPoset`].
         upper_image: ElementId,
-        /// A pair of target arrows forming an unsplittable square.
+        /// Relations `x -> y` of the image of `S` and `x' -> y'` of the image
+        /// of `S'` for which the factorization condition of
+        /// [`Lattice::transfer_systems_composition_closed`] fails.
         failed_square: (Edge, Edge),
     },
 }
@@ -137,6 +158,10 @@ impl fmt::Display for CompositionMapError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CompositionMapError::Transfer(error) => write!(formatter, "{error}"),
+            CompositionMapError::NotCompositionClosedOrder => write!(
+                formatter,
+                "a supplied order of transfer systems is not the composition-closed order"
+            ),
             CompositionMapError::NotMonotone {
                 source_cover,
                 lower_image,
@@ -219,16 +244,19 @@ where
 }
 
 impl TransferSystem {
-    /// Computes the pushforward of this transfer system along a monotone map out
-    /// of its lattice.
-    ///
-    /// Each selected arrow is mapped pointwise; identity images are discarded
-    /// because identities are implicit, duplicate images collapse, and the
-    /// resulting set is closed under the transfer-system axioms. The result lives
-    /// on the map's codomain, which must be a lattice.
+    /// Returns the pushforward of this transfer system along a monotone map
+    /// `f` (that is, `map`) out of its lattice: the least transfer system on
+    /// the codomain containing `f(x) -> f(y)` for every relation `x -> y` of
+    /// this system.
     ///
     /// For merely monotone maps this need not commute with composition; it does
     /// for lattice homomorphisms.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransferMapError::DomainMismatch`] if this system does not
+    /// live on the map's domain, and [`TransferMapError::NotALattice`] if the
+    /// map's domain or codomain is not a lattice.
     pub fn pushforward<M>(&self, map: &M) -> Result<TransferSystem, TransferMapError>
     where
         M: MonotoneMap + ?Sized,
@@ -236,18 +264,25 @@ impl TransferSystem {
         pushforward(map, self)
     }
 
-    /// Computes the right-adjoint pullback of this transfer system along a
-    /// monotone map into its lattice.
+    /// Returns the pullback of this transfer system along a monotone map `f`
+    /// (that is, `map`) into its lattice.
     ///
-    /// A relation `x -> y` belongs to the result exactly when, for every `z <= y`,
-    /// the relation `f(x /\ z) -> f(z)` belongs to this system. This is the greatest
-    /// transfer system contained in the raw inverse image, and it is right adjoint
-    /// to [`TransferSystem::pushforward`] under containment. The result lives on the map's
-    /// domain, which must be a lattice.
+    /// A relation `x -> y` of the domain belongs to the result exactly when,
+    /// for every `z <= y`, the relation `f(x /\ z) -> f(z)` belongs to this
+    /// system. This is the greatest transfer system contained in the inverse
+    /// image (the relations `x -> y` of the domain with `f(x) -> f(y)` in this
+    /// system), and it is right adjoint to [`TransferSystem::pushforward`]
+    /// under containment.
     ///
     /// For merely monotone maps it need not commute with composition, despite
     /// being right adjoint for each individual map; it does for lattice
     /// homomorphisms.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransferMapError::CodomainMismatch`] if this system does not
+    /// live on the map's codomain, and [`TransferMapError::NotALattice`] if the
+    /// map's domain or codomain is not a lattice.
     pub fn pullback<M>(&self, map: &M) -> Result<TransferSystem, TransferMapError>
     where
         M: MonotoneMap + ?Sized,
@@ -255,15 +290,22 @@ impl TransferSystem {
         pullback(map, self)
     }
 
-    /// Generates a transfer system from the raw inverse image of this one along
-    /// a monotone map into its lattice.
+    /// Returns the transfer system generated by the inverse image of this one
+    /// along a monotone map `f` (that is, `map`) into its lattice: the least
+    /// transfer system containing every relation `x -> y` of the domain for
+    /// which `f(x) -> f(y)` belongs to this system.
     ///
-    /// Unlike [`TransferSystem::pullback`], this is the least transfer system containing every
-    /// relation `x -> y` for which `f(x) -> f(y)` belongs to this system. It is
-    /// containment-monotone but is generally not right adjoint to [`TransferSystem::pushforward`].
-    /// The two operations agree whenever the map is meet-preserving.
-    /// For merely monotone maps this operation need not commute with composition;
-    /// it does for lattice homomorphisms.
+    /// It is containment-monotone but, unlike [`TransferSystem::pullback`], is
+    /// generally not right adjoint to [`TransferSystem::pushforward`]. The two
+    /// operations agree whenever the map preserves meets. For merely monotone
+    /// maps this operation need not commute with composition; it does for
+    /// lattice homomorphisms.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransferMapError::CodomainMismatch`] if this system does not
+    /// live on the map's codomain, and [`TransferMapError::NotALattice`] if the
+    /// map's domain or codomain is not a lattice.
     pub fn generated_inverse_image<M>(&self, map: &M) -> Result<TransferSystem, TransferMapError>
     where
         M: MonotoneMap + ?Sized,
@@ -272,12 +314,21 @@ impl TransferSystem {
     }
 }
 
-/// Constructs the pushforward map `Tr(L) -> Tr(M)` of containment lattices.
+/// Returns the map `Tr(L) -> Tr(M)` of containment lattices given by
+/// [`TransferSystem::pushforward`] along a monotone map `f: L -> M`.
 ///
-/// `domain` and `codomain` must be transfer-system lattices on the map's
-/// domain and codomain. Together with [`pullback_containment_map`], the
-/// returned map is the left adjoint. It inherits the composition caveat of
-/// [`TransferSystem::pushforward`].
+/// `domain` and `codomain` must be lattices of transfer systems on `L` and
+/// `M`. When they are the full lattices `Tr(L)` and `Tr(M)`, the returned map
+/// is left adjoint to [`pullback_containment_map`]. It inherits the
+/// composition caveat of [`TransferSystem::pushforward`].
+///
+/// # Errors
+///
+/// Returns [`TransferMapError::DomainMismatch`] or
+/// [`TransferMapError::CodomainMismatch`] if `domain` or `codomain` is not on
+/// `L` or `M` respectively, [`TransferMapError::NotALattice`] if `L` or `M`
+/// is not a lattice, and [`TransferMapError::PushforwardImageMissing`] if
+/// some pushforward is not an element of `codomain`.
 pub fn pushforward_containment_map<M>(
     map: &M,
     domain: &TransferLattice,
@@ -301,12 +352,22 @@ where
     ))
 }
 
-/// Constructs the pullback map `Tr(M) -> Tr(L)` of containment lattices.
+/// Returns the map `Tr(M) -> Tr(L)` of containment lattices given by
+/// [`TransferSystem::pullback`] along a monotone map `f: L -> M`.
 ///
-/// The first order is on the map's codomain and is therefore the
-/// domain of the returned map. Together with [`pushforward_containment_map`],
-/// the returned map is the right adjoint. It inherits the composition caveat
-/// of [`TransferSystem::pullback`].
+/// `codomain` (a lattice of transfer systems on `M`) is the domain of the
+/// returned map, and `domain` (on `L`) is its codomain. When they are the
+/// full lattices `Tr(M)` and `Tr(L)`, the returned map is right adjoint to
+/// [`pushforward_containment_map`]. It inherits the composition caveat of
+/// [`TransferSystem::pullback`].
+///
+/// # Errors
+///
+/// Returns [`TransferMapError::DomainMismatch`] or
+/// [`TransferMapError::CodomainMismatch`] if `domain` or `codomain` is not on
+/// `L` or `M` respectively, [`TransferMapError::NotALattice`] if `L` or `M`
+/// is not a lattice, and [`TransferMapError::PullbackImageMissing`] if some
+/// pullback is not an element of `domain`.
 pub fn pullback_containment_map<M>(
     map: &M,
     codomain: &TransferLattice,
@@ -330,12 +391,22 @@ where
     ))
 }
 
-/// Constructs the generated inverse-image map `Tr(M) -> Tr(L)`.
+/// Returns the map `Tr(M) -> Tr(L)` of containment lattices given by
+/// [`TransferSystem::generated_inverse_image`] along a monotone map
+/// `f: L -> M`.
 ///
-/// The first order is on the monotone map's codomain and is therefore the
-/// domain of the returned map. This operation is always containment-monotone,
-/// but unlike [`pullback_containment_map`] it is not generally right adjoint to
-/// [`pushforward_containment_map`].
+/// `codomain` (a lattice of transfer systems on `M`) is the domain of the
+/// returned map, and `domain` (on `L`) is its codomain. This operation is
+/// always containment-monotone, but unlike [`pullback_containment_map`] it is
+/// not generally right adjoint to [`pushforward_containment_map`].
+///
+/// # Errors
+///
+/// Returns [`TransferMapError::DomainMismatch`] or
+/// [`TransferMapError::CodomainMismatch`] if `domain` or `codomain` is not on
+/// `L` or `M` respectively, [`TransferMapError::NotALattice`] if `L` or `M`
+/// is not a lattice, and [`TransferMapError::GeneratedInverseImageMissing`] if
+/// some generated inverse image is not an element of `domain`.
 pub fn generated_inverse_image_containment_map<M>(
     map: &M,
     codomain: &TransferLattice,
@@ -363,11 +434,24 @@ where
     ))
 }
 
-/// Attempts to construct the pushforward map for the composition-closed orders.
+/// Returns the map between composition-closed orders given by
+/// [`TransferSystem::pushforward`] along a monotone map `f: L -> M`, if it is
+/// monotone.
 ///
-/// Failure includes a source cover whose images are not comparable and an
-/// unsplittable target square witnessing the failure. Every source cover is
-/// checked, so success is equivalent to monotonicity, not a heuristic.
+/// `domain` and `codomain` must be the composition-closed orders
+/// [`Lattice::transfer_systems_composition_closed`] on `L` and `M`. Every
+/// cover of `domain` is checked, so the function succeeds exactly when the
+/// pushforward is monotone for these orders.
+///
+/// # Errors
+///
+/// Returns [`CompositionMapError::NotCompositionClosedOrder`] if `domain` or
+/// `codomain` is not a composition-closed order (for example, if it is
+/// [`Lattice::transfer_systems_model_structure_order`]),
+/// [`CompositionMapError::Transfer`] with the errors of
+/// [`pushforward_containment_map`], and [`CompositionMapError::NotMonotone`]
+/// with a witnessing cover and pair of relations if the pushforward is not
+/// monotone.
 pub fn try_pushforward_composition_map<M>(
     map: &M,
     domain: &TransferPoset,
@@ -376,6 +460,7 @@ pub fn try_pushforward_composition_map<M>(
 where
     M: MonotoneMap + ?Sized,
 {
+    ensure_composition_closed(domain, codomain)?;
     let (source, target) = endpoints(
         map,
         Some(domain.base_lattice()),
@@ -392,11 +477,25 @@ where
     ))
 }
 
-/// Attempts to construct the pullback map for the composition-closed orders.
+/// Returns the map between composition-closed orders given by
+/// [`TransferSystem::pullback`] along a monotone map `f: L -> M`, if it is
+/// monotone.
 ///
-/// The first order is on the map's codomain and is therefore the
-/// domain of the returned map. Every source cover is checked, so success is
-/// equivalent to monotonicity, not a heuristic.
+/// `codomain` and `domain` must be the composition-closed orders
+/// [`Lattice::transfer_systems_composition_closed`] on `M` and `L`; `codomain`
+/// is the domain of the returned map. Every cover of `codomain` is checked,
+/// so the function succeeds exactly when the pullback is monotone for these
+/// orders.
+///
+/// # Errors
+///
+/// Returns [`CompositionMapError::NotCompositionClosedOrder`] if `codomain`
+/// or `domain` is not a composition-closed order (for example, if it is
+/// [`Lattice::transfer_systems_model_structure_order`]),
+/// [`CompositionMapError::Transfer`] with the errors of
+/// [`pullback_containment_map`], and [`CompositionMapError::NotMonotone`]
+/// with a witnessing cover and pair of relations if the pullback is not
+/// monotone.
 pub fn try_pullback_composition_map<M>(
     map: &M,
     codomain: &TransferPoset,
@@ -405,6 +504,7 @@ pub fn try_pullback_composition_map<M>(
 where
     M: MonotoneMap + ?Sized,
 {
+    ensure_composition_closed(codomain, domain)?;
     let (source, target) = endpoints(
         map,
         Some(domain.base_lattice()),
@@ -421,12 +521,25 @@ where
     ))
 }
 
-/// Attempts to construct the generated inverse-image map for the
-/// composition-closed orders.
+/// Returns the map between composition-closed orders given by
+/// [`TransferSystem::generated_inverse_image`] along a monotone map
+/// `f: L -> M`, if it is monotone.
 ///
-/// The first order is on the monotone map's codomain and is therefore the
-/// domain of the returned map. Every source cover is checked, so success is
-/// equivalent to monotonicity, not a heuristic.
+/// `codomain` and `domain` must be the composition-closed orders
+/// [`Lattice::transfer_systems_composition_closed`] on `M` and `L`; `codomain`
+/// is the domain of the returned map. Every cover of `codomain` is checked,
+/// so the function succeeds exactly when the generated inverse image is
+/// monotone for these orders.
+///
+/// # Errors
+///
+/// Returns [`CompositionMapError::NotCompositionClosedOrder`] if `codomain`
+/// or `domain` is not a composition-closed order (for example, if it is
+/// [`Lattice::transfer_systems_model_structure_order`]),
+/// [`CompositionMapError::Transfer`] with the errors of
+/// [`generated_inverse_image_containment_map`], and
+/// [`CompositionMapError::NotMonotone`] with a witnessing cover and pair of
+/// relations if the generated inverse image is not monotone.
 pub fn try_generated_inverse_image_composition_map<M>(
     map: &M,
     codomain: &TransferPoset,
@@ -435,6 +548,7 @@ pub fn try_generated_inverse_image_composition_map<M>(
 where
     M: MonotoneMap + ?Sized,
 {
+    ensure_composition_closed(codomain, domain)?;
     let (source, target) = endpoints(
         map,
         Some(domain.base_lattice()),
@@ -662,6 +776,23 @@ where
         .collect()
 }
 
+/// Checks that both orders are composition-closed orders, the precondition
+/// of the `try_*_composition_map` functions.
+fn ensure_composition_closed(
+    first: &TransferPoset,
+    second: &TransferPoset,
+) -> Result<(), CompositionMapError> {
+    if first.kind() == TransferOrder::CompositionClosed
+        && second.kind() == TransferOrder::CompositionClosed
+    {
+        Ok(())
+    } else {
+        Err(CompositionMapError::NotCompositionClosedOrder)
+    }
+}
+
+/// Checks that `images` defines a monotone map between two composition-closed
+/// orders, given that it is monotone for containment.
 fn validate_composition_images(
     source: &TransferPoset,
     target: &TransferPoset,
@@ -674,6 +805,12 @@ fn validate_composition_images(
             continue;
         }
 
+        // This `expect` is unreachable: both orders are composition-closed
+        // (checked by `ensure_composition_closed`), so a source cover is in
+        // particular a containment, and every induced operation is
+        // containment-monotone. The lower image is therefore contained in the
+        // upper one, and in the composition-closed target order they can be
+        // unrelated only because the factorization condition fails.
         let failure =
             factorization_failure_between(target.system(lower_image), target.system(upper_image))
                 .expect(

@@ -382,3 +382,41 @@ fn monotone_map_pullback_is_the_right_adjoint_but_generated_inverse_image_is_not
     assert_eq!(image.proper_relations(), proper_edges([(0, 1)]));
     assert!(!tr_c2.leq(containment_id(&tr_c2, &image), tr_c2.bottom()));
 }
+
+/// The `try_*_composition_map` functions reject any `TransferPoset` that is
+/// not a composition-closed order, such as the model-structure order, with
+/// `CompositionMapError::NotCompositionClosedOrder` instead of panicking.
+#[test]
+fn composition_maps_reject_model_structure_orders() {
+    let point = chain(1);
+    let three = chain(2);
+    // This map previously reached an internal panic when given the
+    // model-structure orders.
+    let f = PosetMap::new(&point, &three, vec![0, 2]).unwrap();
+    let model_point = point.transfer_systems_model_structure_order();
+    let model_three = three.transfer_systems_model_structure_order();
+    let composition_point = point.transfer_systems_composition_closed();
+    let composition_three = three.transfer_systems_composition_closed();
+
+    for (domain, codomain) in [
+        (&model_point, &model_three),
+        (&model_point, &composition_three),
+        (&composition_point, &model_three),
+    ] {
+        assert_eq!(
+            try_pushforward_composition_map(&f, domain, codomain),
+            Err(CompositionMapError::NotCompositionClosedOrder)
+        );
+        assert_eq!(
+            try_pullback_composition_map(&f, codomain, domain),
+            Err(CompositionMapError::NotCompositionClosedOrder)
+        );
+        assert_eq!(
+            hccr::transfer_morphism::try_generated_inverse_image_composition_map(
+                &f, codomain, domain
+            ),
+            Err(CompositionMapError::NotCompositionClosedOrder)
+        );
+    }
+    assert!(try_pushforward_composition_map(&f, &composition_point, &composition_three).is_ok());
+}

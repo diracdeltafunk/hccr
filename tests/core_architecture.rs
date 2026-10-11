@@ -551,3 +551,81 @@ fn hashes_are_unchanged_by_lazily_computed_structure() {
     assert!(lattices.contains(&lattice));
     assert!(systems.contains(&system));
 }
+
+/// A nontrivial lattice is a horizontal join of chains exactly when, after
+/// removing bottom and top, comparability is an equivalence relation on the
+/// remaining elements: they split into chains with no relations between
+/// different chains. Equivalently, any two incomparable elements have meet
+/// bottom and join top. `is_fusion_of_total_orders` must agree with this
+/// definition on examples and non-examples.
+#[test]
+fn fusion_of_total_orders_matches_definition() {
+    fn interior_is_disjoint_union_of_chains(lattice: &Lattice) -> bool {
+        let interior = lattice
+            .ids()
+            .filter(|&x| x != lattice.bottom() && x != lattice.top())
+            .collect::<Vec<_>>();
+        interior.iter().all(|&x| {
+            interior.iter().all(|&y| {
+                interior.iter().all(|&z| {
+                    !(lattice.comparable(x, y) && lattice.comparable(y, z))
+                        || lattice.comparable(x, z)
+                })
+            })
+        })
+    }
+
+    let pentagon = Lattice::from_covers(
+        ["0", "a", "b", "c", "1"],
+        [("0", "a"), ("a", "b"), ("b", "1"), ("0", "c"), ("c", "1")],
+    )
+    .unwrap();
+    let examples = [
+        Lattice::horizontal_join([Lattice::chain(3), Lattice::chain(1), Lattice::chain(2)])
+            .unwrap(),
+        Lattice::horizontal_join(std::iter::empty::<Lattice>()).unwrap(),
+        Lattice::chain(4),
+        Lattice::boolean(1),
+        Lattice::boolean(2),
+        pentagon,
+    ];
+    for lattice in &examples {
+        assert!(interior_is_disjoint_union_of_chains(lattice), "{lattice}");
+        assert!(lattice.is_fusion_of_total_orders(), "{lattice}");
+    }
+
+    // Incomparable b and c have meet bottom but join d, not top.
+    let joined_below_top = Lattice::from_covers(
+        ["bot", "b", "c", "d", "top"],
+        [
+            ("bot", "b"),
+            ("bot", "c"),
+            ("b", "d"),
+            ("c", "d"),
+            ("d", "top"),
+        ],
+    )
+    .unwrap();
+    // Incomparable b and c have join top but meet a, not bottom.
+    let met_above_bottom = Lattice::from_covers(
+        ["bot", "a", "b", "c", "top"],
+        [
+            ("bot", "a"),
+            ("a", "b"),
+            ("a", "c"),
+            ("b", "top"),
+            ("c", "top"),
+        ],
+    )
+    .unwrap();
+    let non_examples = [
+        joined_below_top,
+        met_above_bottom,
+        Lattice::boolean(3),
+        Lattice::product([Lattice::chain(2), Lattice::chain(1)]),
+    ];
+    for lattice in &non_examples {
+        assert!(!interior_is_disjoint_union_of_chains(lattice), "{lattice}");
+        assert!(!lattice.is_fusion_of_total_orders(), "{lattice}");
+    }
+}

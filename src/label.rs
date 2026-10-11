@@ -40,9 +40,16 @@ use crate::group_theory::GapSubgroup;
 ///
 /// The composite variants store their contents behind an [`Arc`], so cloning
 /// a label is cheap no matter how large it is.
+///
+/// The total order on labels (variants first, then contents) is for sorting
+/// and storage only; it is unrelated to the order of any poset. For example,
+/// set labels are not compared by inclusion.
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Label {
     /// An integer.
+    ///
+    /// Every Rust integer type converts into this variant; the conversion
+    /// panics if the value does not fit in an `i64`.
     Int(i64),
     /// A string.
     Str(Arc<str>),

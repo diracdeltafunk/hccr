@@ -165,13 +165,11 @@ pub trait MonotoneMap: sealed::Sealed {
     /// Entry `i` is the element id to which domain element `i` is sent.
     fn images(&self) -> &[ElementId];
 
-    /// Reports whether this map is guaranteed to preserve every binary meet.
+    /// Returns `true` if this map is known to preserve binary meets, as every
+    /// [`LatticeMap`] does.
     ///
-    /// This is a conservative optimization capability: algorithms may use a
-    /// faster path whose correctness depends on meet preservation when this
-    /// method returns `true`. Implementations must therefore return `true`
-    /// only when they guarantee that property. The default makes no such
-    /// guarantee.
+    /// Some algorithms use this to take a faster path. Returns `false` for a
+    /// [`PosetMap`], even one that happens to preserve meets.
     fn is_known_meet_preserving(&self) -> bool {
         false
     }
@@ -257,7 +255,8 @@ impl PosetMap {
 
     /// Returns the composite `self ∘ first`: apply `first`, then `self`.
     ///
-    /// The codomain of `first` must equal the domain of `self`.
+    /// Fails with [`PosetMapError::NotComposable`] if the codomain of `first`
+    /// is not equal (`==`) to the domain of `self`.
     pub fn compose(&self, first: &impl MonotoneMap) -> Result<PosetMap, PosetMapError> {
         if first.codomain_poset() != &self.domain {
             return Err(PosetMapError::NotComposable);
@@ -364,7 +363,8 @@ impl LatticeMap {
 
     /// Returns the composite `self ∘ first`: apply `first`, then `self`.
     ///
-    /// The codomain of `first` must equal the domain of `self`.
+    /// Fails with [`PosetMapError::NotComposable`] if the codomain of `first`
+    /// is not equal (`==`) to the domain of `self`.
     pub fn compose(&self, first: &LatticeMap) -> Result<LatticeMap, PosetMapError> {
         if first.codomain != self.domain {
             return Err(PosetMapError::NotComposable);

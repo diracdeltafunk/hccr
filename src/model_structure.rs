@@ -117,11 +117,20 @@ pub struct ModelStructure {
 }
 
 impl ModelStructure {
-    /// Constructs the model structure represented by `R <= R'`.
+    /// Constructs the model structure with acyclic fibrations
+    /// `R = acyclic_fibrations` and fibrations `R' = fibrations`.
     ///
-    /// Here `R` is `acyclic_fibrations` and `R'` is `fibrations`.  The two
-    /// systems must be on the same lattice, `R` must be contained in `R'`,
-    /// and `R ∘ llc(R')` must satisfy 2-out-of-3.
+    /// # Errors
+    ///
+    /// - [`ModelStructureError::DifferentLattices`] if the two systems are on
+    ///   different lattices;
+    /// - [`ModelStructureError::AcyclicFibrationsNotContained`] if `R` is not
+    ///   contained in `R'`;
+    /// - [`ModelStructureError::WeakEquivalencesFailTwoOutOfThree`] if the
+    ///   weak equivalences fail 2-out-of-3. The weak equivalences are the
+    ///   composites of an acyclic cofibration (a relation in the
+    ///   [left lifting class](Poset::left_lifting_class) of `R'`) followed by
+    ///   an acyclic fibration.
     pub fn new(
         acyclic_fibrations: TransferSystem,
         fibrations: TransferSystem,
@@ -184,7 +193,7 @@ impl ModelStructure {
         &self.acyclic_cofibrations
     }
 
-    /// Returns the class of weak equivalences.
+    /// Returns the class of weak equivalences, identities included.
     pub fn weak_equivalences(&self) -> &EdgeSet {
         &self.weak_equivalences
     }
@@ -237,21 +246,21 @@ impl ModelStructure {
         self.is_fibrant(object) && self.is_cofibrant(object)
     }
 
-    /// Returns all fibrant objects in element-id order.
+    /// Returns all fibrant objects, in increasing order of id.
     pub fn fibrant_objects(&self) -> Vec<ElementId> {
         (0..self.lattice().size())
             .filter(|&object| self.is_fibrant(object))
             .collect()
     }
 
-    /// Returns all cofibrant objects in element-id order.
+    /// Returns all cofibrant objects, in increasing order of id.
     pub fn cofibrant_objects(&self) -> Vec<ElementId> {
         (0..self.lattice().size())
             .filter(|&object| self.is_cofibrant(object))
             .collect()
     }
 
-    /// Returns all bifibrant objects in element-id order.
+    /// Returns all bifibrant objects, in increasing order of id.
     pub fn bifibrant_objects(&self) -> Vec<ElementId> {
         (0..self.lattice().size())
             .filter(|&object| self.is_bifibrant(object))
@@ -260,8 +269,10 @@ impl ModelStructure {
 
     /// Factors a relation as a cofibration followed by an acyclic fibration.
     ///
-    /// Returns `None` if `relation` is not an in-range relation of the
-    /// underlying lattice.  Every valid relation has a witness.
+    /// Factorizations need not be unique; this returns the one whose middle
+    /// object has the smallest id. Returns `None` if `relation` is not a
+    /// relation `x <= y` of the lattice (including when an id is out of
+    /// bounds).
     pub fn factor_as_cofibration_then_acyclic_fibration(
         &self,
         relation: Edge,
@@ -276,8 +287,10 @@ impl ModelStructure {
 
     /// Factors a relation as an acyclic cofibration followed by a fibration.
     ///
-    /// Returns `None` if `relation` is not an in-range relation of the
-    /// underlying lattice.  Every valid relation has a witness.
+    /// Factorizations need not be unique; this returns the one whose middle
+    /// object has the smallest id. Returns `None` if `relation` is not a
+    /// relation `x <= y` of the lattice (including when an id is out of
+    /// bounds).
     pub fn factor_as_acyclic_cofibration_then_fibration(
         &self,
         relation: Edge,
@@ -302,11 +315,12 @@ impl TryFrom<(TransferSystem, TransferSystem)> for ModelStructure {
 }
 
 impl Lattice {
-    /// Enumerates all model structures on this lattice.
+    /// Returns all model structures on this lattice.
     ///
     /// They correspond to the intervals `R <= R'` of the model-structure order
-    /// on transfer systems; see
-    /// [`Lattice::transfer_systems_model_structure_order`].
+    /// on transfer systems (see
+    /// [`Lattice::transfer_systems_model_structure_order`]), and are listed in
+    /// lexicographic order of the ids of `(R, R')` in that poset.
     pub fn model_structures(&self) -> Vec<ModelStructure> {
         let order = self.transfer_systems_model_structure_order();
         order

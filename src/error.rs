@@ -82,7 +82,7 @@ pub enum Error {
     /// See [`SubgroupMapError`].
     #[cfg(feature = "groups")]
     SubgroupMap(SubgroupMapError),
-    /// An error reported by GAP.
+    /// An error from GAP or the GAP bridge.
     #[cfg(feature = "groups")]
     Gap(String),
 }
