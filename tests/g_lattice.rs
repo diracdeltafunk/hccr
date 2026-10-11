@@ -33,14 +33,14 @@ fn group_actions_produce_the_correct_relation_orbits_and_transfer_systems()
     for g_lattice in [&from_generators, &from_gap] {
         assert_eq!(
             g_lattice.relations().iter().copied().collect::<EdgeSet>(),
-            diamond.all_relations_iter().collect::<EdgeSet>()
+            diamond.relations().into_iter().collect::<EdgeSet>()
         );
         assert_eq!(orbits(g_lattice), expected_orbits);
     }
 
     let generated = from_generators.transfer_system_generated_by([e("0", "1")])?;
     assert_eq!(
-        generated.relations(false),
+        generated.proper_relations(),
         EdgeSet::from([e("0", "a"), e("0", "b"), e("0", "1")])
     );
 
@@ -73,13 +73,13 @@ fn assert_transfer_system_containment_lattice_uses_orbit_inclusion(
 
     let containment = g_lattice.transfer_systems();
     assert_eq!(containment.size(), 4);
-    assert_eq!(containment.cover_relations().len(), 3);
+    assert_eq!(containment.covers().len(), 3);
 
     let bottom = containment.system(containment.bottom());
     assert_eq!(bottom, &g_lattice.trivial_transfer_system());
     assert!(bottom.relation_orbit_labels().is_empty());
-    assert!(bottom.relations(false).is_empty());
-    assert_eq!(bottom.relations(true).len(), g_lattice.lattice().size());
+    assert!(bottom.proper_relations().is_empty());
+    assert_eq!(bottom.relations().len(), g_lattice.lattice().size());
 
     let top = containment.system(containment.top());
     assert_eq!(top, &g_lattice.complete_transfer_system());
@@ -89,7 +89,7 @@ fn assert_transfer_system_containment_lattice_uses_orbit_inclusion(
             .collect::<BTreeSet<_>>(),
         expected_labels.into_iter().collect::<BTreeSet<_>>()
     );
-    assert_eq!(top.relations(false).len(), 5);
+    assert_eq!(top.proper_relations().len(), 5);
     for relation in [
         Edge::new(0, 1),
         Edge::new(0, 2),
@@ -97,14 +97,14 @@ fn assert_transfer_system_containment_lattice_uses_orbit_inclusion(
         Edge::new(1, 3),
         Edge::new(2, 3),
     ] {
-        assert!(top.relations(false).contains(&relation));
+        assert!(top.proper_relations().contains(&relation));
         assert!(top.contains_relation(relation));
     }
     // Forgetting equivariance preserves exactly the underlying relations.
     for system in &containment {
         let ordinary = system.underlying_transfer_system();
-        assert_eq!(ordinary.edges(false), system.relations(false));
-        for relation in ordinary.edges(true) {
+        assert_eq!(ordinary.proper_relations(), system.proper_relations());
+        for relation in ordinary.relations() {
             assert_eq!(
                 ordinary.contains_relation(relation),
                 system.contains_relation(relation)

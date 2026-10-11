@@ -10,7 +10,7 @@ use crate::cotransfer_lattice::CotransferSystem;
 use crate::g_lattice::{GLattice, GTransferSystem, GTransferUniverse, RelationOrbitLabel};
 use crate::label::Label;
 use crate::lattice::Lattice;
-use crate::poset::{Edge, EdgeSet, ElementId, Poset};
+use crate::poset::{Edge, EdgeSet, ElementId, Poset, covers_of};
 use crate::transfer_lattice::fmt_relations;
 use bitvec::prelude::*;
 use fcars::FormalContext;
@@ -175,7 +175,7 @@ impl GLattice {
         {
             return Err(GCotransferSystemError::GLatticeMismatch);
         }
-        universe.generated_by(opposite.relations(false).into_iter().map(Edge::reversed))
+        universe.generated_by(opposite.proper_relations().into_iter().map(Edge::reversed))
     }
 }
 
@@ -304,22 +304,33 @@ impl GCotransferSystem {
             .collect()
     }
 
-    /// Returns all selected relations, optionally including identities.
-    pub fn relations(&self, include_identities: bool) -> EdgeSet {
-        let mut result = EdgeSet::new();
-        if include_identities {
-            result.extend(self.lattice().ids().map(|id| Edge::new(id, id)));
-        }
-        for orbit_id in self.orbit_arrows.iter_ones() {
-            result.extend(self.universe.relation_orbits[orbit_id].iter().copied());
-        }
+    /// Returns every relation of this G-cotransfer system, identities included.
+    pub fn relations(&self) -> EdgeSet {
+        let mut result = self.proper_relations();
+        result.extend(self.lattice().ids().map(|id| Edge::new(id, id)));
         result
+    }
+
+    /// Returns the non-identity relations of this G-cotransfer system.
+    pub fn proper_relations(&self) -> EdgeSet {
+        self.orbit_arrows
+            .iter_ones()
+            .flat_map(|orbit_id| self.universe.relation_orbits[orbit_id].iter().copied())
+            .collect()
+    }
+
+    /// Returns the covers of this G-cotransfer system, regarded as a partial
+    /// order on the elements of the lattice: the relations `x -> z` in it with
+    /// no `y` such that `x -> y` and `y -> z` are both in it. These need not
+    /// be covers in the lattice.
+    pub fn covers(&self) -> EdgeSet {
+        covers_of(&self.proper_relations())
     }
 
     /// Expands this system to an ordinary cotransfer system on the lattice.
     pub fn underlying_cotransfer_system(&self) -> CotransferSystem {
         self.lattice()
-            .cotransfer_system_generated_by(self.relations(false))
+            .cotransfer_system_generated_by(self.proper_relations())
             .expect("a G-cotransfer system is an ordinary cotransfer system")
     }
 
@@ -337,7 +348,7 @@ impl GCotransferSystem {
     /// realizes the order-reversing duality between G-cotransfer and
     /// G-transfer systems.
     pub fn right_lifting_transfer(&self) -> GTransferSystem {
-        let arrows = self.lattice().rlc(&self.relations(true));
+        let arrows = self.lattice().rlc(&self.relations());
         self.universe
             .transfer_universe
             .generated_by(arrows)
@@ -350,7 +361,7 @@ impl GTransferSystem {
     /// G-lattice.
     pub fn left_lifting_cotransfer(&self) -> GCotransferSystem {
         let universe = Rc::new(GCotransferUniverse::new(Rc::clone(self.universe())));
-        let arrows = self.lattice().llc(&self.relations(true));
+        let arrows = self.lattice().llc(&self.relations());
         universe
             .generated_by(arrows)
             .expect("a left lifting class consists of lattice relations")
@@ -385,7 +396,7 @@ impl PartialOrd for GCotransferSystem {
 
 impl fmt::Display for GCotransferSystem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut relations = self.relations(false).into_iter().collect::<Vec<_>>();
+        let mut relations = self.proper_relations().into_iter().collect::<Vec<_>>();
         relations.sort_unstable();
         fmt_relations(self.lattice(), relations, f)
     }

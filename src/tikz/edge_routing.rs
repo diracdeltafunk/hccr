@@ -1,9 +1,8 @@
-use crate::poset::{Edge, ElementId};
-use std::collections::HashMap;
+use crate::poset::Edge;
 
 pub(super) fn edge_bend_decisions(
     edges: &[Edge],
-    coords: &HashMap<ElementId, (f64, f64)>,
+    coords: &[(f64, f64)],
     tolerance: f64,
 ) -> Vec<bool> {
     edges
@@ -11,9 +10,9 @@ pub(super) fn edge_bend_decisions(
         .copied()
         .enumerate()
         .map(|(index, edge)| {
-            let from = coords[&edge.from];
-            let to = coords[&edge.to];
-            let blocked_by_node = coords.iter().any(|(&id, &point)| {
+            let from = coords[edge.from];
+            let to = coords[edge.to];
+            let blocked_by_node = coords.iter().enumerate().any(|(id, &point)| {
                 id != edge.from
                     && id != edge.to
                     && point_strictly_on_segment(from, to, point, tolerance)
@@ -44,13 +43,13 @@ fn preferred_overlapping_edge(
     edge_index: usize,
     other: Edge,
     other_index: usize,
-    coords: &HashMap<ElementId, (f64, f64)>,
+    coords: &[(f64, f64)],
     tolerance: f64,
 ) -> bool {
-    let from = coords[&edge.from];
-    let to = coords[&edge.to];
-    let other_from = coords[&other.from];
-    let other_to = coords[&other.to];
+    let from = coords[edge.from];
+    let to = coords[edge.to];
+    let other_from = coords[other.from];
+    let other_to = coords[other.to];
     if !segments_colinear_overlap(from, to, other_from, other_to, tolerance) {
         return false;
     }

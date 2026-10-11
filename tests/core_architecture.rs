@@ -164,7 +164,7 @@ fn lifting_classes_satisfy_their_defining_conditions() {
     ];
 
     for poset in posets {
-        let relations = poset.all_relations_iter().collect::<Vec<_>>();
+        let relations = poset.relations().into_iter().collect::<Vec<_>>();
         for class_bits in 0usize..(1usize << relations.len()) {
             let arrows = relations
                 .iter()
@@ -228,9 +228,10 @@ fn relation_composition_and_closure_satisfy_their_definitions() {
 }
 
 fn direct_two_out_of_three(poset: &Poset, class: &EdgeSet) -> bool {
-    poset.all_relations_iter().all(|first| {
+    poset.relations().into_iter().all(|first| {
         poset
-            .all_relations_iter()
+            .relations()
+            .into_iter()
             .filter(|second| first.to == second.from)
             .all(|second| {
                 let composite = Edge::new(first.from, second.to);
@@ -262,7 +263,7 @@ fn two_out_of_three_satisfies_its_defining_condition() {
     ];
 
     for poset in posets {
-        let relations = poset.all_relations_iter().collect::<Vec<_>>();
+        let relations = poset.relations().into_iter().collect::<Vec<_>>();
         for class_bits in 0usize..(1usize << relations.len()) {
             let class = relations
                 .iter()
@@ -336,4 +337,73 @@ fn constructions_have_the_expected_order_structure() {
     );
     assert!(horizontal_join([chain(0)]).is_err());
     assert_eq!(product([chain(1), chain(1)]).transfer_system_count(), 10);
+}
+
+/// The transitive closure of a set of relations `x < y`.
+fn transitive_closure(relations: &EdgeSet) -> EdgeSet {
+    let mut closure = relations.clone();
+    loop {
+        let composites: Vec<Edge> = closure
+            .iter()
+            .flat_map(|a| {
+                closure
+                    .iter()
+                    .filter(move |b| b.from == a.to)
+                    .map(move |b| Edge::new(a.from, b.to))
+            })
+            .collect();
+        let before = closure.len();
+        closure.extend(composites);
+        if closure.len() == before {
+            return closure;
+        }
+    }
+}
+
+/// Checks that `covers` are the covers of the partial order whose
+/// non-identity relations are `proper`: they generate it under composition,
+/// and none of them is a composite of two relations of it.
+fn check_covers(proper: &EdgeSet, covers: &EdgeSet) {
+    assert!(covers.is_subset(proper));
+    assert_eq!(&transitive_closure(covers), proper);
+    for cover in covers {
+        assert!(
+            !proper
+                .iter()
+                .any(|a| { a.from == cover.from && proper.contains(&Edge::new(a.to, cover.to)) })
+        );
+    }
+}
+
+#[test]
+fn covers_generate_the_order_and_are_not_composites() {
+    let pentagon = Lattice::from_covers(
+        ["0", "a", "b", "c", "1"],
+        [("0", "a"), ("a", "b"), ("b", "1"), ("0", "c"), ("c", "1")],
+    )
+    .unwrap();
+    for poset in [
+        pentagon.as_poset().clone(),
+        Lattice::boolean(3).as_poset().clone(),
+        Poset::disjoint_union([Poset::chain(2), Poset::antichain(2)]),
+    ] {
+        let identities: EdgeSet = poset.ids().map(|id| Edge::new(id, id)).collect();
+        let proper = poset.proper_relations();
+        assert_eq!(
+            poset.relations(),
+            proper.union(&identities).copied().collect::<EdgeSet>()
+        );
+        check_covers(&proper, &poset.covers());
+    }
+
+    // A transfer system is a partial order on the lattice, and its covers
+    // are taken in that order, not in the lattice.
+    for lattice in [pentagon, Lattice::chain(3)] {
+        for system in lattice.transfer_systems().systems() {
+            check_covers(&system.proper_relations(), &system.covers());
+        }
+        for system in lattice.cotransfer_systems().systems() {
+            check_covers(&system.proper_relations(), &system.covers());
+        }
+    }
 }

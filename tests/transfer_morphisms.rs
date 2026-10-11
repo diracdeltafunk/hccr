@@ -113,7 +113,7 @@ fn assert_is_a_monotonicity_failure(
         panic!("expected a monotonicity failure, got {error:?}")
     };
 
-    assert!(source.cover_relations().contains(&source_cover));
+    assert!(source.covers().contains(&source_cover));
     let lower = image(source.system(source_cover.from));
     let upper = image(source.system(source_cover.to));
     assert_eq!(target.system(lower_image), &lower);
@@ -150,18 +150,18 @@ fn pointwise_maps_close_images_and_handle_collapsed_and_duplicate_arrows() {
         .transfer_system_generated_by([Edge::new(0, 2), Edge::new(1, 2)])
         .unwrap();
     assert_eq!(
-        source_top.edges(false),
+        source_top.proper_relations(),
         proper_edges([(0, 1), (0, 2), (1, 2)])
     );
     let image = pushforward(&quotient, &source_top).unwrap();
-    assert_eq!(image.edges(false), proper_edges([(0, 1)]));
+    assert_eq!(image.proper_relations(), proper_edges([(0, 1)]));
 
     // Pulling back the diagonal includes every arrow collapsed by the map.
     let target_bottom = codomain
         .transfer_system_generated_by(std::iter::empty::<Edge>())
         .unwrap();
     let inverse_image = pullback(&quotient, &target_bottom).unwrap();
-    assert_eq!(inverse_image.edges(false), proper_edges([(0, 1)]));
+    assert_eq!(inverse_image.proper_relations(), proper_edges([(0, 1)]));
 
     // Meet preservation makes the raw inverse image a transfer system, so
     // the right-adjoint and generated variants agree without extra closure.
@@ -248,9 +248,9 @@ fn composition_monotonicity_is_checked_independently_in_each_direction() {
     assert!(cc_c3.leq(composition_id(&cc_c3, &r), composition_id(&cc_c3, &s)));
     let image_r = pushforward(&into_b2, &r).unwrap();
     let image_s = pushforward(&into_b2, &s).unwrap();
-    assert_eq!(image_r.edges(false), proper_edges([(0, 2), (1, 3)]));
+    assert_eq!(image_r.proper_relations(), proper_edges([(0, 2), (1, 3)]));
     assert_eq!(
-        image_s.edges(false),
+        image_s.proper_relations(),
         proper_edges([(0, 1), (0, 2), (0, 3), (1, 3)])
     );
     assert!(!cc_b2.leq(
@@ -277,8 +277,8 @@ fn composition_monotonicity_is_checked_independently_in_each_direction() {
     assert!(cc_c4.leq(composition_id(&cc_c4, &r), composition_id(&cc_c4, &s)));
     let inverse_r = pullback(&into_c4, &r).unwrap();
     let inverse_s = pullback(&into_c4, &s).unwrap();
-    assert_eq!(inverse_r.edges(false), proper_edges([(0, 1)]));
-    assert_eq!(inverse_s.edges(false), proper_edges([(0, 1), (0, 2)]));
+    assert_eq!(inverse_r.proper_relations(), proper_edges([(0, 1)]));
+    assert_eq!(inverse_s.proper_relations(), proper_edges([(0, 1), (0, 2)]));
     assert!(!cc_c3.leq(
         composition_id(&cc_c3, &inverse_r),
         composition_id(&cc_c3, &inverse_s)
@@ -359,13 +359,13 @@ fn monotone_map_pullback_is_the_right_adjoint_but_generated_inverse_image_is_not
         .transfer_system_generated_by(std::iter::empty::<Edge>())
         .unwrap();
     let corrected = pullback(&f, &target_bottom).unwrap();
-    assert_eq!(corrected.edges(false), EdgeSet::new());
+    assert_eq!(corrected.proper_relations(), EdgeSet::new());
 
     // The raw inverse image consists of the two collapsed arrows from the
     // atoms to the top. Closing those arrows forces every arrow of B2.
     let generated = generated_inverse_image(&f, &target_bottom).unwrap();
     assert_eq!(
-        generated.edges(false),
+        generated.proper_relations(),
         proper_edges([(0, 1), (0, 2), (0, 3), (1, 3), (2, 3)])
     );
     let generated_map = generated_inverse_image_containment_map(&f, &tr_c2, &tr_b2).unwrap();
@@ -376,10 +376,10 @@ fn monotone_map_pullback_is_the_right_adjoint_but_generated_inverse_image_is_not
     let r = b2_universe
         .transfer_system_generated_by([Edge::new(1, 3)])
         .unwrap();
-    assert_eq!(r.edges(false), proper_edges([(0, 2), (1, 3)]));
+    assert_eq!(r.proper_relations(), proper_edges([(0, 2), (1, 3)]));
     let r_id = containment_id(&tr_b2, &r);
     let image = pushforward(&f, &r).unwrap();
     assert!(tr_b2.leq(r_id, generated_map.apply(tr_c2.bottom())));
-    assert_eq!(image.edges(false), proper_edges([(0, 1)]));
+    assert_eq!(image.proper_relations(), proper_edges([(0, 1)]));
     assert!(!tr_c2.leq(containment_id(&tr_c2, &image), tr_c2.bottom()));
 }

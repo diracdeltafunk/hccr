@@ -46,11 +46,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `pullback` is the greatest transfer system inside the raw inverse image
     // and remains right adjoint to pushforward.
     let right_adjoint = target_bottom.pullback(&monotone)?;
-    assert!(right_adjoint.edges(false).is_empty());
+    assert!(right_adjoint.proper_relations().is_empty());
 
     // The separately named operation closes above the raw inverse image.
     let generated = target_bottom.generated_inverse_image(&monotone)?;
-    assert_eq!(generated.edges(false).len(), 5);
+    assert_eq!(generated.proper_relations().len(), 5);
     println!("generated inverse image on B2: {generated}");
 
     Ok(())

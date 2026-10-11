@@ -127,7 +127,7 @@ impl ModelStructure {
         }
 
         if let Some(relation) = acyclic_fibrations
-            .sorted_proper_edges()
+            .proper_relations()
             .into_iter()
             .find(|&relation| !fibrations.contains_relation(relation))
         {
@@ -135,8 +135,8 @@ impl ModelStructure {
         }
 
         let ambient = acyclic_fibrations.lattice().as_poset();
-        let acyclic_fibration_edges = acyclic_fibrations.edges(true);
-        let acyclic_cofibration_edges = ambient.llc(&fibrations.edges(true));
+        let acyclic_fibration_edges = acyclic_fibrations.relations();
+        let acyclic_cofibration_edges = ambient.llc(&fibrations.relations());
         let weak_equivalences = compose(&acyclic_fibration_edges, &acyclic_cofibration_edges);
 
         if let Some(witness) = two_out_of_three_failure(ambient, &weak_equivalences) {
@@ -306,7 +306,8 @@ impl Lattice {
     pub fn model_structures(&self) -> Vec<ModelStructure> {
         let order = self.transfer_systems_model_structure_order();
         order
-            .all_relations_iter()
+            .relations()
+            .into_iter()
             .map(|edge| {
                 ModelStructure::new(
                     order.system(edge.from).clone(),

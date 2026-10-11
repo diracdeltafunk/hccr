@@ -22,7 +22,7 @@ fn diamond() -> Lattice {
 
 fn assert_cotransfer_axioms(system: &GCotransferSystem) {
     let lattice = system.lattice();
-    let arrows = system.relations(true);
+    let arrows = system.relations();
     for &first in &arrows {
         for &second in &arrows {
             if first.to == second.from {
@@ -56,7 +56,7 @@ fn opposite_transfer_relation_sets(
 }
 
 fn sorted(system: &GTransferSystem) -> Vec<Edge> {
-    let mut relations = system.relations(false).into_iter().collect::<Vec<_>>();
+    let mut relations = system.proper_relations().into_iter().collect::<Vec<_>>();
     relations.sort_unstable();
     relations
 }
@@ -77,10 +77,10 @@ fn g_cotransfers_are_exactly_invariant_cotransfers_and_form_a_containment_lattic
     for system in &containment {
         assert_cotransfer_axioms(system);
         assert_eq!(
-            system.relations(false),
-            system.underlying_cotransfer_system().edges(false)
+            system.proper_relations(),
+            system.underlying_cotransfer_system().proper_relations()
         );
-        for relation in system.relations(false) {
+        for relation in system.proper_relations() {
             let orbit = g_lattice.relation_orbit(relation).unwrap();
             assert!(
                 orbit
@@ -91,8 +91,8 @@ fn g_cotransfers_are_exactly_invariant_cotransfers_and_form_a_containment_lattic
         }
 
         let opposite = system.opposite_transfer_system();
-        assert!(opposite.is_generated_by(opposite.relations(false))?);
-        for relation in system.relations(true) {
+        assert!(opposite.is_generated_by(opposite.proper_relations())?);
+        for relation in system.relations() {
             assert!(opposite.contains_relation(relation.reversed()));
         }
         assert!(expected_opposites.contains(&sorted(&opposite)));

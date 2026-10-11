@@ -508,7 +508,7 @@ fn validate_poset_map(
             });
         }
     }
-    for edge in domain.proper_relations_iter() {
+    for edge in domain.proper_relations() {
         let lower_image = map[edge.from];
         let upper_image = map[edge.to];
         if !codomain.leq(lower_image, upper_image) {

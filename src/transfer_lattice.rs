@@ -40,7 +40,7 @@
 use crate::bitvec_utils::{intersection, intersects, is_subset, set_partial_cmp};
 use crate::label::Label;
 use crate::lattice::Lattice;
-use crate::poset::{Edge, EdgeSet, ElementId, Poset, compose};
+use crate::poset::{Edge, EdgeSet, ElementId, Poset, compose, covers_of};
 use bitvec::prelude::*;
 use fcars::FormalContext;
 use std::cmp::Ordering;
@@ -362,7 +362,7 @@ impl Lattice {
 
 impl TransferUniverse {
     fn new(lattice: &Lattice) -> Self {
-        let proper_edges = lattice.proper_relations_iter().collect::<Vec<_>>();
+        let proper_edges = lattice.proper_relations().into_iter().collect::<Vec<_>>();
         let mut proper_edge_ids = vec![vec![None; lattice.size()]; lattice.size()];
         for (edge_id, &edge) in proper_edges.iter().enumerate() {
             proper_edge_ids[edge.from][edge.to] = Some(edge_id);
@@ -441,26 +441,28 @@ impl TransferSystem {
         raw_contains_relation(&self.lattice, &self.arrows, relation)
     }
 
-    /// Returns the relations belonging to this transfer system.
-    ///
-    /// If `include_identities` is true, the identity relations `x <= x` are
-    /// included along with the non-identity relations.
-    pub fn edges(&self, include_identities: bool) -> EdgeSet {
-        let mut result = EdgeSet::new();
-        if include_identities {
-            result.extend(self.lattice.ids().map(|id| Edge::new(id, id)));
-        }
-        result.extend(self.sorted_proper_edges());
+    /// Returns every relation of this transfer system, identities included.
+    pub fn relations(&self) -> EdgeSet {
+        let mut result = self.proper_relations();
+        result.extend(self.lattice.ids().map(|id| Edge::new(id, id)));
         result
     }
 
-    /// Returns the non-identity relations, sorted by `(from, to)`.
-    pub fn sorted_proper_edges(&self) -> Vec<Edge> {
+    /// Returns the non-identity relations of this transfer system.
+    pub fn proper_relations(&self) -> EdgeSet {
         let universe = self.universe();
         self.arrows
             .iter_ones()
             .map(|edge_id| universe.proper_edges[edge_id])
             .collect()
+    }
+
+    /// Returns the covers of this transfer system, regarded as a partial order on the
+    /// elements of the lattice: the relations `x -> z` in it with no `y`
+    /// such that `x -> y` and `y -> z` are both in it. These need not be
+    /// covers in the lattice.
+    pub fn covers(&self) -> EdgeSet {
+        covers_of(&self.proper_relations())
     }
 
     /// Returns whether every relation of this system belongs to `other`.
@@ -662,7 +664,7 @@ impl PartialOrd for TransferSystem {
 
 impl fmt::Display for TransferSystem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt_relations(&self.lattice, self.sorted_proper_edges(), f)
+        fmt_relations(&self.lattice, self.proper_relations(), f)
     }
 }
 
@@ -1134,7 +1136,7 @@ mod tests {
             .transfer_system_generated_by([Edge::new(0, 2), Edge::new(1, 1), Edge::new(0, 2)])
             .expect("all generators are lattice relations");
         assert_eq!(
-            generated.edges(false),
+            generated.proper_relations(),
             EdgeSet::from([Edge::new(0, 1), Edge::new(0, 2)])
         );
     }
@@ -1174,10 +1176,11 @@ mod tests {
         let composition_order = lattice.transfer_systems_composition_closed();
 
         assert_eq!(model_order.systems(), composition_order.systems());
-        assert_eq!(model_order.all_relations_iter().count(), 10);
+        assert_eq!(model_order.relations().len(), 10);
         assert!(
             model_order
-                .all_relations_iter()
+                .relations()
+                .into_iter()
                 .all(|edge| composition_order.leq(edge.from, edge.to))
         );
     }
