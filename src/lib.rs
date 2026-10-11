@@ -122,6 +122,9 @@ pub mod model_structure;
 pub mod g_lattice;
 
 #[cfg(feature = "groups")]
+pub mod g_transfer_lattice;
+
+#[cfg(feature = "groups")]
 pub mod subgroup_morphism;
 
 #[cfg(feature = "groups")]
@@ -131,6 +134,11 @@ pub mod g_transfer_morphism;
 pub mod g_cotransfer_lattice;
 
 pub use error::{Error, Result};
+
+/// The formal concept analysis crate, re-exported so that its
+/// [`FormalContext`](fcars::FormalContext) type matches the one hccr uses, as
+/// in [`Lattice::from_formal_context`](lattice::Lattice::from_formal_context).
+pub use fcars;
 
 /// The GAP interface, re-exported from [`gap_sys`] so that it needs no
 /// separate dependency. For example, `hccr::gap::eval("SymmetricGroup(4);")`.

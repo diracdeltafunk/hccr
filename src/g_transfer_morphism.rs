@@ -2,8 +2,8 @@
 //!
 //! These are the action-invariant analogues of the operations in
 //! [`crate::transfer_morphism`]. For a monotone map `u: L -> M`,
-//! [`pushforward`] maps all arrows, closes under the transfer axioms, and adds
-//! their whole target orbits. [`pullback`] is its right adjoint on invariant
+//! [`GTransferSystem::pushforward`] maps all arrows, closes under the transfer axioms, and adds
+//! their whole target orbits. [`GTransferSystem::pullback`] is its right adjoint on invariant
 //! transfer systems: it returns the greatest invariant source system whose
 //! pushforward is contained in the given target system.
 //!
@@ -26,7 +26,8 @@
 //! composition of group homomorphisms.
 
 use crate::bitvec_utils::is_subset;
-use crate::g_lattice::{GLattice, GTransferLattice, GTransferSystem, GTransferUniverse};
+use crate::g_lattice::GLattice;
+use crate::g_transfer_lattice::{GTransferLattice, GTransferSystem, GTransferUniverse};
 use crate::morphism::{MonotoneMap, PosetMap};
 use crate::poset::{Edge, ElementId};
 use crate::subgroup_morphism::SubgroupMaps;
@@ -94,13 +95,7 @@ impl fmt::Display for GTransferMapError {
 
 impl std::error::Error for GTransferMapError {}
 
-/// Computes the invariant transfer-system pushforward along a monotone map.
-///
-/// The result is the least transfer system on `codomain` fixed by its action
-/// that contains the image of every relation in `system`. The map's codomain
-/// must be the underlying lattice of `codomain`.
-/// For arbitrary monotone maps it need not commute with composition.
-pub fn pushforward<M>(
+fn pushforward<M>(
     map: &M,
     system: &GTransferSystem,
     codomain: &GLattice,
@@ -132,15 +127,7 @@ where
     ))
 }
 
-/// Computes the right-adjoint pullback on invariant transfer systems.
-///
-/// A source relation orbit belongs to the result precisely when all of its
-/// conjugates and all of their restrictions map to relations in `system`.
-/// Equivalently, this is the greatest invariant transfer system on `domain`
-/// whose pushforward is contained in `system`. The map's domain must be the
-/// underlying lattice of `domain`.
-/// For arbitrary monotone maps it need not commute with composition.
-pub fn pullback<M>(
+fn pullback<M>(
     map: &M,
     system: &GTransferSystem,
     domain: &GLattice,
@@ -158,11 +145,7 @@ where
     Ok(GTransferSystem::new(Rc::clone(domain), arrows))
 }
 
-/// Computes Rubin's `f_L` using the subgroup-image map of `f`.
-///
-/// This construction is defined for every group homomorphism. For an
-/// injective homomorphism, [`induction`] is its conventional name.
-pub fn image_pushforward(
+fn image_pushforward(
     f: &SubgroupMaps,
     system: &GTransferSystem,
 ) -> Result<GTransferSystem, GTransferMapError> {
@@ -170,8 +153,7 @@ pub fn image_pushforward(
     pushforward(f.image_map(), system, f.codomain())
 }
 
-/// Computes Rubin's `f_R^{-1}`, right adjoint to [`image_pushforward`].
-pub fn image_pullback(
+fn image_pullback(
     f: &SubgroupMaps,
     system: &GTransferSystem,
 ) -> Result<GTransferSystem, GTransferMapError> {
@@ -179,11 +161,7 @@ pub fn image_pullback(
     pullback(f.image_map(), system, f.domain())
 }
 
-/// Computes Rubin's `f_L^{-1}` using the subgroup-preimage map of `f`.
-///
-/// This is restriction along an arbitrary group homomorphism. For a quotient
-/// homomorphism it is inflation.
-pub fn preimage_pushforward(
+fn preimage_pushforward(
     f: &SubgroupMaps,
     system: &GTransferSystem,
 ) -> Result<GTransferSystem, GTransferMapError> {
@@ -191,11 +169,7 @@ pub fn preimage_pushforward(
     pushforward(f.preimage_map(), system, f.domain())
 }
 
-/// Computes Rubin's `f_R`, right adjoint to [`preimage_pushforward`].
-///
-/// This is coinduction along an arbitrary group homomorphism. For a quotient
-/// homomorphism it is fixed points.
-pub fn preimage_pullback(
+fn preimage_pullback(
     f: &SubgroupMaps,
     system: &GTransferSystem,
 ) -> Result<GTransferSystem, GTransferMapError> {
@@ -203,10 +177,7 @@ pub fn preimage_pullback(
     pullback(f.preimage_map(), system, f.codomain())
 }
 
-/// Induces a transfer system along an injective group homomorphism.
-///
-/// This is the conventional injective case of [`image_pushforward`].
-pub fn induction(
+fn induction(
     f: &SubgroupMaps,
     system: &GTransferSystem,
 ) -> Result<GTransferSystem, GTransferMapError> {
@@ -216,30 +187,21 @@ pub fn induction(
     image_pushforward(f, system)
 }
 
-/// Restricts a transfer system along an arbitrary group homomorphism.
-///
-/// This is an ergonomic name for [`preimage_pushforward`].
-pub fn restriction(
+fn restriction(
     f: &SubgroupMaps,
     system: &GTransferSystem,
 ) -> Result<GTransferSystem, GTransferMapError> {
     preimage_pushforward(f, system)
 }
 
-/// Coinduces a transfer system along an arbitrary group homomorphism.
-///
-/// This is an ergonomic name for [`preimage_pullback`].
-pub fn coinduction(
+fn coinduction(
     f: &SubgroupMaps,
     system: &GTransferSystem,
 ) -> Result<GTransferSystem, GTransferMapError> {
     preimage_pullback(f, system)
 }
 
-/// Inflates a transfer system along a surjective group homomorphism.
-///
-/// Inflation is exactly transfer pushforward along subgroup preimage.
-pub fn inflation(
+fn inflation(
     f: &SubgroupMaps,
     system: &GTransferSystem,
 ) -> Result<GTransferSystem, GTransferMapError> {
@@ -249,11 +211,7 @@ pub fn inflation(
     preimage_pushforward(f, system)
 }
 
-/// Takes fixed points along a surjective group homomorphism.
-///
-/// This is the right adjoint to [`inflation`], realized by pullback along the
-/// subgroup-preimage map.
-pub fn fixed_points(
+fn fixed_points(
     f: &SubgroupMaps,
     system: &GTransferSystem,
 ) -> Result<GTransferSystem, GTransferMapError> {
@@ -261,10 +219,53 @@ pub fn fixed_points(
         return Err(GTransferMapError::NotSurjective);
     }
     preimage_pullback(f, system)
+}
+
+impl GTransferSystem {
+    /// Computes the invariant pushforward of this G-transfer system along a
+    /// monotone map out of its lattice.
+    ///
+    /// The result is the least transfer system on `codomain` fixed by its
+    /// action that contains the image of every relation in this system. The
+    /// map's codomain must be the underlying lattice of `codomain`.
+    /// For arbitrary monotone maps it need not commute with composition.
+    pub fn pushforward<M>(
+        &self,
+        map: &M,
+        codomain: &GLattice,
+    ) -> Result<GTransferSystem, GTransferMapError>
+    where
+        M: MonotoneMap + ?Sized,
+    {
+        pushforward(map, self, codomain)
+    }
+
+    /// Computes the right-adjoint pullback of this G-transfer system along a
+    /// monotone map into its lattice.
+    ///
+    /// A source relation orbit belongs to the result precisely when all of its
+    /// conjugates and all of their restrictions map to relations in this
+    /// system. Equivalently, this is the greatest invariant transfer system on
+    /// `domain` whose pushforward is contained in this one. The map's domain
+    /// must be the underlying lattice of `domain`.
+    /// For arbitrary monotone maps it need not commute with composition.
+    pub fn pullback<M>(
+        &self,
+        map: &M,
+        domain: &GLattice,
+    ) -> Result<GTransferSystem, GTransferMapError>
+    where
+        M: MonotoneMap + ?Sized,
+    {
+        pullback(map, self, domain)
+    }
 }
 
 impl SubgroupMaps {
-    /// Rubin's `f_L`; see [`image_pushforward`].
+    /// Computes Rubin's `f_L` using the subgroup-image map of `f`.
+    ///
+    /// This construction is defined for every group homomorphism. For an
+    /// injective homomorphism, [`SubgroupMaps::induction`] is its conventional name.
     pub fn image_pushforward(
         &self,
         system: &GTransferSystem,
@@ -272,7 +273,7 @@ impl SubgroupMaps {
         image_pushforward(self, system)
     }
 
-    /// Rubin's `f_R^{-1}`; see [`image_pullback`].
+    /// Computes Rubin's `f_R^{-1}`, right adjoint to [`SubgroupMaps::image_pushforward`].
     pub fn image_pullback(
         &self,
         system: &GTransferSystem,
@@ -280,7 +281,10 @@ impl SubgroupMaps {
         image_pullback(self, system)
     }
 
-    /// Rubin's `f_L^{-1}`; see [`preimage_pushforward`].
+    /// Computes Rubin's `f_L^{-1}` using the subgroup-preimage map of `f`.
+    ///
+    /// This is restriction along an arbitrary group homomorphism. For a quotient
+    /// homomorphism it is inflation.
     pub fn preimage_pushforward(
         &self,
         system: &GTransferSystem,
@@ -288,7 +292,10 @@ impl SubgroupMaps {
         preimage_pushforward(self, system)
     }
 
-    /// Rubin's `f_R`; see [`preimage_pullback`].
+    /// Computes Rubin's `f_R`, right adjoint to [`SubgroupMaps::preimage_pushforward`].
+    ///
+    /// This is coinduction along an arbitrary group homomorphism. For a quotient
+    /// homomorphism it is fixed points.
     pub fn preimage_pullback(
         &self,
         system: &GTransferSystem,
@@ -296,7 +303,9 @@ impl SubgroupMaps {
         preimage_pullback(self, system)
     }
 
-    /// Induction along an injective homomorphism; see [`induction`].
+    /// Induces a transfer system along an injective group homomorphism.
+    ///
+    /// This is the conventional injective case of [`SubgroupMaps::image_pushforward`].
     pub fn induction(
         &self,
         system: &GTransferSystem,
@@ -304,7 +313,9 @@ impl SubgroupMaps {
         induction(self, system)
     }
 
-    /// Restriction along a homomorphism; see [`restriction`].
+    /// Restricts a transfer system along an arbitrary group homomorphism.
+    ///
+    /// This is an ergonomic name for [`SubgroupMaps::preimage_pushforward`].
     pub fn restriction(
         &self,
         system: &GTransferSystem,
@@ -312,7 +323,9 @@ impl SubgroupMaps {
         restriction(self, system)
     }
 
-    /// Coinduction along a homomorphism; see [`coinduction`].
+    /// Coinduces a transfer system along an arbitrary group homomorphism.
+    ///
+    /// This is an ergonomic name for [`SubgroupMaps::preimage_pullback`].
     pub fn coinduction(
         &self,
         system: &GTransferSystem,
@@ -320,7 +333,9 @@ impl SubgroupMaps {
         coinduction(self, system)
     }
 
-    /// Inflation along a surjective homomorphism; see [`inflation`].
+    /// Inflates a transfer system along a surjective group homomorphism.
+    ///
+    /// Inflation is exactly transfer pushforward along subgroup preimage.
     pub fn inflation(
         &self,
         system: &GTransferSystem,
@@ -328,7 +343,10 @@ impl SubgroupMaps {
         inflation(self, system)
     }
 
-    /// Fixed points along a surjective homomorphism; see [`fixed_points`].
+    /// Takes fixed points along a surjective group homomorphism.
+    ///
+    /// This is the right adjoint to [`SubgroupMaps::inflation`], realized by pullback along the
+    /// subgroup-preimage map.
     pub fn fixed_points(
         &self,
         system: &GTransferSystem,

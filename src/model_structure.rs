@@ -103,7 +103,7 @@ impl std::error::Error for ModelStructureError {}
 /// fibrations, the cotransfer systems of cofibrations and acyclic
 /// cofibrations, and the resulting class of weak equivalences.  It can only be
 /// constructed after containment and 2-out-of-3 have been checked.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModelStructure {
     acyclic_fibrations: TransferSystem,
     fibrations: TransferSystem,
@@ -136,7 +136,7 @@ impl ModelStructure {
 
         let ambient = acyclic_fibrations.lattice().as_poset();
         let acyclic_fibration_edges = acyclic_fibrations.relations();
-        let acyclic_cofibration_edges = ambient.llc(&fibrations.relations());
+        let acyclic_cofibration_edges = ambient.left_lifting_class(&fibrations.relations());
         let weak_equivalences = compose(&acyclic_fibration_edges, &acyclic_cofibration_edges);
 
         if let Some(witness) = two_out_of_three_failure(ambient, &weak_equivalences) {

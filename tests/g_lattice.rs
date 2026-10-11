@@ -169,7 +169,7 @@ fn check_subgroup_lattice_constructor_uses_conjugation_action() -> Result<(), Bo
         .expect("normal C3 identity relation should have an orbit");
     assert_eq!(
         c3_identity_orbit.relations(),
-        &[Edge::new(rotations, rotations)]
+        EdgeSet::from([Edge::new(rotations, rotations)])
     );
     assert_eq!(order(c3_identity_orbit.stabilizer())?, 6);
 
@@ -224,4 +224,24 @@ fn diamond_lattice() -> Lattice {
         [("0", "a"), ("0", "b"), ("a", "1"), ("b", "1")],
     )
     .unwrap()
+}
+
+/// Relation ids number the relations of the lattice in the order of
+/// `Poset::relations`, and each orbit contains the relations it is the orbit
+/// of.
+#[test]
+fn relation_ids_follow_the_lattice_relations() -> Result<(), Box<dyn Error>> {
+    let s3 = SubgroupGLattice::from_gap("SymmetricGroup(3)")?;
+    let g_lattice = s3.g_lattice();
+    for (relation_id, relation) in g_lattice.lattice().relations().into_iter().enumerate() {
+        assert_eq!(g_lattice.relation(relation_id), relation);
+        assert_eq!(g_lattice.relation_id(relation), Some(relation_id));
+        assert!(
+            g_lattice
+                .relation_orbit_by_id(relation_id)
+                .relations()
+                .contains(&relation)
+        );
+    }
+    Ok(())
 }

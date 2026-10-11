@@ -36,11 +36,23 @@ fn check_model_category_laws(lattice: Lattice) {
             let fibrations = model.fibrations().relations();
             let acyclic_fibrations = model.acyclic_fibrations().relations();
 
-            assert_eq!(cofibrations, lattice.llc(&acyclic_fibrations));
-            assert_eq!(acyclic_cofibrations, lattice.llc(&fibrations));
-            assert_eq!(lattice.rlc(&cofibrations), acyclic_fibrations);
-            assert_eq!(lattice.rlc(&acyclic_cofibrations), fibrations);
-            assert!(lattice.two_out_of_three(model.weak_equivalences()));
+            assert_eq!(
+                cofibrations,
+                lattice.left_lifting_class(&acyclic_fibrations)
+            );
+            assert_eq!(
+                acyclic_cofibrations,
+                lattice.left_lifting_class(&fibrations)
+            );
+            assert_eq!(
+                lattice.right_lifting_class(&cofibrations),
+                acyclic_fibrations
+            );
+            assert_eq!(
+                lattice.right_lifting_class(&acyclic_cofibrations),
+                fibrations
+            );
+            assert!(lattice.satisfies_two_out_of_three(model.weak_equivalences()));
 
             assert_eq!(&fibrations & model.weak_equivalences(), acyclic_fibrations);
             assert_eq!(
@@ -173,7 +185,7 @@ fn invalid_intervals_return_mathematical_witnesses() {
 
     let proposed_weak_equivalences = compose(
         &acyclic_fibrations.relations(),
-        &lattice.llc(&fibrations.relations()),
+        &lattice.left_lifting_class(&fibrations.relations()),
     );
     let membership = [failure.first, failure.second, failure.composite]
         .map(|edge| proposed_weak_equivalences.contains(&edge));

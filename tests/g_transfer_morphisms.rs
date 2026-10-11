@@ -1,16 +1,15 @@
 #![cfg(feature = "groups")]
 
 use gap_sys::GapValue;
-use hccr::g_lattice::{GTransferLattice, GTransferSystem, SubgroupGLattice};
+use hccr::g_lattice::SubgroupGLattice;
+use hccr::g_transfer_lattice::{GTransferLattice, GTransferSystem};
 use hccr::g_transfer_morphism::{
-    GTransferMapError, coinduction, fixed_points, image_pullback, image_pullback_containment_map,
-    image_pushforward, image_pushforward_containment_map, induction, inflation,
-    preimage_pullback_containment_map, preimage_pushforward_containment_map, pullback,
-    pullback_containment_map, pushforward, pushforward_containment_map, restriction,
+    GTransferMapError, image_pullback_containment_map, image_pushforward_containment_map,
+    preimage_pullback_containment_map, preimage_pushforward_containment_map,
+    pullback_containment_map, pushforward_containment_map,
 };
 use hccr::poset::Edge;
 use hccr::subgroup_morphism::SubgroupMaps;
-use hccr::transfer_morphism::{pullback as ordinary_pullback, pushforward as ordinary_pushforward};
 use std::error::Error;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -99,7 +98,7 @@ fn assert_rubin_adjunctions_and_batch_maps(maps: &SubgroupMaps) -> TestResult {
     let named_preimage_pull = preimage_pullback_containment_map(maps, &domain, &codomain)?;
 
     for (domain_id, source) in domain_systems.iter().enumerate() {
-        let pointwise = pushforward(maps.image_map(), source, maps.codomain())?;
+        let pointwise = source.pushforward(maps.image_map(), maps.codomain())?;
         assert_eq!(
             image_push.apply(domain_id),
             containment_id(&codomain, &pointwise)
@@ -109,7 +108,7 @@ fn assert_rubin_adjunctions_and_batch_maps(maps: &SubgroupMaps) -> TestResult {
             image_push.apply(domain_id)
         );
 
-        let pointwise = pullback(maps.preimage_map(), source, maps.codomain())?;
+        let pointwise = source.pullback(maps.preimage_map(), maps.codomain())?;
         assert_eq!(
             preimage_pull.apply(domain_id),
             containment_id(&codomain, &pointwise)
@@ -121,7 +120,7 @@ fn assert_rubin_adjunctions_and_batch_maps(maps: &SubgroupMaps) -> TestResult {
     }
 
     for (codomain_id, target) in codomain_systems.iter().enumerate() {
-        let pointwise = pullback(maps.image_map(), target, maps.domain())?;
+        let pointwise = target.pullback(maps.image_map(), maps.domain())?;
         assert_eq!(
             image_pull.apply(codomain_id),
             containment_id(&domain, &pointwise)
@@ -131,7 +130,7 @@ fn assert_rubin_adjunctions_and_batch_maps(maps: &SubgroupMaps) -> TestResult {
             image_pull.apply(codomain_id)
         );
 
-        let pointwise = pushforward(maps.preimage_map(), target, maps.domain())?;
+        let pointwise = target.pushforward(maps.preimage_map(), maps.domain())?;
         assert_eq!(
             preimage_push.apply(codomain_id),
             containment_id(&domain, &pointwise)
@@ -144,16 +143,16 @@ fn assert_rubin_adjunctions_and_batch_maps(maps: &SubgroupMaps) -> TestResult {
 
     for source in &domain_systems {
         for target in &codomain_systems {
-            let image = pushforward(maps.image_map(), source, maps.codomain())?;
-            let inverse = pullback(maps.image_map(), target, maps.domain())?;
+            let image = source.pushforward(maps.image_map(), maps.codomain())?;
+            let inverse = target.pullback(maps.image_map(), maps.domain())?;
             assert_eq!(
                 contained(&image, target),
                 contained(source, &inverse),
                 "the subgroup-image pushforward and pullback should be adjoint"
             );
 
-            let inverse_image = pushforward(maps.preimage_map(), target, maps.domain())?;
-            let right_image = pullback(maps.preimage_map(), source, maps.codomain())?;
+            let inverse_image = target.pushforward(maps.preimage_map(), maps.domain())?;
+            let right_image = source.pullback(maps.preimage_map(), maps.codomain())?;
             assert_eq!(
                 contained(&inverse_image, source),
                 contained(target, &right_image),
@@ -193,9 +192,9 @@ fn check_inclusion_orbit_closure_and_core() -> TestResult {
         .expect("the three bottom-to-C2 relations should form an orbit");
     assert_eq!(c2_orbit.relations().len(), 3);
 
-    let induced = pushforward(maps.image_map(), &source_top, maps.codomain())?;
-    assert_eq!(induction(&maps, &source_top)?, induced);
-    assert_eq!(image_pushforward(&maps, &source_top)?, induced);
+    let induced = source_top.pushforward(maps.image_map(), maps.codomain())?;
+    assert_eq!(maps.induction(&source_top)?, induced);
+    assert_eq!(maps.image_pushforward(&source_top)?, induced);
     assert!(
         c2_orbit
             .relations()
@@ -203,8 +202,9 @@ fn check_inclusion_orbit_closure_and_core() -> TestResult {
             .all(|&edge| induced.contains_relation(edge))
     );
 
-    let ordinary_induced =
-        ordinary_pushforward(maps.image_map(), &source_top.underlying_transfer_system())?;
+    let ordinary_induced = source_top
+        .underlying_transfer_system()
+        .pushforward(maps.image_map())?;
     assert_eq!(
         c2_orbit
             .relations()
@@ -215,8 +215,8 @@ fn check_inclusion_orbit_closure_and_core() -> TestResult {
         "ordinary pushforward should remember the chosen C2 and miss its H-conjugates"
     );
 
-    let coinduced = pullback(maps.preimage_map(), &source_bottom, maps.codomain())?;
-    assert_eq!(coinduction(&maps, &source_bottom)?, coinduced);
+    let coinduced = source_bottom.pullback(maps.preimage_map(), maps.codomain())?;
+    assert_eq!(maps.coinduction(&source_bottom)?, coinduced);
     assert!(
         c2_orbit
             .relations()
@@ -224,10 +224,9 @@ fn check_inclusion_orbit_closure_and_core() -> TestResult {
             .all(|&edge| !coinduced.contains_relation(edge))
     );
 
-    let ordinary_coinduced = ordinary_pullback(
-        maps.preimage_map(),
-        &source_bottom.underlying_transfer_system(),
-    )?;
+    let ordinary_coinduced = source_bottom
+        .underlying_transfer_system()
+        .pullback(maps.preimage_map())?;
     assert_eq!(
         c2_orbit
             .relations()
@@ -240,18 +239,18 @@ fn check_inclusion_orbit_closure_and_core() -> TestResult {
 
     for target in codomain.clone() {
         assert_eq!(
-            restriction(&maps, &target)?,
-            image_pullback(&maps, &target)?,
+            maps.restriction(&target)?,
+            maps.image_pullback(&target)?,
             "the two Rubin restriction constructions agree for an injection"
         );
     }
     let target_bottom = codomain.system(codomain.bottom()).clone();
     assert_eq!(
-        inflation(&maps, &target_bottom).unwrap_err(),
+        maps.inflation(&target_bottom).unwrap_err(),
         GTransferMapError::NotSurjective
     );
     assert_eq!(
-        fixed_points(&maps, &source_top).unwrap_err(),
+        maps.fixed_points(&source_top).unwrap_err(),
         GTransferMapError::NotSurjective
     );
 
@@ -271,8 +270,8 @@ fn check_quotient_inflation_and_fixed_points() -> TestResult {
     let source_lattice = maps.domain().lattice();
 
     for quotient_system in codomain.clone() {
-        let inflated = pushforward(maps.preimage_map(), &quotient_system, maps.domain())?;
-        assert_eq!(inflation(&maps, &quotient_system)?, inflated);
+        let inflated = quotient_system.pushforward(maps.preimage_map(), maps.domain())?;
+        assert_eq!(maps.inflation(&quotient_system)?, inflated);
 
         for edge in source_lattice.as_poset().relations() {
             let quotient_edge = Edge::new(
@@ -293,13 +292,13 @@ fn check_quotient_inflation_and_fixed_points() -> TestResult {
             );
         }
 
-        let recovered = pullback(maps.preimage_map(), &inflated, maps.codomain())?;
+        let recovered = inflated.pullback(maps.preimage_map(), maps.codomain())?;
         assert_eq!(recovered, quotient_system);
     }
 
     for source_system in domain.clone() {
-        let fixed = pullback(maps.preimage_map(), &source_system, maps.codomain())?;
-        assert_eq!(fixed_points(&maps, &source_system)?, fixed);
+        let fixed = source_system.pullback(maps.preimage_map(), maps.codomain())?;
+        assert_eq!(maps.fixed_points(&source_system)?, fixed);
         for edge in maps.codomain().lattice().as_poset().relations() {
             let lifted = Edge::new(
                 maps.preimage_map().apply(edge.from),
@@ -328,14 +327,14 @@ fn check_noninjective_inverse_distinction() -> TestResult {
     assert_eq!(codomain.size(), 1);
     let unique = codomain.system(codomain.bottom()).clone();
 
-    let rubin_restriction = pushforward(maps.preimage_map(), &unique, maps.domain())?;
-    assert_eq!(restriction(&maps, &unique)?, rubin_restriction);
-    let other_inverse = pullback(maps.image_map(), &unique, maps.domain())?;
+    let rubin_restriction = unique.pushforward(maps.preimage_map(), maps.domain())?;
+    assert_eq!(maps.restriction(&unique)?, rubin_restriction);
+    let other_inverse = unique.pullback(maps.image_map(), maps.domain())?;
     assert_eq!(&rubin_restriction, domain.system(domain.bottom()));
     assert_eq!(&other_inverse, domain.system(domain.top()));
     assert_ne!(rubin_restriction, other_inverse);
     assert_eq!(
-        induction(&maps, domain.system(domain.bottom())).unwrap_err(),
+        maps.induction(domain.system(domain.bottom())).unwrap_err(),
         GTransferMapError::NotInjective
     );
 
@@ -348,19 +347,19 @@ fn check_identity_and_composition_laws() -> TestResult {
     let systems = identity.domain().transfer_systems();
     for system in systems.clone() {
         assert_eq!(
-            pushforward(identity.image_map(), &system, identity.domain())?,
+            system.pushforward(identity.image_map(), identity.domain())?,
             system
         );
         assert_eq!(
-            pullback(identity.image_map(), &system, identity.domain())?,
+            system.pullback(identity.image_map(), identity.domain())?,
             system
         );
         assert_eq!(
-            pushforward(identity.preimage_map(), &system, identity.domain())?,
+            system.pushforward(identity.preimage_map(), identity.domain())?,
             system
         );
         assert_eq!(
-            pullback(identity.preimage_map(), &system, identity.domain())?,
+            system.pullback(identity.preimage_map(), identity.domain())?,
             system
         );
     }
@@ -402,29 +401,29 @@ fn check_identity_and_composition_laws() -> TestResult {
     let sign_systems = second.codomain().transfer_systems();
 
     for source in c2_systems.clone() {
-        let first_image = pushforward(first.image_map(), &source, first.codomain())?;
-        let iterated_image = pushforward(second.image_map(), &first_image, second.codomain())?;
-        let direct_image = pushforward(composed.image_map(), &source, second.codomain())?;
+        let first_image = source.pushforward(first.image_map(), first.codomain())?;
+        let iterated_image = first_image.pushforward(second.image_map(), second.codomain())?;
+        let direct_image = source.pushforward(composed.image_map(), second.codomain())?;
         assert_eq!(iterated_image, direct_image);
 
-        let first_right_image = pullback(first.preimage_map(), &source, first.codomain())?;
+        let first_right_image = source.pullback(first.preimage_map(), first.codomain())?;
         let iterated_right_image =
-            pullback(second.preimage_map(), &first_right_image, second.codomain())?;
-        let direct_right_image = pullback(composed.preimage_map(), &source, second.codomain())?;
+            first_right_image.pullback(second.preimage_map(), second.codomain())?;
+        let direct_right_image = source.pullback(composed.preimage_map(), second.codomain())?;
         assert_eq!(iterated_right_image, direct_right_image);
     }
 
     for target in sign_systems.clone() {
-        let second_left_inverse = pushforward(second.preimage_map(), &target, first.codomain())?;
+        let second_left_inverse = target.pushforward(second.preimage_map(), first.codomain())?;
         let iterated_left_inverse =
-            pushforward(first.preimage_map(), &second_left_inverse, first.domain())?;
-        let direct_left_inverse = pushforward(composed.preimage_map(), &target, first.domain())?;
+            second_left_inverse.pushforward(first.preimage_map(), first.domain())?;
+        let direct_left_inverse = target.pushforward(composed.preimage_map(), first.domain())?;
         assert_eq!(iterated_left_inverse, direct_left_inverse);
 
-        let second_right_inverse = pullback(second.image_map(), &target, first.codomain())?;
+        let second_right_inverse = target.pullback(second.image_map(), first.codomain())?;
         let iterated_right_inverse =
-            pullback(first.image_map(), &second_right_inverse, first.domain())?;
-        let direct_right_inverse = pullback(composed.image_map(), &target, first.domain())?;
+            second_right_inverse.pullback(first.image_map(), first.domain())?;
+        let direct_right_inverse = target.pullback(composed.image_map(), first.domain())?;
         assert_eq!(iterated_right_inverse, direct_right_inverse);
     }
 

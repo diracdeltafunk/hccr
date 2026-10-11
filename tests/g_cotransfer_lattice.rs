@@ -1,7 +1,8 @@
 #![cfg(feature = "groups")]
 
 use hccr::g_cotransfer_lattice::GCotransferSystem;
-use hccr::g_lattice::{GLattice, GTransferSystem};
+use hccr::g_lattice::GLattice;
+use hccr::g_transfer_lattice::GTransferSystem;
 use hccr::lattice::Lattice;
 use hccr::poset::Edge;
 use std::collections::HashSet;
@@ -162,5 +163,34 @@ fn equivariant_lifting_classes_are_mutually_inverse_and_reverse_containment()
             }
         }
     }
+    Ok(())
+}
+
+/// A minimal set of orbit generators generates the G-cotransfer system, no
+/// proper subset does, and the trivial and complete systems are the bottom
+/// and top of the containment lattice.
+#[test]
+fn g_cotransfer_minimal_generating_sets_generate_irredundantly() -> Result<(), Box<dyn Error>> {
+    let group = gap_sys::eval("Group((1,2));")?;
+    let g_lattice = GLattice::from_generator_images(&diamond(), &group, vec![vec![0, 2, 1, 3]])?;
+    let containment = g_lattice.cotransfer_systems();
+    for system in containment.systems() {
+        let basis: Vec<Edge> = system
+            .minimal_generating_set()
+            .iter()
+            .map(|label| label.canonical_representative())
+            .collect();
+        assert!(system.is_generated_by(basis.iter().copied())?);
+        assert!(system.is_minimal_generating_set(basis.iter().copied())?);
+        assert_eq!(basis.len(), system.generator_complexity());
+    }
+    assert_eq!(
+        &g_lattice.trivial_cotransfer_system(),
+        containment.system(containment.bottom())
+    );
+    assert_eq!(
+        &g_lattice.complete_cotransfer_system(),
+        containment.system(containment.top())
+    );
     Ok(())
 }

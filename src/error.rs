@@ -30,7 +30,9 @@ use std::fmt;
 #[cfg(feature = "groups")]
 use crate::g_cotransfer_lattice::GCotransferSystemError;
 #[cfg(feature = "groups")]
-use crate::g_lattice::{GLatticeError, GTransferSystemError};
+use crate::g_lattice::GLatticeError;
+#[cfg(feature = "groups")]
+use crate::g_transfer_lattice::GTransferSystemError;
 #[cfg(feature = "groups")]
 use crate::g_transfer_morphism::GTransferMapError;
 #[cfg(feature = "groups")]

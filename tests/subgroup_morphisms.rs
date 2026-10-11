@@ -20,7 +20,7 @@ fn subgroup_image_and_preimage_maps_are_mathematically_correct() -> Result<(), B
         .ids()
         .map(|subgroup| {
             let image = maps.image_map().apply(subgroup);
-            subgroup_order(codomain.subgroup(image).unwrap())
+            subgroup_order(codomain.subgroup(image))
         })
         .collect::<Result<Vec<_>, _>>()?;
     assert_eq!(image_orders, vec![1, 1, 2]);
@@ -29,7 +29,7 @@ fn subgroup_image_and_preimage_maps_are_mathematically_correct() -> Result<(), B
         .ids()
         .map(|subgroup| {
             let preimage = maps.preimage_map().apply(subgroup);
-            subgroup_order(domain.subgroup(preimage).unwrap())
+            subgroup_order(domain.subgroup(preimage))
         })
         .collect::<Result<Vec<_>, _>>()?;
     assert_eq!(preimage_orders, vec![2, 4]);
@@ -53,7 +53,7 @@ fn check_preimage_map_for_nonsurjective_inclusion() -> Result<(), Box<dyn Error>
         .ids()
         .map(|subgroup| {
             let preimage = maps.preimage_map().apply(subgroup);
-            subgroup_order(maps.domain().subgroup(preimage).unwrap())
+            subgroup_order(maps.domain().subgroup(preimage))
         })
         .collect::<Result<Vec<_>, _>>()?;
     preimage_orders.sort_unstable();
@@ -88,7 +88,7 @@ fn check_map_that_is_neither_injective_nor_surjective() -> Result<(), Box<dyn Er
         .ids()
         .map(|subgroup| {
             let image = maps.image_map().apply(subgroup);
-            subgroup_order(maps.codomain().subgroup(image).unwrap())
+            subgroup_order(maps.codomain().subgroup(image))
         })
         .collect::<Result<Vec<_>, _>>()?;
     assert_eq!(image_orders, vec![1, 1, 2]);
@@ -98,7 +98,7 @@ fn check_map_that_is_neither_injective_nor_surjective() -> Result<(), Box<dyn Er
         .ids()
         .map(|subgroup| {
             let preimage = maps.preimage_map().apply(subgroup);
-            subgroup_order(maps.domain().subgroup(preimage).unwrap())
+            subgroup_order(maps.domain().subgroup(preimage))
         })
         .collect::<Result<Vec<_>, _>>()?;
     assert_eq!(preimage_orders, vec![2, 4, 4]);

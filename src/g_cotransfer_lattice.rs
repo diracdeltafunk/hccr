@@ -7,7 +7,8 @@
 
 use crate::bitvec_utils::{is_subset, set_partial_cmp};
 use crate::cotransfer_lattice::CotransferSystem;
-use crate::g_lattice::{GLattice, GTransferSystem, GTransferUniverse, RelationOrbitLabel};
+use crate::g_lattice::{GLattice, RelationOrbitLabel};
+use crate::g_transfer_lattice::{GTransferSystem, GTransferUniverse};
 use crate::label::Label;
 use crate::lattice::Lattice;
 use crate::poset::{Edge, EdgeSet, ElementId, Poset, covers_of};
@@ -159,6 +160,20 @@ impl GLattice {
         self.cotransfer_universe().generated_by(generators)
     }
 
+    /// Returns the least G-cotransfer system, containing only identities.
+    pub fn trivial_cotransfer_system(&self) -> GCotransferSystem {
+        let universe = self.cotransfer_universe();
+        let empty = BitVec::repeat(false, universe.relation_orbits.len());
+        GCotransferSystem::new(Rc::clone(universe), universe.close(&empty))
+    }
+
+    /// Returns the greatest G-cotransfer system, containing every relation.
+    pub fn complete_cotransfer_system(&self) -> GCotransferSystem {
+        let universe = self.cotransfer_universe();
+        let full = BitVec::repeat(true, universe.relation_orbits.len());
+        GCotransferSystem::new(Rc::clone(universe), universe.close(&full))
+    }
+
     /// Converts a G-transfer system on the opposite G-lattice to the
     /// corresponding G-cotransfer system.
     ///
@@ -260,8 +275,13 @@ impl GCotransferUniverse {
         }
         Ok(GCotransferSystem::new(
             Rc::clone(self),
-            self.context.induce_l(&self.context.induce_r(&orbit_arrows)),
+            self.close(&orbit_arrows),
         ))
+    }
+
+    /// The least G-cotransfer system containing the given relation orbits.
+    fn close(&self, orbit_arrows: &BitVec) -> BitVec {
+        self.context.induce_l(&self.context.induce_r(orbit_arrows))
     }
 
     fn relation_orbit_label_id(&self, relation: Edge) -> Option<usize> {
@@ -327,6 +347,81 @@ impl GCotransferSystem {
         covers_of(&self.proper_relations())
     }
 
+    /// Returns whether the supplied relations generate this G-cotransfer
+    /// system.
+    ///
+    /// Identity relations may be supplied but are never needed. Invalid
+    /// lattice relations produce the same errors as
+    /// [`GLattice::cotransfer_system_generated_by`].
+    pub fn is_generated_by<I, E>(&self, generators: I) -> Result<bool, GCotransferSystemError>
+    where
+        I: IntoIterator<Item = E>,
+        E: Into<Edge>,
+    {
+        Ok(self.universe.generated_by(generators)? == *self)
+    }
+
+    /// Returns whether the supplied relations are an irredundant generating
+    /// set.
+    ///
+    /// Supplying identities, duplicate relations, or two relations in the same
+    /// G-orbit is redundant and therefore returns `false`.
+    pub fn is_minimal_generating_set<I, E>(
+        &self,
+        generators: I,
+    ) -> Result<bool, GCotransferSystemError>
+    where
+        I: IntoIterator<Item = E>,
+        E: Into<Edge>,
+    {
+        let generators = generators.into_iter().map(Into::into).collect::<Vec<_>>();
+        if !self.is_generated_by(generators.iter().copied())? {
+            return Ok(false);
+        }
+        for removed in 0..generators.len() {
+            let remainder = generators
+                .iter()
+                .enumerate()
+                .filter_map(|(index, &edge)| (index != removed).then_some(edge));
+            if self.is_generated_by(remainder)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Returns a deterministic minimal set of relation-orbit generators.
+    ///
+    /// Each returned label represents its entire G-orbit. All minimal bases
+    /// have the same cardinality, though the basis itself need not be unique.
+    pub fn minimal_generating_set(&self) -> Vec<RelationOrbitLabel> {
+        let mut basis = self.orbit_arrows.clone();
+        let selected = basis.iter_ones().collect::<Vec<_>>();
+        for orbit_id in selected.into_iter().rev() {
+            basis.set(orbit_id, false);
+            if self.universe.close(&basis) != self.orbit_arrows {
+                basis.set(orbit_id, true);
+            }
+        }
+        basis
+            .iter_ones()
+            .map(|orbit_id| self.universe.context.objects[orbit_id])
+            .collect()
+    }
+
+    /// Returns a minimum-cardinality set of relation-orbit generators; an
+    /// explicitly named alias for
+    /// [`GCotransferSystem::minimal_generating_set`].
+    pub fn minimum_generating_set(&self) -> Vec<RelationOrbitLabel> {
+        self.minimal_generating_set()
+    }
+
+    /// Returns the generator complexity of this G-cotransfer system: the
+    /// number of relation orbits in a minimal generating set.
+    pub fn generator_complexity(&self) -> usize {
+        self.minimal_generating_set().len()
+    }
+
     /// Expands this system to an ordinary cotransfer system on the lattice.
     pub fn underlying_cotransfer_system(&self) -> CotransferSystem {
         self.lattice()
@@ -348,7 +443,7 @@ impl GCotransferSystem {
     /// realizes the order-reversing duality between G-cotransfer and
     /// G-transfer systems.
     pub fn right_lifting_transfer(&self) -> GTransferSystem {
-        let arrows = self.lattice().rlc(&self.relations());
+        let arrows = self.lattice().right_lifting_class(&self.relations());
         self.universe
             .transfer_universe
             .generated_by(arrows)
@@ -361,7 +456,7 @@ impl GTransferSystem {
     /// G-lattice.
     pub fn left_lifting_cotransfer(&self) -> GCotransferSystem {
         let universe = Rc::new(GCotransferUniverse::new(Rc::clone(self.universe())));
-        let arrows = self.lattice().llc(&self.relations());
+        let arrows = self.lattice().left_lifting_class(&self.relations());
         universe
             .generated_by(arrows)
             .expect("a left lifting class consists of lattice relations")
@@ -379,6 +474,13 @@ impl PartialEq for GCotransferSystem {
 }
 
 impl Eq for GCotransferSystem {}
+
+impl std::hash::Hash for GCotransferSystem {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Equal systems have the same coordinates, so the orbit bits suffice.
+        self.orbit_arrows.hash(state);
+    }
+}
 
 impl PartialOrd for GCotransferSystem {
     /// Compares G-cotransfer systems on the same G-lattice by containment.

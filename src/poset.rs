@@ -220,7 +220,7 @@ impl Poset {
     /// The matrix must be square of size equal to the number of labels,
     /// reflexive, antisymmetric, and transitive. Entry `[i][j]` is
     /// interpreted as `i <= j`. Labels must be distinct.
-    pub fn from_relation<I>(labels: I, relation: Vec<BitVec>) -> Result<Self, PosetError>
+    pub(crate) fn from_relation<I>(labels: I, relation: Vec<BitVec>) -> Result<Self, PosetError>
     where
         I: IntoIterator,
         I::Item: Into<Label>,
@@ -600,13 +600,16 @@ impl Poset {
     /// ```
     pub fn id(&self, label: impl Into<Label>) -> Result<ElementId, PosetError> {
         let label = label.into();
-        self.try_id(&label)
+        self.data
+            .index
+            .get(&label)
+            .copied()
             .ok_or(PosetError::UnknownLabel { label })
     }
 
     /// Returns the id of the element with the given label, if there is one.
-    pub fn try_id(&self, label: &Label) -> Option<ElementId> {
-        self.data.index.get(label).copied()
+    pub fn try_id(&self, label: impl Into<Label>) -> Option<ElementId> {
+        self.data.index.get(&label.into()).copied()
     }
 
     /// Returns the relation `lower <= upper` between the elements with the
@@ -623,7 +626,7 @@ impl Poset {
     ///
     /// The returned rows satisfy `relation_matrix()[i][j] == true` exactly
     /// when `i <= j`.
-    pub fn relation_matrix(&self) -> &[BitVec] {
+    pub(crate) fn relation_matrix(&self) -> &[BitVec] {
         &self.data.relation
     }
 
@@ -631,7 +634,7 @@ impl Poset {
     ///
     /// The returned rows satisfy `relation_matrix_transpose()[j][i] == true`
     /// exactly when `i <= j`. Thus row `j` is the principal lower set of `j`.
-    pub fn relation_matrix_transpose(&self) -> &[BitVec] {
+    pub(crate) fn relation_matrix_transpose(&self) -> &[BitVec] {
         &self.data.relation_transpose
     }
 
@@ -722,20 +725,70 @@ impl Poset {
     /// Returns the cover relations: the relations `x < y` with no `z`
     /// satisfying `x < z < y`. These are the edges of the Hasse diagram.
     pub fn covers(&self) -> EdgeSet {
-        let mut result = EdgeSet::new();
-        for (from, upper_set) in self.data.relation.iter().enumerate() {
-            let mut covers = upper_set.clone();
-            covers.set(from, false);
-            for middle in upper_set.iter_ones().filter(|&middle| middle != from) {
-                if !covers[middle] {
-                    continue;
-                }
-                difference_assign(&mut covers, &self.data.relation[middle]);
-                covers.set(middle, true);
-            }
-            result.extend(covers.iter_ones().map(|to| Edge::new(from, to)));
-        }
-        result
+        self.ids()
+            .flat_map(|from| {
+                covers_in(&self.data.relation, from)
+                    .into_iter()
+                    .map(move |to| Edge::new(from, to))
+            })
+            .collect()
+    }
+
+    /// Tests the strict order relation `left < right`.
+    ///
+    /// Panics if either id is out of bounds.
+    pub fn lt(&self, left: ElementId, right: ElementId) -> bool {
+        left != right && self.leq(left, right)
+    }
+
+    /// Tests whether `left <= right` or `right <= left`.
+    ///
+    /// Panics if either id is out of bounds.
+    pub fn comparable(&self, left: ElementId, right: ElementId) -> bool {
+        self.leq(left, right) || self.leq(right, left)
+    }
+
+    /// Returns the elements `y <= x`, in increasing order of id.
+    ///
+    /// Panics if `x` is out of bounds.
+    pub fn down_set(&self, x: ElementId) -> Vec<ElementId> {
+        self.data.relation_transpose[x].iter_ones().collect()
+    }
+
+    /// Returns the elements `y >= x`, in increasing order of id.
+    ///
+    /// Panics if `x` is out of bounds.
+    pub fn up_set(&self, x: ElementId) -> Vec<ElementId> {
+        self.data.relation[x].iter_ones().collect()
+    }
+
+    /// Returns the elements `y` with `lower <= y <= upper`, in increasing
+    /// order of id. This is empty unless `lower <= upper`.
+    ///
+    /// Panics if either id is out of bounds.
+    pub fn interval(&self, lower: ElementId, upper: ElementId) -> Vec<ElementId> {
+        intersection(
+            &self.data.relation[lower],
+            &self.data.relation_transpose[upper],
+        )
+        .iter_ones()
+        .collect()
+    }
+
+    /// Returns the elements covered by `x`: those `y < x` with no `z`
+    /// satisfying `y < z < x`. In increasing order of id.
+    ///
+    /// Panics if `x` is out of bounds.
+    pub fn lower_covers(&self, x: ElementId) -> Vec<ElementId> {
+        covers_in(&self.data.relation_transpose, x)
+    }
+
+    /// Returns the elements covering `x`: those `y > x` with no `z`
+    /// satisfying `x < z < y`. In increasing order of id.
+    ///
+    /// Panics if `x` is out of bounds.
+    pub fn upper_covers(&self, x: ElementId) -> Vec<ElementId> {
+        covers_in(&self.data.relation, x)
     }
 
     /// Returns all minimal elements.
@@ -769,7 +822,7 @@ impl Poset {
     /// `!(edge1.from <= edge2.from) || !(edge1.to <= edge2.to) || edge1.to <= edge2.from`.
     ///
     /// Identity relations are always included.
-    pub fn llc(&self, arrows: &EdgeSet) -> EdgeSet {
+    pub fn left_lifting_class(&self, arrows: &EdgeSet) -> EdgeSet {
         let mut excluded = vec![BitVec::repeat(false, self.size()); self.size()];
         for edge in arrows {
             if edge.is_identity() {
@@ -795,10 +848,10 @@ impl Poset {
 
     /// Computes the right lifting class of a set of arrows.
     ///
-    /// This is dual to [`Poset::llc`]: it returns all relations `edge2` that
+    /// This is dual to [`Poset::left_lifting_class`]: it returns all relations `edge2` that
     /// satisfy the lifting condition against every `edge1` in `arrows`.
     /// Identity relations are always included.
-    pub fn rlc(&self, arrows: &EdgeSet) -> EdgeSet {
+    pub fn right_lifting_class(&self, arrows: &EdgeSet) -> EdgeSet {
         let mut excluded = vec![BitVec::repeat(false, self.size()); self.size()];
         for edge in arrows {
             if edge.is_identity() {
@@ -829,7 +882,7 @@ impl Poset {
     /// three must belong to it. Returns `false` if `class` contains an edge
     /// that is not a relation of this poset.
     #[must_use]
-    pub fn two_out_of_three(&self, class: &EdgeSet) -> bool {
+    pub fn satisfies_two_out_of_three(&self, class: &EdgeSet) -> bool {
         if class.iter().any(|edge| {
             edge.from >= self.size() || edge.to >= self.size() || !self.leq(edge.from, edge.to)
         }) {
@@ -898,6 +951,19 @@ impl PartialEq for Poset {
 
 impl Eq for Poset {}
 
+/// Hashes the labels, which equal posets share.
+///
+/// A poset caches derived data in `OnceLock`s, so clippy's `mutable_key_type`
+/// lint flags it (and types containing it) as a hash key. That is a false
+/// positive: hashing and equality depend only on data that never changes.
+impl std::hash::Hash for Poset {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Equal posets have equal labels, so hashing the labels alone is
+        // consistent with `Eq`.
+        self.data.labels.hash(state);
+    }
+}
+
 impl fmt::Display for Poset {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.fmt_named("Poset", f)
@@ -908,6 +974,23 @@ impl fmt::Debug for Poset {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
     }
+}
+
+/// Returns the covers of `x` in the order whose rows are `rows`: the `y` in
+/// row `x` other than `x` that are not above any other such element. With the
+/// order matrix these are the upper covers; with its transpose, the lower.
+fn covers_in(rows: &[BitVec], x: ElementId) -> Vec<ElementId> {
+    let row = &rows[x];
+    let mut covers = row.clone();
+    covers.set(x, false);
+    for middle in row.iter_ones().filter(|&middle| middle != x) {
+        if !covers[middle] {
+            continue;
+        }
+        difference_assign(&mut covers, &rows[middle]);
+        covers.set(middle, true);
+    }
+    covers.iter_ones().collect()
 }
 
 /// Returns the covers of a partial order given by its non-identity

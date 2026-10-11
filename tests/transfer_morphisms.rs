@@ -3,9 +3,8 @@ use hccr::morphism::{LatticeMap, PosetMap};
 use hccr::poset::{Edge, EdgeSet};
 use hccr::transfer_lattice::{TransferLattice, TransferPoset, TransferSystem};
 use hccr::transfer_morphism::{
-    CompositionMapError, generated_inverse_image, generated_inverse_image_containment_map,
-    pullback, pullback_containment_map, pushforward, pushforward_containment_map,
-    try_pullback_composition_map, try_pushforward_composition_map,
+    CompositionMapError, generated_inverse_image_containment_map, pullback_containment_map,
+    pushforward_containment_map, try_pullback_composition_map, try_pushforward_composition_map,
 };
 
 fn chain(top: usize) -> Lattice {
@@ -39,7 +38,7 @@ fn assert_batch_pushforward_agrees(
 ) {
     let map = pushforward_containment_map(homomorphism, domain, codomain).unwrap();
     for (source_id, system) in domain.systems().iter().enumerate() {
-        let expected = pushforward(homomorphism, system).unwrap();
+        let expected = system.pushforward(homomorphism).unwrap();
         assert!(
             codomain.system(map.apply(source_id)) == &expected,
             "batch pushforward disagrees at source element {source_id}"
@@ -54,7 +53,7 @@ fn assert_batch_pullback_agrees(
 ) {
     let map = pullback_containment_map(homomorphism, codomain, domain).unwrap();
     for (source_id, system) in codomain.systems().iter().enumerate() {
-        let expected = pullback(homomorphism, system).unwrap();
+        let expected = system.pullback(homomorphism).unwrap();
         assert!(
             domain.system(map.apply(source_id)) == &expected,
             "batch pullback disagrees at source element {source_id}"
@@ -69,7 +68,7 @@ fn assert_composition_pushforward_agrees(
 ) {
     let map = try_pushforward_composition_map(homomorphism, domain, codomain).unwrap();
     for (source_id, system) in domain.systems().iter().enumerate() {
-        let expected = pushforward(homomorphism, system).unwrap();
+        let expected = system.pushforward(homomorphism).unwrap();
         let expected_id = composition_id(codomain, &expected);
         assert_eq!(map.apply(source_id), expected_id);
         assert!(codomain.system(expected_id) == &expected);
@@ -83,7 +82,7 @@ fn assert_composition_pullback_agrees(
 ) {
     let map = try_pullback_composition_map(homomorphism, codomain, domain).unwrap();
     for (source_id, system) in codomain.systems().iter().enumerate() {
-        let expected = pullback(homomorphism, system).unwrap();
+        let expected = system.pullback(homomorphism).unwrap();
         let expected_id = composition_id(domain, &expected);
         assert_eq!(map.apply(source_id), expected_id);
         assert!(domain.system(expected_id) == &expected);
@@ -153,14 +152,14 @@ fn pointwise_maps_close_images_and_handle_collapsed_and_duplicate_arrows() {
         source_top.proper_relations(),
         proper_edges([(0, 1), (0, 2), (1, 2)])
     );
-    let image = pushforward(&quotient, &source_top).unwrap();
+    let image = source_top.pushforward(&quotient).unwrap();
     assert_eq!(image.proper_relations(), proper_edges([(0, 1)]));
 
     // Pulling back the diagonal includes every arrow collapsed by the map.
     let target_bottom = codomain
         .transfer_system_generated_by(std::iter::empty::<Edge>())
         .unwrap();
-    let inverse_image = pullback(&quotient, &target_bottom).unwrap();
+    let inverse_image = target_bottom.pullback(&quotient).unwrap();
     assert_eq!(inverse_image.proper_relations(), proper_edges([(0, 1)]));
 
     // Meet preservation makes the raw inverse image a transfer system, so
@@ -169,13 +168,13 @@ fn pointwise_maps_close_images_and_handle_collapsed_and_duplicate_arrows() {
     // right-adjoint algorithm and must produce the same result.
     let quotient_as_poset_map = quotient.as_poset_map();
     for target in codomain.transfer_systems().systems() {
-        let fast_pullback = pullback(&quotient, target).unwrap();
+        let fast_pullback = target.pullback(&quotient).unwrap();
         assert_eq!(
-            generated_inverse_image(&quotient, target).unwrap(),
+            target.generated_inverse_image(&quotient).unwrap(),
             fast_pullback
         );
         assert_eq!(
-            pullback(&quotient_as_poset_map, target).unwrap(),
+            target.pullback(&quotient_as_poset_map).unwrap(),
             fast_pullback
         );
     }
@@ -246,8 +245,8 @@ fn composition_monotonicity_is_checked_independently_in_each_direction() {
         .transfer_system_generated_by([Edge::new(0, 1), Edge::new(1, 2)])
         .unwrap();
     assert!(cc_c3.leq(composition_id(&cc_c3, &r), composition_id(&cc_c3, &s)));
-    let image_r = pushforward(&into_b2, &r).unwrap();
-    let image_s = pushforward(&into_b2, &s).unwrap();
+    let image_r = r.pushforward(&into_b2).unwrap();
+    let image_s = s.pushforward(&into_b2).unwrap();
     assert_eq!(image_r.proper_relations(), proper_edges([(0, 2), (1, 3)]));
     assert_eq!(
         image_s.proper_relations(),
@@ -259,7 +258,7 @@ fn composition_monotonicity_is_checked_independently_in_each_direction() {
     ));
     let push_error = try_pushforward_composition_map(&into_b2, &cc_c3, &cc_b2).unwrap_err();
     assert_is_a_monotonicity_failure(&push_error, &cc_c3, &cc_b2, |system| {
-        pushforward(&into_b2, system).unwrap()
+        system.pushforward(&into_b2).unwrap()
     });
     assert_composition_pullback_agrees(&into_b2, &cc_b2, &cc_c3);
 
@@ -275,8 +274,8 @@ fn composition_monotonicity_is_checked_independently_in_each_direction() {
         .transfer_system_generated_by([Edge::new(0, 3), Edge::new(2, 3)])
         .unwrap();
     assert!(cc_c4.leq(composition_id(&cc_c4, &r), composition_id(&cc_c4, &s)));
-    let inverse_r = pullback(&into_c4, &r).unwrap();
-    let inverse_s = pullback(&into_c4, &s).unwrap();
+    let inverse_r = r.pullback(&into_c4).unwrap();
+    let inverse_s = s.pullback(&into_c4).unwrap();
     assert_eq!(inverse_r.proper_relations(), proper_edges([(0, 1)]));
     assert_eq!(inverse_s.proper_relations(), proper_edges([(0, 1), (0, 2)]));
     assert!(!cc_c3.leq(
@@ -286,7 +285,7 @@ fn composition_monotonicity_is_checked_independently_in_each_direction() {
     assert_composition_pushforward_agrees(&into_c4, &cc_c3, &cc_c4);
     let pull_error = try_pullback_composition_map(&into_c4, &cc_c4, &cc_c3).unwrap_err();
     assert_is_a_monotonicity_failure(&pull_error, &cc_c4, &cc_c3, |system| {
-        pullback(&into_c4, system).unwrap()
+        system.pullback(&into_c4).unwrap()
     });
 }
 
@@ -306,16 +305,16 @@ fn pointwise_maps_are_functorial_and_identity_maps_work_for_both_orders() {
     let u2 = c2.clone();
 
     for system in u4.transfer_systems() {
-        let sequential = pushforward(&g, &pushforward(&f, &system).unwrap()).unwrap();
-        assert_eq!(sequential, pushforward(&composite, &system).unwrap());
+        let sequential = system.pushforward(&f).unwrap().pushforward(&g).unwrap();
+        assert_eq!(sequential, system.pushforward(&composite).unwrap());
     }
     for system in u2.transfer_systems() {
-        let sequential = pullback(&f, &pullback(&g, &system).unwrap()).unwrap();
-        assert_eq!(sequential, pullback(&composite, &system).unwrap());
+        let sequential = system.pullback(&g).unwrap().pullback(&f).unwrap();
+        assert_eq!(sequential, system.pullback(&composite).unwrap());
     }
     for system in u3.transfer_systems() {
-        assert_eq!(pushforward(&identity, &system).unwrap(), system);
-        assert_eq!(pullback(&identity, &system).unwrap(), system);
+        assert_eq!(system.pushforward(&identity).unwrap(), system);
+        assert_eq!(system.pullback(&identity).unwrap(), system);
     }
 
     let containment = u3.transfer_systems();
@@ -341,7 +340,7 @@ fn monotone_map_pullback_is_the_right_adjoint_but_generated_inverse_image_is_not
     let direct = pushforward_containment_map(&f, &tr_b2, &tr_c2).unwrap();
     let right_adjoint = pullback_containment_map(&f, &tr_c2, &tr_b2).unwrap();
     for (source_id, system) in tr_c2.systems().iter().enumerate() {
-        let expected = pullback(&f, system).unwrap();
+        let expected = system.pullback(&f).unwrap();
         let actual = tr_b2.system(right_adjoint.apply(source_id));
         assert_eq!(actual, &expected);
     }
@@ -358,12 +357,12 @@ fn monotone_map_pullback_is_the_right_adjoint_but_generated_inverse_image_is_not
     let target_bottom = c2_universe
         .transfer_system_generated_by(std::iter::empty::<Edge>())
         .unwrap();
-    let corrected = pullback(&f, &target_bottom).unwrap();
+    let corrected = target_bottom.pullback(&f).unwrap();
     assert_eq!(corrected.proper_relations(), EdgeSet::new());
 
     // The raw inverse image consists of the two collapsed arrows from the
     // atoms to the top. Closing those arrows forces every arrow of B2.
-    let generated = generated_inverse_image(&f, &target_bottom).unwrap();
+    let generated = target_bottom.generated_inverse_image(&f).unwrap();
     assert_eq!(
         generated.proper_relations(),
         proper_edges([(0, 1), (0, 2), (0, 3), (1, 3), (2, 3)])
@@ -378,7 +377,7 @@ fn monotone_map_pullback_is_the_right_adjoint_but_generated_inverse_image_is_not
         .unwrap();
     assert_eq!(r.proper_relations(), proper_edges([(0, 2), (1, 3)]));
     let r_id = containment_id(&tr_b2, &r);
-    let image = pushforward(&f, &r).unwrap();
+    let image = r.pushforward(&f).unwrap();
     assert!(tr_b2.leq(r_id, generated_map.apply(tr_c2.bottom())));
     assert_eq!(image.proper_relations(), proper_edges([(0, 1)]));
     assert!(!tr_c2.leq(containment_id(&tr_c2, &image), tr_c2.bottom()));

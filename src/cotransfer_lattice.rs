@@ -261,6 +261,78 @@ impl CotransferSystem {
         covers_of(&self.proper_relations())
     }
 
+    /// Returns whether the supplied relations generate this cotransfer system.
+    ///
+    /// Identity relations may be supplied but are never needed. Invalid
+    /// lattice relations produce the same errors as
+    /// [`Lattice::cotransfer_system_generated_by`].
+    pub fn is_generated_by<I, E>(&self, generators: I) -> Result<bool, CotransferSystemError>
+    where
+        I: IntoIterator<Item = E>,
+        E: Into<Edge>,
+    {
+        Ok(self.lattice.cotransfer_system_generated_by(generators)? == *self)
+    }
+
+    /// Returns whether the supplied relations form an inclusion-minimal
+    /// generating set for this cotransfer system.
+    ///
+    /// Repetitions and identity relations make a generating collection
+    /// non-minimal because deleting one of them does not change its closure.
+    pub fn is_minimal_generating_set<I, E>(
+        &self,
+        generators: I,
+    ) -> Result<bool, CotransferSystemError>
+    where
+        I: IntoIterator<Item = E>,
+        E: Into<Edge>,
+    {
+        let generators = generators.into_iter().map(Into::into).collect::<Vec<_>>();
+        if !self.is_generated_by(generators.iter().copied())? {
+            return Ok(false);
+        }
+        for removed in 0..generators.len() {
+            let remainder = generators
+                .iter()
+                .enumerate()
+                .filter_map(|(index, &edge)| (index != removed).then_some(edge));
+            if self.is_generated_by(remainder)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Returns a deterministic inclusion-minimal generating set.
+    ///
+    /// Cotransfer systems on `L` correspond to transfer systems on `L^op`,
+    /// with every relation reversed (see
+    /// [`CotransferSystem::opposite_transfer_system`]), and so do their
+    /// generating sets. This is the reversal of
+    /// [`TransferSystem::minimal_generating_set`] of the opposite system.
+    pub fn minimal_generating_set(&self) -> EdgeSet {
+        self.opposite_transfer_system()
+            .minimal_generating_set()
+            .into_iter()
+            .map(Edge::reversed)
+            .collect()
+    }
+
+    /// Returns a minimum-cardinality generating set.
+    ///
+    /// As for transfer systems, every inclusion-minimal generating set has the
+    /// same cardinality, so this is an explicitly named alias for
+    /// [`CotransferSystem::minimal_generating_set`].
+    pub fn minimum_generating_set(&self) -> EdgeSet {
+        self.minimal_generating_set()
+    }
+
+    /// Returns the generator complexity of this cotransfer system: the common
+    /// cardinality of its inclusion-minimal generating sets.
+    pub fn generator_complexity(&self) -> usize {
+        self.opposite_transfer_system().generator_complexity()
+    }
+
     /// Returns the corresponding transfer system on `L^op`.
     ///
     /// This realizes the containment-preserving isomorphism
@@ -274,7 +346,7 @@ impl CotransferSystem {
     /// Together with [`TransferSystem::left_lifting_cotransfer`], this realizes
     /// the order-reversing duality `coTr(L) ~= Tr(L)^op`.
     pub fn right_lifting_transfer(&self) -> TransferSystem {
-        let arrows = self.lattice.rlc(&self.relations());
+        let arrows = self.lattice.right_lifting_class(&self.relations());
         self.lattice
             .transfer_system_generated_by(arrows)
             .expect("a right lifting class consists of lattice relations")
@@ -287,7 +359,7 @@ impl TransferSystem {
     ///
     /// Applying [`CotransferSystem::right_lifting_transfer`] recovers `self`.
     pub fn left_lifting_cotransfer(&self) -> CotransferSystem {
-        let arrows = self.lattice().llc(&self.relations());
+        let arrows = self.lattice().left_lifting_class(&self.relations());
         self.lattice()
             .cotransfer_system_generated_by(arrows)
             .expect("a left lifting class consists of lattice relations")
@@ -301,6 +373,13 @@ impl PartialEq for CotransferSystem {
 }
 
 impl Eq for CotransferSystem {}
+
+impl std::hash::Hash for CotransferSystem {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.lattice.hash(state);
+        self.arrows.hash(state);
+    }
+}
 
 impl PartialOrd for CotransferSystem {
     /// Compares cotransfer systems on the same lattice by containment.

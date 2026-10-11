@@ -11,10 +11,12 @@
 //! join tables have been computed. Every poset method is available on a
 //! lattice directly, because `Lattice` dereferences to `Poset`.
 
+use crate::bitvec_utils::is_subset;
 use crate::label::Label;
 use crate::morphism::LatticeMap;
 use crate::poset::{ElementId, Poset, PosetError, product_coordinates};
 use bitvec::prelude::*;
+use fcars::FormalContext;
 use std::borrow::Borrow;
 use std::fmt;
 use std::ops::Deref;
@@ -23,7 +25,7 @@ use std::ops::Deref;
 ///
 /// This is a cheap-to-clone handle; clones share their data. Meets, joins,
 /// bottom, and top are computed once, when the lattice is constructed.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Lattice {
     poset: Poset,
 }
@@ -210,6 +212,105 @@ impl Lattice {
                 meet == i || meet == j || meet == self.bottom()
             })
         })
+    }
+
+    /// Returns the join-irreducible elements: those with exactly one lower
+    /// cover. In increasing order of id.
+    pub fn join_irreducibles(&self) -> Vec<ElementId> {
+        self.ids()
+            .filter(|&x| self.lower_covers(x).len() == 1)
+            .collect()
+    }
+
+    /// Returns the meet-irreducible elements: those with exactly one upper
+    /// cover. In increasing order of id.
+    pub fn meet_irreducibles(&self) -> Vec<ElementId> {
+        self.ids()
+            .filter(|&x| self.upper_covers(x).len() == 1)
+            .collect()
+    }
+
+    /// Returns the standard formal context of this lattice: its
+    /// join-irreducibles as objects, its meet-irreducibles as attributes, and
+    /// incidence `j <= m`.
+    ///
+    /// By the basic theorem of formal concept analysis,
+    /// [`Lattice::from_formal_context`] recovers this lattice from it, up to
+    /// relabelling. The objects and attributes are the elements' labels.
+    pub fn standard_context(&self) -> FormalContext<Label, Label> {
+        let objects = self.join_irreducibles();
+        let attributes = self.meet_irreducibles();
+        let relation = objects
+            .iter()
+            .map(|&j| attributes.iter().map(|&m| self.leq(j, m)).collect())
+            .collect();
+        FormalContext::new(
+            objects.iter().map(|&j| self.label(j).clone()).collect(),
+            attributes.iter().map(|&m| self.label(m).clone()).collect(),
+            relation,
+        )
+    }
+
+    /// Constructs the concept lattice of a formal context: its formal
+    /// concepts, ordered by inclusion of extents.
+    ///
+    /// Each concept is labelled by the pair `(extent, intent)`, as sets of
+    /// object and attribute labels. Every finite lattice is the concept lattice
+    /// of its [standard context](Lattice::standard_context).
+    ///
+    /// ```
+    /// use hccr::prelude::*;
+    ///
+    /// let lattice = boolean(2);
+    /// let concepts = Lattice::from_formal_context(&lattice.standard_context())?;
+    /// assert_eq!(concepts.size(), lattice.size());
+    /// # Ok::<(), hccr::lattice::LatticeError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Fails only if repeated object or attribute labels make two concepts'
+    /// labels coincide.
+    pub fn from_formal_context<A, B>(context: &FormalContext<A, B>) -> Result<Self, LatticeError>
+    where
+        A: Clone + Into<Label> + Sync,
+        B: Clone + Into<Label> + Sync,
+    {
+        let mut concepts = context.all_concepts_raw();
+        // Concepts come in an unspecified order; sort them by extent so that
+        // element ids are deterministic.
+        concepts.sort_by_cached_key(|concept| {
+            (
+                concept.extent.count_ones(),
+                concept.extent.iter_ones().collect::<Vec<_>>(),
+            )
+        });
+        let labels = concepts.iter().map(|concept| {
+            Label::tuple([
+                Label::set(
+                    concept
+                        .extent
+                        .iter_ones()
+                        .map(|i| context.objects[i].clone()),
+                ),
+                Label::set(
+                    concept
+                        .intent
+                        .iter_ones()
+                        .map(|i| context.attributes[i].clone()),
+                ),
+            ])
+        });
+        let relation = concepts
+            .iter()
+            .map(|lower| {
+                concepts
+                    .iter()
+                    .map(|upper| is_subset(&lower.extent, &upper.extent))
+                    .collect()
+            })
+            .collect();
+        Lattice::new(Poset::from_relation(labels, relation)?)
     }
 
     /// Returns the opposite lattice, with the same labels and element ids,

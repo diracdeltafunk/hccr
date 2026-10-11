@@ -3,14 +3,14 @@
 //! A monotone map `f: L -> M` sends a relation `x <= y` to
 //! `f(x) <= f(y)`. Sending every arrow of a transfer system this way may lose
 //! restriction closure, so
-//! [`pushforward`] takes the least transfer system containing the image arrows.
-//! Its right adjoint [`pullback`] takes the greatest transfer system contained
+//! [`TransferSystem::pushforward`] takes the least transfer system containing the image arrows.
+//! Its right adjoint [`TransferSystem::pullback`] takes the greatest transfer system contained
 //! in the pointwise inverse image. In
 //! symbols, for transfer systems `S` on `L` and `T` on `M`,
 //! `pushforward(S) <= T` exactly when `S <= pullback(T)`.
 //!
 //! There is also a superficially similar operation,
-//! [`generated_inverse_image`], which takes the *least* transfer system
+//! [`TransferSystem::generated_inverse_image`], which takes the *least* transfer system
 //! containing the pointwise inverse image. It is generally different from the
 //! pullback and is not right adjoint to pushforward.
 //!
@@ -169,16 +169,7 @@ impl From<TransferMapError> for CompositionMapError {
     }
 }
 
-/// Computes the pushforward of one transfer system along a monotone map.
-///
-/// Each selected arrow is mapped pointwise; identity images are discarded
-/// because identities are implicit, duplicate images collapse, and the
-/// resulting set is closed under the transfer-system axioms. The result lives
-/// on the map's codomain, which must be a lattice.
-///
-/// For merely monotone maps this need not commute with composition; it does
-/// for lattice homomorphisms.
-pub fn pushforward<M>(map: &M, system: &TransferSystem) -> Result<TransferSystem, TransferMapError>
+fn pushforward<M>(map: &M, system: &TransferSystem) -> Result<TransferSystem, TransferMapError>
 where
     M: MonotoneMap + ?Sized,
 {
@@ -195,18 +186,7 @@ where
     Ok(TransferSystem::new(codomain, arrows))
 }
 
-/// Computes the right-adjoint pullback of one transfer system.
-///
-/// A relation `x -> y` belongs to the result exactly when, for every `z <= y`,
-/// the relation `f(x /\ z) -> f(z)` belongs to `system`. This is the greatest
-/// transfer system contained in the raw inverse image, and it is right adjoint
-/// to [`pushforward`] under containment. The result lives on the map's
-/// domain, which must be a lattice.
-///
-/// For merely monotone maps it need not commute with composition, despite
-/// being right adjoint for each individual map; it does for lattice
-/// homomorphisms.
-pub fn pullback<M>(map: &M, system: &TransferSystem) -> Result<TransferSystem, TransferMapError>
+fn pullback<M>(map: &M, system: &TransferSystem) -> Result<TransferSystem, TransferMapError>
 where
     M: MonotoneMap + ?Sized,
 {
@@ -223,15 +203,7 @@ where
     Ok(TransferSystem::new(domain, arrows))
 }
 
-/// Generates a transfer system from the raw inverse image of `system`.
-///
-/// Unlike [`pullback`], this is the least transfer system containing every
-/// relation `x -> y` for which `f(x) -> f(y)` belongs to `system`. It is
-/// containment-monotone but is generally not right adjoint to [`pushforward`].
-/// The two operations agree whenever the map is meet-preserving.
-/// For merely monotone maps this operation need not commute with composition;
-/// it does for lattice homomorphisms.
-pub fn generated_inverse_image<M>(
+fn generated_inverse_image<M>(
     map: &M,
     system: &TransferSystem,
 ) -> Result<TransferSystem, TransferMapError>
@@ -249,8 +221,16 @@ where
 }
 
 impl TransferSystem {
-    /// Pushes this transfer system forward along a monotone map out of its
-    /// lattice. See [`pushforward`].
+    /// Computes the pushforward of this transfer system along a monotone map out
+    /// of its lattice.
+    ///
+    /// Each selected arrow is mapped pointwise; identity images are discarded
+    /// because identities are implicit, duplicate images collapse, and the
+    /// resulting set is closed under the transfer-system axioms. The result lives
+    /// on the map's codomain, which must be a lattice.
+    ///
+    /// For merely monotone maps this need not commute with composition; it does
+    /// for lattice homomorphisms.
     pub fn pushforward<M>(&self, map: &M) -> Result<TransferSystem, TransferMapError>
     where
         M: MonotoneMap + ?Sized,
@@ -258,8 +238,18 @@ impl TransferSystem {
         pushforward(map, self)
     }
 
-    /// Pulls this transfer system back along a monotone map into its lattice.
-    /// See [`pullback`].
+    /// Computes the right-adjoint pullback of this transfer system along a
+    /// monotone map into its lattice.
+    ///
+    /// A relation `x -> y` belongs to the result exactly when, for every `z <= y`,
+    /// the relation `f(x /\ z) -> f(z)` belongs to this system. This is the greatest
+    /// transfer system contained in the raw inverse image, and it is right adjoint
+    /// to [`TransferSystem::pushforward`] under containment. The result lives on the map's
+    /// domain, which must be a lattice.
+    ///
+    /// For merely monotone maps it need not commute with composition, despite
+    /// being right adjoint for each individual map; it does for lattice
+    /// homomorphisms.
     pub fn pullback<M>(&self, map: &M) -> Result<TransferSystem, TransferMapError>
     where
         M: MonotoneMap + ?Sized,
@@ -267,8 +257,15 @@ impl TransferSystem {
         pullback(map, self)
     }
 
-    /// Generates a transfer system from the raw inverse image of this one
-    /// along a monotone map into its lattice. See [`generated_inverse_image`].
+    /// Generates a transfer system from the raw inverse image of this one along
+    /// a monotone map into its lattice.
+    ///
+    /// Unlike [`TransferSystem::pullback`], this is the least transfer system containing every
+    /// relation `x -> y` for which `f(x) -> f(y)` belongs to this system. It is
+    /// containment-monotone but is generally not right adjoint to [`TransferSystem::pushforward`].
+    /// The two operations agree whenever the map is meet-preserving.
+    /// For merely monotone maps this operation need not commute with composition;
+    /// it does for lattice homomorphisms.
     pub fn generated_inverse_image<M>(&self, map: &M) -> Result<TransferSystem, TransferMapError>
     where
         M: MonotoneMap + ?Sized,
@@ -282,7 +279,7 @@ impl TransferSystem {
 /// `domain` and `codomain` must be transfer-system lattices on the map's
 /// domain and codomain. Together with [`pullback_containment_map`], the
 /// returned map is the left adjoint. It inherits the composition caveat of
-/// [`pushforward`].
+/// [`TransferSystem::pushforward`].
 pub fn pushforward_containment_map<M>(
     map: &M,
     domain: &TransferLattice,
@@ -311,7 +308,7 @@ where
 /// The first order is on the map's codomain and is therefore the
 /// domain of the returned map. Together with [`pushforward_containment_map`],
 /// the returned map is the right adjoint. It inherits the composition caveat
-/// of [`pullback`].
+/// of [`TransferSystem::pullback`].
 pub fn pullback_containment_map<M>(
     map: &M,
     codomain: &TransferLattice,

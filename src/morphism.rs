@@ -180,7 +180,7 @@ pub trait MonotoneMap: sealed::Sealed {
 /// The map is stored by its values on element ids. Cloning a map is cheap
 /// apart from copying that vector, since the domain and codomain are shared
 /// handles.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct PosetMap {
     domain: Poset,
     codomain: Poset,
@@ -289,7 +289,7 @@ impl MonotoneMap for PosetMap {
 /// This is a function preserving bottom, top, binary meets, and binary joins.
 /// In finite lattices such a function is automatically monotone, but the
 /// constructor also checks monotonicity for clearer diagnostics.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct LatticeMap {
     domain: Lattice,
     codomain: Lattice,

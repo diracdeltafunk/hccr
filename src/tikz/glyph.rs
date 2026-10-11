@@ -7,7 +7,7 @@ use crate::cotransfer_lattice::CotransferLattice;
 #[cfg(feature = "groups")]
 use crate::g_cotransfer_lattice::GCotransferLattice;
 #[cfg(feature = "groups")]
-use crate::g_lattice::GTransferLattice;
+use crate::g_transfer_lattice::GTransferLattice;
 use crate::lattice::Lattice;
 use crate::poset::{Edge, EdgeSet, ElementId, Poset};
 use crate::transfer_lattice::{TransferLattice, TransferPoset};

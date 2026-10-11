@@ -22,7 +22,9 @@ pub use crate::{Error, Result};
 #[cfg(feature = "groups")]
 pub use crate::g_cotransfer_lattice::{GCotransferLattice, GCotransferSystem};
 #[cfg(feature = "groups")]
-pub use crate::g_lattice::{GLattice, GTransferLattice, GTransferSystem, SubgroupGLattice};
+pub use crate::g_lattice::{GLattice, SubgroupGLattice};
+#[cfg(feature = "groups")]
+pub use crate::g_transfer_lattice::{GTransferLattice, GTransferSystem};
 #[cfg(feature = "groups")]
 pub use crate::group_theory::GapSubgroup;
 #[cfg(feature = "groups")]

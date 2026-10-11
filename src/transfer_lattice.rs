@@ -258,14 +258,14 @@ impl Lattice {
             .collect::<Vec<_>>();
         let left_classes = right_classes
             .iter()
-            .map(|right| self.llc(right))
+            .map(|right| self.left_lifting_class(right))
             .collect::<Vec<_>>();
         let relation = (0..systems.len())
             .map(|lower| {
                 (0..systems.len())
                     .map(|upper| {
                         is_subset(&systems[lower], &systems[upper])
-                            && self.two_out_of_three(&compose(
+                            && self.satisfies_two_out_of_three(&compose(
                                 &right_classes[lower],
                                 &left_classes[upper],
                             ))
@@ -465,13 +465,6 @@ impl TransferSystem {
         covers_of(&self.proper_relations())
     }
 
-    /// Returns whether every relation of this system belongs to `other`.
-    ///
-    /// Returns `false` when the two systems are on different lattices.
-    pub fn is_contained_in(&self, other: &TransferSystem) -> bool {
-        self.lattice == other.lattice && is_subset(&self.arrows, &other.arrows)
-    }
-
     /// Returns whether this transfer system is saturated.
     ///
     /// Saturation says that whenever `x -> z` belongs to the system and
@@ -650,6 +643,13 @@ impl PartialEq for TransferSystem {
 }
 
 impl Eq for TransferSystem {}
+
+impl std::hash::Hash for TransferSystem {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.lattice.hash(state);
+        self.arrows.hash(state);
+    }
+}
 
 impl PartialOrd for TransferSystem {
     /// Compares transfer systems on the same lattice by containment. Systems

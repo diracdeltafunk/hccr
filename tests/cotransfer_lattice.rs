@@ -119,3 +119,28 @@ fn opposite_lattice_interchanges_meets_and_joins() {
         assert_eq!(opposite.opposite(), lattice);
     }
 }
+
+/// A minimal generating set generates the system, and no proper subset
+/// does; its size is the generator complexity.
+#[test]
+fn cotransfer_minimal_generating_sets_generate_irredundantly() -> Result<(), Box<dyn Error>> {
+    for lattice in representative_lattices() {
+        let cotransfer = lattice.cotransfer_systems();
+        for system in cotransfer.systems() {
+            let basis = system.minimal_generating_set();
+            assert!(system.is_generated_by(basis.iter().copied())?);
+            assert!(system.is_minimal_generating_set(basis.iter().copied())?);
+            assert_eq!(basis.len(), system.generator_complexity());
+            assert_eq!(system.minimum_generating_set(), basis);
+        }
+        assert_eq!(
+            &lattice.trivial_cotransfer_system(),
+            cotransfer.system(cotransfer.bottom())
+        );
+        assert_eq!(
+            &lattice.complete_cotransfer_system(),
+            cotransfer.system(cotransfer.top())
+        );
+    }
+    Ok(())
+}

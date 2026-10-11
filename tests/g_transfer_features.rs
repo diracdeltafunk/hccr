@@ -1,6 +1,7 @@
 #![cfg(feature = "groups")]
 
-use hccr::g_lattice::{GLattice, GTransferSystem};
+use hccr::g_lattice::GLattice;
+use hccr::g_transfer_lattice::GTransferSystem;
 use hccr::lattice::Lattice;
 use std::error::Error;
 
