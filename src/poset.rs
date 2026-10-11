@@ -209,6 +209,9 @@ pub(crate) struct PosetData {
     index: HashMap<Label, ElementId>,
     relation: Arc<Vec<BitVec>>,
     relation_transpose: Arc<Vec<BitVec>>,
+    // Lazily computed caches. They fill in after a poset may already be in a
+    // hash set, so `Hash` and `Eq` for any type containing a poset must never
+    // read them, not even whether they are filled.
     pub(crate) lattice: OnceLock<Result<LatticeTables, LatticeError>>,
     pub(crate) transfer_universe: OnceLock<TransferUniverse>,
     pub(crate) cotransfer_universe: OnceLock<CotransferUniverse>,

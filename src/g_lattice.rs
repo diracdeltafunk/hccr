@@ -73,6 +73,9 @@ pub(crate) struct GLatticeData {
     relation_ids: Vec<Vec<Option<usize>>>,
     relation_to_orbit: Vec<usize>,
     pub(crate) relation_orbits: Vec<RelationOrbit>,
+    // Lazily computed caches. They fill in after a G-lattice may already be
+    // in a hash set, so `Hash` and `Eq` for any type containing one must never
+    // read them, not even whether they are filled.
     pub(crate) transfer_universe: OnceCell<Rc<GTransferUniverse>>,
     cotransfer_universe: OnceCell<Rc<crate::g_cotransfer_lattice::GCotransferUniverse>>,
 }

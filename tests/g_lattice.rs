@@ -245,3 +245,32 @@ fn relation_ids_follow_the_lattice_relations() -> Result<(), Box<dyn Error>> {
     }
     Ok(())
 }
+
+/// Filling a G-lattice's lazily computed caches must not change the hash or
+/// equality of the G-lattice or of its G-transfer systems.
+#[test]
+fn g_hashes_are_unchanged_by_lazily_computed_structure() -> Result<(), Box<dyn Error>> {
+    use std::collections::HashSet;
+    use std::collections::hash_map::RandomState;
+    use std::hash::BuildHasher;
+    let state = RandomState::new();
+    let s3 = SubgroupGLattice::from_gap("SymmetricGroup(3)")?;
+    let g_lattice = s3.g_lattice().clone();
+    let systems = g_lattice.transfer_systems();
+    let system = systems.system(systems.top()).clone();
+
+    let before = (state.hash_one(&g_lattice), state.hash_one(&system));
+    let lattices = HashSet::from([g_lattice.clone()]);
+    let set = HashSet::from([system.clone()]);
+
+    // Fill the remaining cache, the G-cotransfer universe.
+    let _ = g_lattice.cotransfer_systems();
+
+    assert_eq!(
+        before,
+        (state.hash_one(&g_lattice), state.hash_one(&system))
+    );
+    assert!(lattices.contains(&g_lattice));
+    assert!(set.contains(&system));
+    Ok(())
+}

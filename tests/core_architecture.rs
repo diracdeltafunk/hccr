@@ -514,3 +514,40 @@ fn the_standard_context_recovers_the_lattice() {
         }
     }
 }
+
+fn hash_of<T: std::hash::Hash>(value: &T) -> u64 {
+    use std::hash::{BuildHasher, RandomState};
+    // One hasher state for the whole test, so that hashes are comparable.
+    thread_local!(static STATE: RandomState = RandomState::new());
+    STATE.with(|state| state.hash_one(value))
+}
+
+/// Posets, lattices and transfer systems compute some structure lazily, the
+/// first time it is needed. Filling those caches must not change a value's
+/// hash or equality, or a hash set holding the value would stop finding it.
+#[test]
+fn hashes_are_unchanged_by_lazily_computed_structure() {
+    use std::collections::HashSet;
+    let lattice = Lattice::boolean(2);
+    let poset = lattice.as_poset().clone();
+    let system = lattice.transfer_systems().system(1).clone();
+
+    let before = (hash_of(&poset), hash_of(&lattice), hash_of(&system));
+    let posets: HashSet<Poset> = HashSet::from([poset.clone()]);
+    let lattices: HashSet<Lattice> = HashSet::from([lattice.clone()]);
+    let systems: HashSet<_> = HashSet::from([system.clone()]);
+
+    // Fill every cache: the lattice of transfer systems (already built
+    // above), the lattice of cotransfer systems, and the model structures.
+    let _ = lattice.cotransfer_systems();
+    let _ = lattice.model_structures();
+    let _ = poset.covers();
+
+    assert_eq!(
+        before,
+        (hash_of(&poset), hash_of(&lattice), hash_of(&system))
+    );
+    assert!(posets.contains(&poset));
+    assert!(lattices.contains(&lattice));
+    assert!(systems.contains(&system));
+}
