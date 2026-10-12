@@ -78,6 +78,17 @@ impl From<Edge> for (ElementId, ElementId) {
     }
 }
 
+/// Labels an edge by the pair `(from, to)` of its element ids, so that
+/// contexts with edges as objects or attributes, such as
+/// [`Lattice::transfer_context`](crate::lattice::Lattice::transfer_context),
+/// can be passed to
+/// [`Lattice::from_formal_context`](crate::lattice::Lattice::from_formal_context).
+impl From<Edge> for Label {
+    fn from(edge: Edge) -> Self {
+        Label::from((edge.from, edge.to))
+    }
+}
+
 impl fmt::Display for Edge {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} <= {}", self.from, self.to)

@@ -35,7 +35,8 @@
 //! exactly the transfer systems. Thus generation is one double-derivation and
 //! enumeration uses the formal concepts of the context, rather than testing
 //! all subsets of lattice relations independently. The context is built the
-//! first time it is needed and then cached inside the lattice.
+//! first time it is needed and then cached inside the lattice; it is returned
+//! by [`Lattice::transfer_context`].
 
 use crate::bitvec_utils::{intersection, intersects, is_subset, set_partial_cmp};
 use crate::label::Label;
@@ -49,7 +50,11 @@ use std::fmt;
 use std::ops::Deref;
 use std::sync::Arc;
 
-type TransferContext = FormalContext<Edge, Edge>;
+/// The formal context whose closed extents are the transfer systems on a
+/// lattice; see [`Lattice::transfer_context`].
+///
+/// Objects and attributes are proper relations of the lattice.
+pub type TransferContext = FormalContext<Edge, Edge>;
 
 /// Shared data that gives transfer-system bitvectors their meaning.
 ///
@@ -190,6 +195,37 @@ impl Lattice {
             .get_or_init(|| TransferUniverse::new(self))
     }
 
+    /// Returns the formal context whose closed extents are the transfer
+    /// systems on this lattice `L`.
+    ///
+    /// Objects and attributes are both the proper relations `x < y` of `L`.
+    /// An object `r` is incident to an attribute `a` when `a` has the left
+    /// lifting property against `r` (see [`Poset::left_lifting_class`]), so
+    /// objects are tested as right maps. The derivation of a set `A` of
+    /// objects is the proper part of its left lifting class, and the closed
+    /// extents `A''` are the proper parts of the right lifting classes of
+    /// left lifting classes. These are exactly the sets of proper relations
+    /// of the transfer systems on `L`, since a set of relations is a transfer
+    /// system exactly when it is the right lifting class of its left lifting
+    /// class. Hence the concept lattice of this context is isomorphic to
+    /// `Tr(L)`, ordered by extent.
+    ///
+    /// Objects are in increasing `(from, to)` order of element ids;
+    /// attributes are sorted by target, then source.
+    ///
+    /// ```
+    /// use hccr::prelude::*;
+    ///
+    /// let lattice = chain(3);
+    /// let context = lattice.transfer_context();
+    /// let concepts = Lattice::from_formal_context(&context)?;
+    /// assert_eq!(concepts.size(), lattice.transfer_systems().size());
+    /// # Ok::<(), hccr::lattice::LatticeError>(())
+    /// ```
+    pub fn transfer_context(&self) -> TransferContext {
+        self.transfer_universe().context.clone()
+    }
+
     /// Returns the lattice `Tr(L)` of all transfer systems on this lattice
     /// `L`, ordered by containment.
     ///
@@ -301,6 +337,8 @@ impl Lattice {
     /// Returns the transfer-system complexity of this lattice: the maximum of
     /// [`TransferSystem::generator_complexity`] over all transfer systems on
     /// it.
+    ///
+    /// This enumerates all transfer systems.
     pub fn transfer_system_complexity(&self) -> usize {
         self.transfer_universe()
             .all_systems()
@@ -313,6 +351,13 @@ impl Lattice {
     /// Returns the transfer-system width of this lattice: the
     /// [`TransferSystem::generator_complexity`] of the complete transfer
     /// system.
+    ///
+    /// This is the number of meet-irreducible elements of the lattice
+    /// ([`Lattice::meet_irreducibles`]): the relations `m < top` for
+    /// meet-irreducible `m` form a minimal generating set of the complete
+    /// transfer system. This is Proposition 4.5 of the paper cited at
+    /// [`TransferSystem::generator_complexity`], whose proof works for any
+    /// finite lattice.
     pub fn transfer_system_width(&self) -> usize {
         self.complete_transfer_system().generator_complexity()
     }
@@ -637,17 +682,23 @@ impl TransferSystem {
     /// Returns a minimum-cardinality generating set.
     ///
     /// Every inclusion-minimal generating set of a transfer system has the
-    /// same cardinality, so the deterministic set returned here is also
-    /// minimum.  This method is an explicitly named alias for
+    /// same cardinality (see [`TransferSystem::generator_complexity`]), so
+    /// this is an explicitly named alias for
     /// [`TransferSystem::minimal_generating_set`].
     pub fn minimum_generating_set(&self) -> EdgeSet {
         self.minimal_generating_set()
     }
 
-    /// Returns the generator complexity of this transfer system.
+    /// Returns the generator complexity of this transfer system: the common
+    /// cardinality of its inclusion-minimal generating sets.
     ///
-    /// This is the common cardinality of its inclusion-minimal generating
-    /// sets.
+    /// That these all have the same cardinality is Corollary 2.14 of
+    /// [Adamyk–Balchin–Barrero–Scheirer–Wisdom–Zapata Castro, *On minimal bases in
+    /// homotopical combinatorics*](https://arxiv.org/abs/2506.11159).
+    /// The paper works with subgroup lattices, but its proof (Lemma 2.12 and
+    /// Proposition 2.13) only uses a strictly monotone function from the
+    /// lattice to the natural numbers, so it applies to any finite lattice
+    /// with the height of an element in place of the paper's `P`.
     pub fn generator_complexity(&self) -> usize {
         minimal_generator_bits(&self.lattice, &self.arrows).count_ones()
     }

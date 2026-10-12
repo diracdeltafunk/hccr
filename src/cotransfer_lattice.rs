@@ -16,6 +16,7 @@ use crate::lattice::Lattice;
 use crate::poset::{Edge, EdgeSet, ElementId, Poset, covers_of};
 use crate::transfer_lattice::{TransferSystem, fmt_relations};
 use bitvec::prelude::*;
+use fcars::FormalContext;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
@@ -64,6 +65,12 @@ impl fmt::Display for CotransferSystemError {
 }
 
 impl std::error::Error for CotransferSystemError {}
+
+/// The formal context whose closed extents are the cotransfer systems on a
+/// lattice; see [`Lattice::cotransfer_context`].
+///
+/// Objects and attributes are proper relations of the lattice.
+pub type CotransferContext = FormalContext<Edge, Edge>;
 
 /// The coordinates of cotransfer systems on a lattice `L`: the opposite
 /// lattice, whose transfer systems they correspond to, and the proper
@@ -116,6 +123,58 @@ impl Lattice {
                 proper_edges,
             }
         })
+    }
+
+    /// Returns the formal context whose closed extents are the cotransfer
+    /// systems on this lattice `L`.
+    ///
+    /// Objects and attributes are both the proper relations `x < y` of `L`,
+    /// in increasing `(from, to)` order of element ids. An object `l` is
+    /// incident to an attribute `r` when `l` has the left lifting property
+    /// against `r` (see [`Poset::left_lifting_class`]). The derivation of a
+    /// set `A` of objects is the proper part of its right lifting class, and
+    /// the closed extents `A''` are the proper parts of the left lifting
+    /// classes `llc(S)`. These are exactly the sets of proper relations of
+    /// the cotransfer systems on `L`: taking left and right lifting classes
+    /// are mutually inverse bijections between `Tr(L)` and `coTr(L)`. Hence
+    /// the concept lattice of this context is isomorphic to `coTr(L)`,
+    /// ordered by extent.
+    ///
+    /// This is the [transfer context](Lattice::transfer_context) with objects
+    /// and attributes exchanged, up to the order in which they are listed. So
+    /// both contexts have the same concepts, with extents and intents
+    /// swapped: a concept with transfer system `T` as extent has the
+    /// cotransfer system `llc(T)` as intent. This is the order-reversing
+    /// bijection between `Tr(L)` and `coTr(L)` given by lifting classes.
+    ///
+    /// ```
+    /// use hccr::prelude::*;
+    ///
+    /// let lattice = boolean(2);
+    /// let context = lattice.cotransfer_context();
+    /// let concepts = Lattice::from_formal_context(&context)?;
+    /// assert_eq!(concepts.size(), lattice.cotransfer_systems().size());
+    /// # Ok::<(), hccr::lattice::LatticeError>(())
+    /// ```
+    pub fn cotransfer_context(&self) -> CotransferContext {
+        let proper_edges = self.proper_relations().into_iter().collect::<Vec<_>>();
+        let matrix = proper_edges
+            .iter()
+            .map(|left| {
+                proper_edges
+                    .iter()
+                    .map(|right| {
+                        // `left` lifts against `right` unless `left.from <=
+                        // right.from` and `left.to <= right.to` but
+                        // `left.to !<= right.from`.
+                        !self.leq(left.from, right.from)
+                            || !self.leq(left.to, right.to)
+                            || self.leq(left.to, right.from)
+                    })
+                    .collect()
+            })
+            .collect();
+        FormalContext::new(proper_edges.clone(), proper_edges, matrix)
     }
 
     /// Returns the lattice `coTr(L)` of all cotransfer systems on this
@@ -357,8 +416,9 @@ impl CotransferSystem {
 
     /// Returns a minimum-cardinality generating set.
     ///
-    /// As for transfer systems, every inclusion-minimal generating set has the
-    /// same cardinality, so this is an explicitly named alias for
+    /// Every inclusion-minimal generating set of a cotransfer system has the
+    /// same cardinality (see [`CotransferSystem::generator_complexity`]), so
+    /// this is an explicitly named alias for
     /// [`CotransferSystem::minimal_generating_set`].
     pub fn minimum_generating_set(&self) -> EdgeSet {
         self.minimal_generating_set()
@@ -366,6 +426,11 @@ impl CotransferSystem {
 
     /// Returns the generator complexity of this cotransfer system: the common
     /// cardinality of its inclusion-minimal generating sets.
+    ///
+    /// Reversing relations identifies these with the inclusion-minimal
+    /// generating sets of [`CotransferSystem::opposite_transfer_system`], so
+    /// they all have the same cardinality by
+    /// [`TransferSystem::generator_complexity`].
     pub fn generator_complexity(&self) -> usize {
         self.opposite_transfer_system().generator_complexity()
     }

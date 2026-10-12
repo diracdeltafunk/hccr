@@ -1,6 +1,8 @@
+use fcars::FormalConcept;
 use hccr::cotransfer_lattice::CotransferSystem;
 use hccr::lattice::Lattice;
-use hccr::poset::Edge;
+use hccr::poset::{Edge, EdgeSet};
+use std::collections::HashSet;
 use std::error::Error;
 
 fn representative_lattices() -> Vec<Lattice> {
@@ -143,4 +145,91 @@ fn cotransfer_minimal_generating_sets_generate_irredundantly() -> Result<(), Box
         );
     }
     Ok(())
+}
+
+fn context_test_lattices() -> Vec<Lattice> {
+    let mut lattices = (1..=4).map(Lattice::chain).collect::<Vec<_>>();
+    lattices.push(Lattice::boolean(2));
+    lattices.push(Lattice::boolean(3));
+    // The pentagon N5 and the diamond M3.
+    lattices.push(
+        Lattice::from_covers([0, 1, 2, 3, 4], [(0, 1), (1, 3), (3, 4), (0, 2), (2, 4)]).unwrap(),
+    );
+    lattices.push(
+        Lattice::from_covers(
+            [0, 1, 2, 3, 4],
+            [(0, 1), (0, 2), (0, 3), (1, 4), (2, 4), (3, 4)],
+        )
+        .unwrap(),
+    );
+    lattices
+}
+
+fn concept_pairs(
+    concepts: &[FormalConcept<Edge, Edge>],
+    swap: bool,
+) -> HashSet<(EdgeSet, EdgeSet)> {
+    concepts
+        .iter()
+        .map(|concept| {
+            let extent = concept.extent_names_iter().copied().collect::<EdgeSet>();
+            let intent = concept.intent_names_iter().copied().collect::<EdgeSet>();
+            if swap {
+                (intent, extent)
+            } else {
+                (extent, intent)
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn cotransfer_context_closed_extents_are_exactly_the_cotransfer_systems() {
+    for lattice in context_test_lattices() {
+        let context = lattice.cotransfer_context();
+        let proper = lattice.proper_relations();
+        assert_eq!(context.objects.iter().copied().collect::<EdgeSet>(), proper);
+        assert_eq!(
+            context.attributes.iter().copied().collect::<EdgeSet>(),
+            proper
+        );
+
+        let concepts = context.all_concepts();
+        let extents = concepts
+            .iter()
+            .map(|concept| concept.extent_names_iter().copied().collect::<EdgeSet>())
+            .collect::<HashSet<_>>();
+        assert_eq!(extents.len(), concepts.len());
+        let all_systems = lattice.cotransfer_systems();
+        let systems = all_systems
+            .systems()
+            .iter()
+            .map(|system| system.proper_relations())
+            .collect::<HashSet<_>>();
+        assert_eq!(extents, systems);
+
+        // Each extent is the left lifting class of the intent, and the intent
+        // the right lifting class of the extent.
+        for (extent, intent) in concept_pairs(&concepts, false) {
+            let proper_part = |set: EdgeSet| {
+                set.into_iter()
+                    .filter(|edge| !edge.is_identity())
+                    .collect::<EdgeSet>()
+            };
+            assert_eq!(extent, proper_part(lattice.left_lifting_class(&intent)));
+            assert_eq!(intent, proper_part(lattice.right_lifting_class(&extent)));
+        }
+
+        // Exchanging objects and attributes turns the transfer context into
+        // the cotransfer context, so the concepts correspond with extent and
+        // intent swapped.
+        let transfer_concepts = lattice.transfer_context().all_concepts();
+        assert_eq!(
+            concept_pairs(&concepts, false),
+            concept_pairs(&transfer_concepts, true)
+        );
+
+        let concept_lattice = Lattice::from_formal_context(&context).unwrap();
+        assert_eq!(concept_lattice.size(), all_systems.size());
+    }
 }

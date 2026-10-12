@@ -1,9 +1,10 @@
 #![cfg(feature = "groups")]
 
-use hccr::g_lattice::GLattice;
+use hccr::g_lattice::{GLattice, RelationOrbitLabel, SubgroupGLattice};
 use hccr::g_transfer_lattice::{GTransferSystem, GTransferSystemError};
 use hccr::lattice::Lattice;
-use hccr::poset::Edge;
+use hccr::poset::{Edge, EdgeSet};
+use std::collections::HashSet;
 use std::error::Error;
 
 #[test]
@@ -226,4 +227,98 @@ fn swapping_diamond() -> Result<GLattice, Box<dyn Error>> {
         &group,
         vec![vec![0, 2, 1, 3]],
     )?)
+}
+
+/// Expands a set of relation-orbit labels to the set of all their relations.
+fn expand_orbits<'a>(
+    g_lattice: &GLattice,
+    labels: impl Iterator<Item = &'a RelationOrbitLabel>,
+) -> EdgeSet {
+    labels
+        .flat_map(|label| {
+            g_lattice
+                .relation_orbit(label.canonical_representative())
+                .unwrap()
+                .relations()
+        })
+        .collect()
+}
+
+#[test]
+fn g_transfer_context_closed_extents_are_exactly_the_g_transfer_systems()
+-> Result<(), Box<dyn Error>> {
+    let s3 = SubgroupGLattice::from_gap("SymmetricGroup(3)")?;
+    for g_lattice in [swapping_diamond()?, GLattice::clone(&s3)] {
+        let context = g_lattice.transfer_context();
+        let concepts = context.all_concepts();
+        let extents = concepts
+            .iter()
+            .map(|concept| expand_orbits(&g_lattice, concept.extent_names_iter()))
+            .collect::<HashSet<_>>();
+        assert_eq!(extents.len(), concepts.len());
+        let systems = g_lattice
+            .transfer_systems()
+            .systems()
+            .iter()
+            .map(|system| system.proper_relations())
+            .collect::<HashSet<_>>();
+        assert_eq!(extents, systems);
+    }
+    Ok(())
+}
+
+/// All inclusion-minimal sets of orbit generators of a G-transfer system
+/// have the same size, the generator complexity (Adamyk et al.,
+/// arXiv:2506.11159, Corollary 2.14), and the width is the number of
+/// G-orbits of meet-irreducible elements (Proposition 4.5 there). Checked by
+/// brute force over subsets of orbits, using generation as the only
+/// primitive.
+#[test]
+fn minimal_orbit_generating_sets_have_a_common_size_counted_by_known_invariants()
+-> Result<(), Box<dyn Error>> {
+    for expression in [
+        "SymmetricGroup(3)",
+        "DihedralGroup(8)",
+        "QuaternionGroup(8)",
+    ] {
+        let subgroups = SubgroupGLattice::from_gap(expression)?;
+        let g_lattice: &GLattice = &subgroups;
+        for system in g_lattice.transfer_systems().systems() {
+            let orbits = system.relation_orbit_labels();
+            let count = orbits.len();
+            let generates = (0u32..1 << count)
+                .map(|mask| {
+                    let subset = (0..count)
+                        .filter(|&i| mask >> i & 1 == 1)
+                        .map(|i| orbits[i].canonical_representative());
+                    g_lattice.transfer_system_generated_by(subset).unwrap() == *system
+                })
+                .collect::<Vec<_>>();
+            let sizes = (0u32..1 << count)
+                .filter(|&mask| {
+                    generates[mask as usize]
+                        && (0..count)
+                            .filter(|&i| mask >> i & 1 == 1)
+                            .all(|i| !generates[(mask & !(1 << i)) as usize])
+                })
+                .map(|mask| mask.count_ones() as usize)
+                .collect::<HashSet<_>>();
+            assert_eq!(sizes, HashSet::from([system.generator_complexity()]));
+        }
+
+        let lattice = g_lattice.lattice();
+        let meet_irreducibles = lattice.meet_irreducibles();
+        let meet_irreducible_orbits = g_lattice
+            .relation_orbits()
+            .iter()
+            .map(|orbit| orbit.canonical_representative())
+            .filter(|edge| edge.is_identity() && meet_irreducibles.contains(&edge.from))
+            .count();
+        assert_eq!(
+            g_lattice.transfer_system_width(),
+            meet_irreducible_orbits,
+            "{expression}"
+        );
+    }
+    Ok(())
 }

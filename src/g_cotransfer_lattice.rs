@@ -24,12 +24,13 @@ use std::fmt;
 use std::ops::Deref;
 use std::rc::Rc;
 
-/// The formal context whose concepts are G-cotransfer systems.
+/// The formal context whose closed extents are the G-cotransfer systems; see
+/// [`GLattice::cotransfer_context`].
 ///
 /// Objects and attributes are both non-identity relation orbits. An object
 /// orbit with canonical representative `l` is incident to an attribute orbit
 /// `O` when `l` has the left lifting property against every relation in `O`.
-pub(crate) type GCotransferContext = FormalContext<RelationOrbitLabel, RelationOrbitLabel>;
+pub type GCotransferContext = FormalContext<RelationOrbitLabel, RelationOrbitLabel>;
 
 /// Errors that can occur while constructing a G-cotransfer system.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +113,26 @@ impl GLattice {
                 self.transfer_universe(),
             )))
         })
+    }
+
+    /// Returns the formal context whose closed extents are the G-cotransfer
+    /// systems.
+    ///
+    /// Objects and attributes are the non-identity relation orbits (see
+    /// [`GLattice::non_identity_relation_orbit_labels`]), both in orbit-id
+    /// order. An object orbit with canonical representative `l` is incident
+    /// to an attribute orbit `O` when `l` has the left lifting property
+    /// against every relation in `O` (see [`Poset::left_lifting_class`]). By
+    /// equivariance this holds for one representative exactly when it holds
+    /// for the whole object orbit. A closed extent, expanded to the
+    /// relations of its orbits, is the set of proper relations of a
+    /// G-cotransfer system, and every G-cotransfer system arises this way.
+    ///
+    /// This is the [transfer context](GLattice::transfer_context) with
+    /// objects and attributes exchanged, up to the order in which they are
+    /// listed.
+    pub fn cotransfer_context(&self) -> GCotransferContext {
+        self.cotransfer_universe().context.clone()
     }
 
     /// Constructs the lattice of G-cotransfer systems, ordered by containment.
@@ -436,20 +457,23 @@ impl GCotransferSystem {
             .collect()
     }
 
-    /// Returns [`GCotransferSystem::minimal_generating_set`].
+    /// Returns a minimum-cardinality set of relation-orbit generators.
     ///
-    /// [`CotransferSystem::minimum_generating_set`] relies on every
-    /// inclusion-minimal generating set of a cotransfer system having the same
-    /// cardinality. The orbit-level analogue of that statement for
-    /// G-cotransfer systems is not proved here, so the result is only
-    /// guaranteed to be inclusion-minimal.
+    /// Every inclusion-minimal set of orbit generators has the same
+    /// cardinality (see [`GCotransferSystem::generator_complexity`]), so this is an
+    /// explicitly named alias for [`GCotransferSystem::minimal_generating_set`].
     pub fn minimum_generating_set(&self) -> Vec<RelationOrbitLabel> {
         self.minimal_generating_set()
     }
 
     /// Returns the generator complexity of this G-cotransfer system: the
-    /// number of relation orbits in
-    /// [`GCotransferSystem::minimal_generating_set`].
+    /// common number of relation orbits in its inclusion-minimal sets of orbit
+    /// generators.
+    ///
+    /// Reversing relations identifies these with the inclusion-minimal sets of
+    /// orbit generators of [`GCotransferSystem::opposite_transfer_system`],
+    /// so they all have the same size by
+    /// [`GTransferSystem::generator_complexity`].
     pub fn generator_complexity(&self) -> usize {
         self.minimal_generating_set().len()
     }

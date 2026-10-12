@@ -550,19 +550,30 @@ impl GTransferSystem {
             .collect()
     }
 
-    /// Returns [`GTransferSystem::minimal_generating_set`].
+    /// Returns a minimum-cardinality set of relation-orbit generators.
     ///
-    /// [`TransferSystem::minimum_generating_set`] relies on every
-    /// inclusion-minimal generating set of a transfer system having the same
-    /// cardinality. The orbit-level analogue of that statement for G-transfer
-    /// systems is not proved here, so the result is only guaranteed to be
-    /// inclusion-minimal.
+    /// Every inclusion-minimal set of orbit generators has the same
+    /// cardinality (see [`GTransferSystem::generator_complexity`]), so this is an
+    /// explicitly named alias for [`GTransferSystem::minimal_generating_set`].
     pub fn minimum_generating_set(&self) -> Vec<RelationOrbitLabel> {
         self.minimal_generating_set()
     }
 
-    /// Returns the generator complexity of this G-transfer system: the number
-    /// of relation orbits in [`GTransferSystem::minimal_generating_set`].
+    /// Returns the generator complexity of this G-transfer system: the common
+    /// number of relation orbits in its inclusion-minimal sets of orbit
+    /// generators.
+    ///
+    /// A set of relations that generates a G-transfer system irredundantly
+    /// contains at most one relation from each orbit, so this is also the
+    /// common cardinality of its inclusion-minimal generating sets of
+    /// relations. That these all have the same cardinality is Corollary 2.14
+    /// of [Adamyk–Balchin–Barrero–Scheirer–Wisdom–Zapata Castro, *On minimal bases in
+    /// homotopical combinatorics*](https://arxiv.org/abs/2506.11159), for
+    /// subgroup lattices with the conjugation action. Its proof (Lemma 2.12
+    /// and Proposition 2.13) only uses a strictly monotone, G-invariant
+    /// function from the lattice to the natural numbers, so it applies to any
+    /// finite G-lattice with the height of an element in place of the paper's
+    /// `P`.
     #[must_use]
     pub fn generator_complexity(&self) -> usize {
         self.minimal_generating_set().len()
@@ -945,6 +956,13 @@ impl GLattice {
     /// Returns the G-transfer-system width of this G-lattice: the
     /// [`GTransferSystem::generator_complexity`] of the complete G-transfer
     /// system, counted in relation orbits.
+    ///
+    /// This is the number of G-orbits of meet-irreducible elements of the
+    /// lattice: one relation `m < top` for each such orbit forms a minimal
+    /// generating set of the complete G-transfer system. This is
+    /// Proposition 4.5 of the paper cited at
+    /// [`GTransferSystem::generator_complexity`], whose proof works for any
+    /// finite G-lattice.
     pub fn transfer_system_width(&self) -> usize {
         self.complete_transfer_system().generator_complexity()
     }
