@@ -169,7 +169,7 @@ fn check_subgroup_lattice_constructor_uses_conjugation_action() -> Result<(), Bo
         .expect("normal C3 identity relation should have an orbit");
     assert_eq!(
         c3_identity_orbit.relations(),
-        &[Edge::new(rotations, rotations)]
+        EdgeSet::from([Edge::new(rotations, rotations)])
     );
     assert_eq!(order(c3_identity_orbit.stabilizer())?, 6);
 
@@ -224,4 +224,53 @@ fn diamond_lattice() -> Lattice {
         [("0", "a"), ("0", "b"), ("a", "1"), ("b", "1")],
     )
     .unwrap()
+}
+
+/// Relation ids number the relations of the lattice in the order of
+/// `Poset::relations`, and each orbit contains the relations it is the orbit
+/// of.
+#[test]
+fn relation_ids_follow_the_lattice_relations() -> Result<(), Box<dyn Error>> {
+    let s3 = SubgroupGLattice::from_gap("SymmetricGroup(3)")?;
+    let g_lattice = s3.g_lattice();
+    for (relation_id, relation) in g_lattice.lattice().relations().into_iter().enumerate() {
+        assert_eq!(g_lattice.relation(relation_id), relation);
+        assert_eq!(g_lattice.relation_id(relation), Some(relation_id));
+        assert!(
+            g_lattice
+                .relation_orbit_by_id(relation_id)
+                .relations()
+                .contains(&relation)
+        );
+    }
+    Ok(())
+}
+
+/// Filling a G-lattice's lazily computed caches must not change the hash or
+/// equality of the G-lattice or of its G-transfer systems.
+#[test]
+fn g_hashes_are_unchanged_by_lazily_computed_structure() -> Result<(), Box<dyn Error>> {
+    use std::collections::HashSet;
+    use std::collections::hash_map::RandomState;
+    use std::hash::BuildHasher;
+    let state = RandomState::new();
+    let s3 = SubgroupGLattice::from_gap("SymmetricGroup(3)")?;
+    let g_lattice = s3.g_lattice().clone();
+    let systems = g_lattice.transfer_systems();
+    let system = systems.system(systems.top()).clone();
+
+    let before = (state.hash_one(&g_lattice), state.hash_one(&system));
+    let lattices = HashSet::from([g_lattice.clone()]);
+    let set = HashSet::from([system.clone()]);
+
+    // Fill the remaining cache, the G-cotransfer universe.
+    let _ = g_lattice.cotransfer_systems();
+
+    assert_eq!(
+        before,
+        (state.hash_one(&g_lattice), state.hash_one(&system))
+    );
+    assert!(lattices.contains(&g_lattice));
+    assert!(set.contains(&system));
+    Ok(())
 }

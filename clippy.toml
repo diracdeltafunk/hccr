@@ -1,0 +1,3 @@
+# These types cache derived data in `OnceLock`s or `OnceCell`s, but their `Hash`
+# and `Eq` never read those caches, so they are sound as hash keys.
+ignore-interior-mutability = ["hccr::poset::Poset", "hccr::g_lattice::GLattice"]

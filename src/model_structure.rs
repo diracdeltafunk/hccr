@@ -1,19 +1,23 @@
 //! Model structures on finite lattices.
 //!
-//! A model structure is encoded by an interval `R <= R'` of transfer
-//! systems satisfying one additional condition.  Its five classes of maps
-//! are
+//! A model structure on a finite lattice, viewed as a category, is determined
+//! by an interval `R <= R'` of transfer systems satisfying one extra condition.
+//! Write `llc(S)` for the left lifting class of a class of relations `S` (see
+//! [`Poset::left_lifting_class`](crate::poset::Poset::left_lifting_class)). The
+//! five classes of maps are
 //!
 //! - acyclic fibrations `R`;
 //! - fibrations `R'`;
 //! - cofibrations `llc(R)`;
 //! - acyclic cofibrations `llc(R')`; and
-//! - weak equivalences `R ∘ llc(R')`.
+//! - weak equivalences `R ∘ llc(R')`, the composites of an acyclic cofibration
+//!   followed by an acyclic fibration.
 //!
-//! The final class must have the 2-out-of-3 property.  This module validates
-//! that condition at construction time, so every [`ModelStructure`] value is
-//! a genuine model structure rather than merely a pair of weak factorization
-//! systems.
+//! The extra condition is that the weak equivalences have the 2-out-of-3
+//! property. [`ModelStructure::new`] checks it, so every [`ModelStructure`] is a
+//! genuine model structure rather than merely a pair of weak factorization
+//! systems. [`Lattice::model_structures`](crate::lattice::Lattice::model_structures)
+//! lists them all.
 
 use crate::cotransfer_lattice::CotransferSystem;
 use crate::lattice::Lattice;
@@ -103,7 +107,7 @@ impl std::error::Error for ModelStructureError {}
 /// fibrations, the cotransfer systems of cofibrations and acyclic
 /// cofibrations, and the resulting class of weak equivalences.  It can only be
 /// constructed after containment and 2-out-of-3 have been checked.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModelStructure {
     acyclic_fibrations: TransferSystem,
     fibrations: TransferSystem,
@@ -113,11 +117,20 @@ pub struct ModelStructure {
 }
 
 impl ModelStructure {
-    /// Constructs the model structure represented by `R <= R'`.
+    /// Constructs the model structure with acyclic fibrations
+    /// `R = acyclic_fibrations` and fibrations `R' = fibrations`.
     ///
-    /// Here `R` is `acyclic_fibrations` and `R'` is `fibrations`.  The two
-    /// systems must be on the same lattice, `R` must be contained in `R'`,
-    /// and `R ∘ llc(R')` must satisfy 2-out-of-3.
+    /// # Errors
+    ///
+    /// - [`ModelStructureError::DifferentLattices`] if the two systems are on
+    ///   different lattices;
+    /// - [`ModelStructureError::AcyclicFibrationsNotContained`] if `R` is not
+    ///   contained in `R'`;
+    /// - [`ModelStructureError::WeakEquivalencesFailTwoOutOfThree`] if the
+    ///   weak equivalences fail 2-out-of-3. The weak equivalences are the
+    ///   composites of an acyclic cofibration (a relation in the
+    ///   [left lifting class](Poset::left_lifting_class) of `R'`) followed by
+    ///   an acyclic fibration.
     pub fn new(
         acyclic_fibrations: TransferSystem,
         fibrations: TransferSystem,
@@ -136,7 +149,7 @@ impl ModelStructure {
 
         let ambient = acyclic_fibrations.lattice().as_poset();
         let acyclic_fibration_edges = acyclic_fibrations.relations();
-        let acyclic_cofibration_edges = ambient.llc(&fibrations.relations());
+        let acyclic_cofibration_edges = ambient.left_lifting_class(&fibrations.relations());
         let weak_equivalences = compose(&acyclic_fibration_edges, &acyclic_cofibration_edges);
 
         if let Some(witness) = two_out_of_three_failure(ambient, &weak_equivalences) {
@@ -180,7 +193,7 @@ impl ModelStructure {
         &self.acyclic_cofibrations
     }
 
-    /// Returns the class of weak equivalences.
+    /// Returns the class of weak equivalences, identities included.
     pub fn weak_equivalences(&self) -> &EdgeSet {
         &self.weak_equivalences
     }
@@ -233,21 +246,21 @@ impl ModelStructure {
         self.is_fibrant(object) && self.is_cofibrant(object)
     }
 
-    /// Returns all fibrant objects in element-id order.
+    /// Returns all fibrant objects, in increasing order of id.
     pub fn fibrant_objects(&self) -> Vec<ElementId> {
         (0..self.lattice().size())
             .filter(|&object| self.is_fibrant(object))
             .collect()
     }
 
-    /// Returns all cofibrant objects in element-id order.
+    /// Returns all cofibrant objects, in increasing order of id.
     pub fn cofibrant_objects(&self) -> Vec<ElementId> {
         (0..self.lattice().size())
             .filter(|&object| self.is_cofibrant(object))
             .collect()
     }
 
-    /// Returns all bifibrant objects in element-id order.
+    /// Returns all bifibrant objects, in increasing order of id.
     pub fn bifibrant_objects(&self) -> Vec<ElementId> {
         (0..self.lattice().size())
             .filter(|&object| self.is_bifibrant(object))
@@ -256,8 +269,10 @@ impl ModelStructure {
 
     /// Factors a relation as a cofibration followed by an acyclic fibration.
     ///
-    /// Returns `None` if `relation` is not an in-range relation of the
-    /// underlying lattice.  Every valid relation has a witness.
+    /// Factorizations need not be unique; this returns the one whose middle
+    /// object has the smallest id. Returns `None` if `relation` is not a
+    /// relation `x <= y` of the lattice (including when an id is out of
+    /// bounds).
     pub fn factor_as_cofibration_then_acyclic_fibration(
         &self,
         relation: Edge,
@@ -272,8 +287,10 @@ impl ModelStructure {
 
     /// Factors a relation as an acyclic cofibration followed by a fibration.
     ///
-    /// Returns `None` if `relation` is not an in-range relation of the
-    /// underlying lattice.  Every valid relation has a witness.
+    /// Factorizations need not be unique; this returns the one whose middle
+    /// object has the smallest id. Returns `None` if `relation` is not a
+    /// relation `x <= y` of the lattice (including when an id is out of
+    /// bounds).
     pub fn factor_as_acyclic_cofibration_then_fibration(
         &self,
         relation: Edge,
@@ -298,11 +315,12 @@ impl TryFrom<(TransferSystem, TransferSystem)> for ModelStructure {
 }
 
 impl Lattice {
-    /// Enumerates all model structures on this lattice.
+    /// Returns all model structures on this lattice.
     ///
     /// They correspond to the intervals `R <= R'` of the model-structure order
-    /// on transfer systems; see
-    /// [`Lattice::transfer_systems_model_structure_order`].
+    /// on transfer systems (see
+    /// [`Lattice::transfer_systems_model_structure_order`]), and are listed in
+    /// lexicographic order of the ids of `(R, R')` in that poset.
     pub fn model_structures(&self) -> Vec<ModelStructure> {
         let order = self.transfer_systems_model_structure_order();
         order

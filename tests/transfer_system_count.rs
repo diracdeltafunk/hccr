@@ -31,11 +31,11 @@ fn counting_agrees_with_enumeration_on_small_lattices() {
 #[test]
 fn horizontal_joins_of_chains_have_the_expected_counts() {
     let c3 = Lattice::chain(3);
-    let fusion = Lattice::horizontal_join([&c3, &c3, &c3]).unwrap();
-    assert_eq!(fusion.size(), 8);
-    assert!(fusion.is_fusion_of_total_orders());
-    assert_eq!(fusion.transfer_system_count(), 298);
-    assert_eq!(fusion.transfer_systems().size(), 298);
+    let joined = Lattice::horizontal_join([&c3, &c3, &c3]).unwrap();
+    assert_eq!(joined.size(), 8);
+    assert!(joined.is_horizontal_join_of_total_orders());
+    assert_eq!(joined.transfer_system_count(), 298);
+    assert_eq!(joined.transfer_systems().size(), 298);
 }
 
 #[cfg(feature = "groups")]

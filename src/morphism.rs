@@ -1,8 +1,10 @@
 //! Order-preserving maps and lattice homomorphisms.
 //!
-//! A map is represented by its values on element ids: the entry `map[i]` is the
-//! image of the element `i`.  Constructors validate the relevant mathematical
-//! axioms before producing a [`crate::morphism::PosetMap`] or [`crate::morphism::LatticeMap`].
+//! A map is given by its values on element ids: entry `i` of the image vector is
+//! the image of element `i`. The constructors check the axioms, so every
+//! [`PosetMap`] is monotone and every [`LatticeMap`] preserves meets, joins,
+//! bottom and top. Both implement [`MonotoneMap`], which is what the
+//! transfer-system operations in [`crate::transfer_morphism`] accept.
 
 use crate::lattice::Lattice;
 use crate::poset::{ElementId, Poset};
@@ -163,13 +165,11 @@ pub trait MonotoneMap: sealed::Sealed {
     /// Entry `i` is the element id to which domain element `i` is sent.
     fn images(&self) -> &[ElementId];
 
-    /// Reports whether this map is guaranteed to preserve every binary meet.
+    /// Returns `true` if this map is known to preserve binary meets, as every
+    /// [`LatticeMap`] does.
     ///
-    /// This is a conservative optimization capability: algorithms may use a
-    /// faster path whose correctness depends on meet preservation when this
-    /// method returns `true`. Implementations must therefore return `true`
-    /// only when they guarantee that property. The default makes no such
-    /// guarantee.
+    /// Some algorithms use this to take a faster path. Returns `false` for a
+    /// [`PosetMap`], even one that happens to preserve meets.
     fn is_known_meet_preserving(&self) -> bool {
         false
     }
@@ -180,7 +180,7 @@ pub trait MonotoneMap: sealed::Sealed {
 /// The map is stored by its values on element ids. Cloning a map is cheap
 /// apart from copying that vector, since the domain and codomain are shared
 /// handles.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct PosetMap {
     domain: Poset,
     codomain: Poset,
@@ -255,7 +255,8 @@ impl PosetMap {
 
     /// Returns the composite `self ∘ first`: apply `first`, then `self`.
     ///
-    /// The codomain of `first` must equal the domain of `self`.
+    /// Fails with [`PosetMapError::NotComposable`] if the codomain of `first`
+    /// is not equal (`==`) to the domain of `self`.
     pub fn compose(&self, first: &impl MonotoneMap) -> Result<PosetMap, PosetMapError> {
         if first.codomain_poset() != &self.domain {
             return Err(PosetMapError::NotComposable);
@@ -289,7 +290,7 @@ impl MonotoneMap for PosetMap {
 /// This is a function preserving bottom, top, binary meets, and binary joins.
 /// In finite lattices such a function is automatically monotone, but the
 /// constructor also checks monotonicity for clearer diagnostics.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct LatticeMap {
     domain: Lattice,
     codomain: Lattice,
@@ -362,7 +363,8 @@ impl LatticeMap {
 
     /// Returns the composite `self ∘ first`: apply `first`, then `self`.
     ///
-    /// The codomain of `first` must equal the domain of `self`.
+    /// Fails with [`PosetMapError::NotComposable`] if the codomain of `first`
+    /// is not equal (`==`) to the domain of `self`.
     pub fn compose(&self, first: &LatticeMap) -> Result<LatticeMap, PosetMapError> {
         if first.codomain != self.domain {
             return Err(PosetMapError::NotComposable);

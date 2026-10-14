@@ -35,7 +35,8 @@
 //! exactly the transfer systems. Thus generation is one double-derivation and
 //! enumeration uses the formal concepts of the context, rather than testing
 //! all subsets of lattice relations independently. The context is built the
-//! first time it is needed and then cached inside the lattice.
+//! first time it is needed and then cached inside the lattice; it is returned
+//! by [`Lattice::transfer_context`].
 
 use crate::bitvec_utils::{intersection, intersects, is_subset, set_partial_cmp};
 use crate::label::Label;
@@ -49,7 +50,11 @@ use std::fmt;
 use std::ops::Deref;
 use std::sync::Arc;
 
-type TransferContext = FormalContext<Edge, Edge>;
+/// The formal context whose closed extents are the transfer systems on a
+/// lattice; see [`Lattice::transfer_context`].
+///
+/// Objects and attributes are proper relations of the lattice.
+pub type TransferContext = FormalContext<Edge, Edge>;
 
 /// Shared data that gives transfer-system bitvectors their meaning.
 ///
@@ -62,11 +67,14 @@ pub(crate) struct TransferUniverse {
     context: TransferContext,
 }
 
-/// A transfer system on a finite lattice.
+/// A transfer system on a finite lattice `L`: a partial order on the elements
+/// of `L`, contained in the order of `L`, such that a relation `x -> y` and
+/// `z <= y` force the relation `(x /\ z) -> z`.
 ///
-/// It remembers its lattice, so all of its methods need no further context.
+/// It remembers its lattice, so its methods need no further context.
 /// Transfer systems on the same lattice are ordered by containment, so `<=`
-/// can be used to compare them.
+/// can be used to compare them. Displaying one lists its non-identity
+/// relations as `{a -> b, ...}`, using element labels.
 #[derive(Clone)]
 pub struct TransferSystem {
     lattice: Lattice,
@@ -85,8 +93,10 @@ pub struct TransferLattice {
     systems: SystemTable,
 }
 
-/// A poset of transfer systems on a fixed lattice, such as the
-/// composition-closed order, which need not be a lattice.
+/// A poset of transfer systems on a fixed lattice, which need not be a
+/// lattice: either the composition-closed order
+/// ([`Lattice::transfer_systems_composition_closed`]) or the model-structure
+/// order ([`Lattice::transfer_systems_model_structure_order`]).
 ///
 /// This dereferences to the [`Poset`] whose elements are the transfer
 /// systems (labelled `0, 1, 2, ...`); use [`TransferPoset::system`] to get the
@@ -95,6 +105,16 @@ pub struct TransferLattice {
 pub struct TransferPoset {
     order: Poset,
     systems: SystemTable,
+    kind: TransferOrder,
+}
+
+/// Records which order on transfer systems a [`TransferPoset`] carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TransferOrder {
+    /// The order of [`Lattice::transfer_systems_composition_closed`].
+    CompositionClosed,
+    /// The order of [`Lattice::transfer_systems_model_structure_order`].
+    ModelStructure,
 }
 
 #[derive(Clone)]
@@ -108,8 +128,9 @@ struct SystemTable {
 /// not compatible.
 ///
 /// Compatibility uses the convention that the first system is additive and
-/// the second is multiplicative.  In particular, every multiplicative
-/// transfer must also be additive.
+/// the second is multiplicative. It requires, first, that every
+/// multiplicative transfer is also additive; see
+/// [`TransferSystem::compatibility_failure`] for the second requirement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompatibilityFailure {
     /// The two transfer systems are on different lattices.
@@ -130,7 +151,7 @@ pub enum CompatibilityFailure {
     },
 }
 
-/// Errors that can occur while constructing an individual transfer system.
+/// Errors that can occur while constructing a transfer system.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransferSystemError {
     /// A generating relation references an element outside the lattice.
@@ -174,8 +195,39 @@ impl Lattice {
             .get_or_init(|| TransferUniverse::new(self))
     }
 
-    /// Constructs the lattice `Tr(L)` of all transfer systems on this lattice,
-    /// ordered by containment.
+    /// Returns the formal context whose closed extents are the transfer
+    /// systems on this lattice `L`.
+    ///
+    /// Objects and attributes are both the proper relations `x < y` of `L`.
+    /// An object `r` is incident to an attribute `a` when `a` has the left
+    /// lifting property against `r` (see [`Poset::left_lifting_class`]), so
+    /// objects are tested as right maps. The derivation of a set `A` of
+    /// objects is the proper part of its left lifting class, and the closed
+    /// extents `A''` are the proper parts of the right lifting classes of
+    /// left lifting classes. These are exactly the sets of proper relations
+    /// of the transfer systems on `L`, since a set of relations is a transfer
+    /// system exactly when it is the right lifting class of its left lifting
+    /// class. Hence the concept lattice of this context is isomorphic to
+    /// `Tr(L)`, ordered by extent.
+    ///
+    /// Objects are in increasing `(from, to)` order of element ids;
+    /// attributes are sorted by target, then source.
+    ///
+    /// ```
+    /// use hccr::prelude::*;
+    ///
+    /// let lattice = chain(3);
+    /// let context = lattice.transfer_context();
+    /// let concepts = Lattice::from_formal_context(&context)?;
+    /// assert_eq!(concepts.size(), lattice.transfer_systems().size());
+    /// # Ok::<(), hccr::lattice::LatticeError>(())
+    /// ```
+    pub fn transfer_context(&self) -> TransferContext {
+        self.transfer_universe().context.clone()
+    }
+
+    /// Returns the lattice `Tr(L)` of all transfer systems on this lattice
+    /// `L`, ordered by containment.
     ///
     /// Meet is intersection; join is the transfer-system closure of the union.
     pub fn transfer_systems(&self) -> TransferLattice {
@@ -187,11 +239,11 @@ impl Lattice {
         self.transfer_universe().context.num_concepts()
     }
 
-    /// Constructs the lattice of saturated transfer systems, ordered by
-    /// containment.
+    /// Returns the lattice of saturated transfer systems on this lattice,
+    /// ordered by containment.
     ///
-    /// Meets are intersections.  Joins are obtained by taking ordinary
-    /// transfer-system closure of the union and then saturated closure.
+    /// Meet is intersection; join is the saturated closure
+    /// ([`TransferSystem::saturated_closure`]) of the union.
     pub fn saturated_transfer_systems(&self) -> TransferLattice {
         let systems = self
             .transfer_universe()
@@ -202,13 +254,15 @@ impl Lattice {
         TransferLattice::from_raw(self, systems)
     }
 
-    /// Constructs the composition-closed order on transfer systems.
-    ///
-    /// A comparison `R <= R'` requires ordinary containment and the
-    /// factorization condition: each relevant square formed by one arrow from
-    /// `R` and one from `R'` must admit an intermediate factorization using
-    /// those two systems. Unlike containment, this order need not be a
+    /// Returns the composition-closed order on the transfer systems on this
     /// lattice.
+    ///
+    /// Here `R <= R'` holds when `R` is contained in `R'` and the following
+    /// factorization condition holds: for every relation `x -> y` of `R` and
+    /// `x' -> y'` of `R'` with `x <= x'` and `y <= y'`, there are `z` and `w`
+    /// with `x <= z <= x'` and `y <= w` such that `z -> w` is a relation of
+    /// `R` and `w -> y'` is a relation of `R'`. Unlike containment, this order
+    /// need not be a lattice.
     pub fn transfer_systems_composition_closed(&self) -> TransferPoset {
         let systems = self.transfer_universe().all_systems();
         let order = self.relation_matrix();
@@ -232,15 +286,19 @@ impl Lattice {
                     .collect()
             })
             .collect();
-        TransferPoset::from_raw(self, systems, relation)
+        TransferPoset::from_raw(self, systems, relation, TransferOrder::CompositionClosed)
     }
 
-    /// Constructs the model-structure order on transfer systems.
+    /// Returns the model-structure order on the transfer systems on this
+    /// lattice.
     ///
-    /// For transfer systems `R <= R'`, the corresponding premodel structure
-    /// has weak equivalences `R ∘ llc(R')`. The pair is included exactly when
-    /// those weak equivalences satisfy 2-out-of-3. Thus the intervals of this
-    /// order are precisely the model structures on the lattice.
+    /// Here `R <= R'` holds when `R` is contained in `R'` and the pair with
+    /// acyclic fibrations `R` and fibrations `R'` is a model structure, that
+    /// is, the weak equivalences `R ∘ llc(R')` satisfy 2-out-of-3. Here
+    /// `llc(S)` is the left lifting class of `S`
+    /// ([`Poset::left_lifting_class`]). Thus the relations `R <= R'` of this
+    /// order are exactly the model structures on the lattice; see
+    /// [`ModelStructure`](crate::model_structure::ModelStructure).
     pub fn transfer_systems_model_structure_order(&self) -> TransferPoset {
         let systems = self.transfer_universe().all_systems();
         let universe = self.transfer_universe();
@@ -258,14 +316,14 @@ impl Lattice {
             .collect::<Vec<_>>();
         let left_classes = right_classes
             .iter()
-            .map(|right| self.llc(right))
+            .map(|right| self.left_lifting_class(right))
             .collect::<Vec<_>>();
         let relation = (0..systems.len())
             .map(|lower| {
                 (0..systems.len())
                     .map(|upper| {
                         is_subset(&systems[lower], &systems[upper])
-                            && self.two_out_of_three(&compose(
+                            && self.satisfies_two_out_of_three(&compose(
                                 &right_classes[lower],
                                 &left_classes[upper],
                             ))
@@ -273,11 +331,14 @@ impl Lattice {
                     .collect()
             })
             .collect();
-        TransferPoset::from_raw(self, systems, relation)
+        TransferPoset::from_raw(self, systems, relation, TransferOrder::ModelStructure)
     }
 
-    /// Returns the transfer-system complexity of this lattice: the largest
-    /// size of a minimal generating set of a transfer system on it.
+    /// Returns the transfer-system complexity of this lattice: the maximum of
+    /// [`TransferSystem::generator_complexity`] over all transfer systems on
+    /// it.
+    ///
+    /// This enumerates all transfer systems.
     pub fn transfer_system_complexity(&self) -> usize {
         self.transfer_universe()
             .all_systems()
@@ -287,18 +348,32 @@ impl Lattice {
             .unwrap_or(0)
     }
 
-    /// Returns the transfer-system width of this lattice: the size of a
-    /// minimal generating set of the complete transfer system.
+    /// Returns the transfer-system width of this lattice: the
+    /// [`TransferSystem::generator_complexity`] of the complete transfer
+    /// system.
+    ///
+    /// This is the number of meet-irreducible elements of the lattice
+    /// ([`Lattice::meet_irreducibles`]): the relations `m < top` for
+    /// meet-irreducible `m` form a minimal generating set of the complete
+    /// transfer system. This is Proposition 4.5 of the paper cited at
+    /// [`TransferSystem::generator_complexity`], whose proof works for any
+    /// finite lattice.
     pub fn transfer_system_width(&self) -> usize {
         self.complete_transfer_system().generator_complexity()
     }
 
-    /// Constructs the transfer system generated by the supplied relations.
+    /// Returns the transfer system generated by the supplied relations: the
+    /// least transfer system containing all of them.
     ///
     /// Relations are given by element id, as [`Edge`]s or `(from, to)` pairs.
-    /// Identity relations may be supplied but need not be. Every non-identity
-    /// generator must be a relation of the lattice. The result is the least
-    /// transfer system containing all of the generators.
+    /// Identity relations may be supplied but need not be.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransferSystemError::EdgeOutOfBounds`] if a generator,
+    /// identities included, names an id that is not an element of the
+    /// lattice, and [`TransferSystemError::NotLatticeRelation`] if a generator
+    /// `x -> y` has `x` not below `y`.
     pub fn transfer_system_generated_by<I, E>(
         &self,
         generators: I,
@@ -434,9 +509,9 @@ impl TransferSystem {
 
     /// Returns whether a relation belongs to this transfer system.
     ///
-    /// Every in-range identity relation belongs to a transfer system.  A
-    /// non-identity relation belongs precisely when it was selected;
-    /// non-relations and out-of-range edges return `false`.
+    /// Every identity relation `x -> x` on an element of the lattice belongs.
+    /// Pairs that are not relations of the lattice, and pairs naming ids
+    /// outside the lattice, return `false`.
     pub fn contains_relation(&self, relation: Edge) -> bool {
         raw_contains_relation(&self.lattice, &self.arrows, relation)
     }
@@ -457,19 +532,13 @@ impl TransferSystem {
             .collect()
     }
 
-    /// Returns the covers of this transfer system, regarded as a partial order on the
-    /// elements of the lattice: the relations `x -> z` in it with no `y`
-    /// such that `x -> y` and `y -> z` are both in it. These need not be
-    /// covers in the lattice.
+    /// Returns the covers of this transfer system, regarded as a partial
+    /// order on the elements of the lattice: its non-identity relations
+    /// `x -> z` with no `y` other than `x` and `z` such that `x -> y` and
+    /// `y -> z` are both relations of the system. These need not be covers in
+    /// the lattice.
     pub fn covers(&self) -> EdgeSet {
         covers_of(&self.proper_relations())
-    }
-
-    /// Returns whether every relation of this system belongs to `other`.
-    ///
-    /// Returns `false` when the two systems are on different lattices.
-    pub fn is_contained_in(&self, other: &TransferSystem) -> bool {
-        self.lattice == other.lattice && is_subset(&self.arrows, &other.arrows)
     }
 
     /// Returns whether this transfer system is saturated.
@@ -545,9 +614,12 @@ impl TransferSystem {
 
     /// Returns whether the supplied relations generate this transfer system.
     ///
-    /// Identity relations may be supplied but are never needed.  Invalid
-    /// lattice relations produce the same errors as
-    /// [`Lattice::transfer_system_generated_by`].
+    /// Identity relations may be supplied but are never needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Lattice::transfer_system_generated_by`]
+    /// when a supplied pair is not a relation of the lattice.
     pub fn is_generated_by<I, E>(&self, generators: I) -> Result<bool, TransferSystemError>
     where
         I: IntoIterator<Item = E>,
@@ -565,6 +637,10 @@ impl TransferSystem {
     ///
     /// Repetitions and identity relations make a generating collection
     /// non-minimal because deleting one of them does not change its closure.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`TransferSystem::is_generated_by`].
     pub fn is_minimal_generating_set<I, E>(
         &self,
         generators: I,
@@ -592,8 +668,9 @@ impl TransferSystem {
 
     /// Returns a deterministic inclusion-minimal generating set.
     ///
-    /// Relations are considered in reverse row-major order and deleted
-    /// whenever the remaining relations still generate this system.
+    /// Relations are considered in decreasing `(from, to)` order (the reverse
+    /// of [`TransferSystem::proper_relations`]), and each is deleted whenever
+    /// the remaining relations still generate this system.
     pub fn minimal_generating_set(&self) -> EdgeSet {
         let universe = self.universe();
         minimal_generator_bits(&self.lattice, &self.arrows)
@@ -605,27 +682,36 @@ impl TransferSystem {
     /// Returns a minimum-cardinality generating set.
     ///
     /// Every inclusion-minimal generating set of a transfer system has the
-    /// same cardinality, so the deterministic set returned here is also
-    /// minimum.  This method is an explicitly named alias for
+    /// same cardinality (see [`TransferSystem::generator_complexity`]), so
+    /// this is an explicitly named alias for
     /// [`TransferSystem::minimal_generating_set`].
     pub fn minimum_generating_set(&self) -> EdgeSet {
         self.minimal_generating_set()
     }
 
-    /// Returns the generator complexity of this transfer system.
+    /// Returns the generator complexity of this transfer system: the common
+    /// cardinality of its inclusion-minimal generating sets.
     ///
-    /// This is the common cardinality of its inclusion-minimal generating
-    /// sets.
+    /// That these all have the same cardinality is Corollary 2.14 of
+    /// [Adamyk–Balchin–Barrero–Scheirer–Wisdom–Zapata Castro, *On minimal bases in
+    /// homotopical combinatorics*](https://arxiv.org/abs/2506.11159).
+    /// The paper works with subgroup lattices, but its proof (Lemma 2.12 and
+    /// Proposition 2.13) only uses a strictly monotone function from the
+    /// lattice to the natural numbers, so it applies to any finite lattice
+    /// with the height of an element in place of the paper's `P`.
     pub fn generator_complexity(&self) -> usize {
         minimal_generator_bits(&self.lattice, &self.arrows).count_ones()
     }
 
-    /// Returns a concrete failure when this additive transfer system is not
-    /// compatible with `multiplicative`.
+    /// Returns `None` if this additive transfer system is compatible with
+    /// `multiplicative`, and otherwise the first witness of incompatibility
+    /// found.
     ///
-    /// Compatibility first requires every multiplicative relation to be
-    /// additive.  It then requires that, for `K, J <= H`, a multiplicative
-    /// `K -> H` and additive `(K /\ J) -> K` force additive `J -> H`.
+    /// Compatibility first requires every multiplicative transfer to be
+    /// additive. It then requires that, for `K, J <= H`, a multiplicative
+    /// transfer `K -> H` and an additive transfer `(K /\ J) -> K` force an
+    /// additive transfer `J -> H`. Systems on different lattices yield
+    /// [`CompatibilityFailure::DifferentLattices`].
     pub fn compatibility_failure(
         &self,
         multiplicative: &TransferSystem,
@@ -650,6 +736,13 @@ impl PartialEq for TransferSystem {
 }
 
 impl Eq for TransferSystem {}
+
+impl std::hash::Hash for TransferSystem {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.lattice.hash(state);
+        self.arrows.hash(state);
+    }
+}
 
 impl PartialOrd for TransferSystem {
     /// Compares transfer systems on the same lattice by containment. Systems
@@ -760,21 +853,34 @@ impl TransferLattice {
         &self.systems.systems
     }
 
-    /// Returns the element id of a transfer system, if it belongs to this
-    /// lattice.
+    /// Returns the element id of `system` in this lattice of transfer
+    /// systems, or `None` if it lives on a different base lattice or is not an
+    /// element (for example, a non-saturated system in
+    /// [`Lattice::saturated_transfer_systems`]).
     pub fn id_of(&self, system: &TransferSystem) -> Option<ElementId> {
         self.systems.id_of(system)
     }
 }
 
 impl TransferPoset {
-    fn from_raw(base: &Lattice, systems: Vec<BitVec>, relation: Vec<BitVec>) -> Self {
+    fn from_raw(
+        base: &Lattice,
+        systems: Vec<BitVec>,
+        relation: Vec<BitVec>,
+        kind: TransferOrder,
+    ) -> Self {
         let order = Poset::from_relation((0..systems.len()).map(Label::from), relation)
             .expect("the transfer-system orders are partial orders");
         Self {
             order,
             systems: SystemTable::new(base, systems),
+            kind,
         }
+    }
+
+    /// Returns which order on transfer systems this poset carries.
+    pub(crate) fn kind(&self) -> TransferOrder {
+        self.kind
     }
 
     /// Returns the lattice whose transfer systems these are.
@@ -800,8 +906,8 @@ impl TransferPoset {
         &self.systems.systems
     }
 
-    /// Returns the element id of a transfer system, if it belongs to this
-    /// poset.
+    /// Returns the element id of `system` in this poset of transfer systems,
+    /// or `None` if it lives on a different base lattice.
     pub fn id_of(&self, system: &TransferSystem) -> Option<ElementId> {
         self.systems.id_of(system)
     }
@@ -1015,11 +1121,10 @@ fn as_partial_order(lattice: &Lattice, arrows: &BitVec) -> PartialOrder {
     }
 }
 
-/// Encodes a partial order on {1,...,n} in two ways:
-/// First, as a list of pairs (i,j).
-///
-/// Second, as a list of columns of a binary matrix, where columns[j][i] is true
-/// if and only if (i,j) is in the partial order.
+/// Encodes a partial order on the element ids `0..n` in two ways: as the
+/// list `pairs` of its relations `(i, j)`, identities included, and as the
+/// transposed relation matrix, where `matrix_transpose[j][i]` is true exactly
+/// when `(i, j)` is a relation.
 #[derive(Debug, Clone)]
 struct PartialOrder {
     pairs: Vec<Edge>,
@@ -1052,13 +1157,13 @@ impl FactorizationGeometry {
     }
 }
 
-/// A pair of arrows witnessing failure of the composition-closed
+/// A pair of relations witnessing failure of the composition-closed
 /// factorization condition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FactorizationFailure {
-    /// The arrow in the smaller transfer system.
+    /// The relation in the smaller transfer system.
     pub(crate) first: Edge,
-    /// The arrow in the larger transfer system.
+    /// The relation in the larger transfer system.
     pub(crate) second: Edge,
 }
 
@@ -1090,7 +1195,7 @@ fn factorization_failure(
     None
 }
 
-/// Returns a failed pair of arrows when two transfer systems do not satisfy
+/// Returns a failed pair of relations when two transfer systems do not satisfy
 /// the composition-closed factorization condition.
 pub(crate) fn factorization_failure_between(
     left: &TransferSystem,

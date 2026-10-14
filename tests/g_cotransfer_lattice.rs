@@ -1,9 +1,10 @@
 #![cfg(feature = "groups")]
 
 use hccr::g_cotransfer_lattice::GCotransferSystem;
-use hccr::g_lattice::{GLattice, GTransferSystem};
+use hccr::g_lattice::{GLattice, RelationOrbitLabel, SubgroupGLattice};
+use hccr::g_transfer_lattice::GTransferSystem;
 use hccr::lattice::Lattice;
-use hccr::poset::Edge;
+use hccr::poset::{Edge, EdgeSet};
 use std::collections::HashSet;
 use std::error::Error;
 
@@ -161,6 +162,96 @@ fn equivariant_lifting_classes_are_mutually_inverse_and_reverse_containment()
                 assert!(upper.left_lifting_cotransfer() <= lower.left_lifting_cotransfer());
             }
         }
+    }
+    Ok(())
+}
+
+/// A minimal set of orbit generators generates the G-cotransfer system, no
+/// proper subset does, and the trivial and complete systems are the bottom
+/// and top of the containment lattice.
+#[test]
+fn g_cotransfer_minimal_generating_sets_generate_irredundantly() -> Result<(), Box<dyn Error>> {
+    let group = gap_sys::eval("Group((1,2));")?;
+    let g_lattice = GLattice::from_generator_images(&diamond(), &group, vec![vec![0, 2, 1, 3]])?;
+    let containment = g_lattice.cotransfer_systems();
+    for system in containment.systems() {
+        let basis: Vec<Edge> = system
+            .minimal_generating_set()
+            .iter()
+            .map(|label| label.canonical_representative())
+            .collect();
+        assert!(system.is_generated_by(basis.iter().copied())?);
+        assert!(system.is_minimal_generating_set(basis.iter().copied())?);
+        assert_eq!(basis.len(), system.generator_complexity());
+    }
+    assert_eq!(
+        &g_lattice.trivial_cotransfer_system(),
+        containment.system(containment.bottom())
+    );
+    assert_eq!(
+        &g_lattice.complete_cotransfer_system(),
+        containment.system(containment.top())
+    );
+    Ok(())
+}
+
+/// Expands a set of relation-orbit labels to the set of all their relations.
+fn expand_orbits<'a>(
+    g_lattice: &GLattice,
+    labels: impl Iterator<Item = &'a RelationOrbitLabel>,
+) -> EdgeSet {
+    labels
+        .flat_map(|label| {
+            g_lattice
+                .relation_orbit(label.canonical_representative())
+                .unwrap()
+                .relations()
+        })
+        .collect()
+}
+
+#[test]
+fn g_cotransfer_context_closed_extents_are_exactly_the_g_cotransfer_systems()
+-> Result<(), Box<dyn Error>> {
+    let group = gap_sys::eval("Group((1,2));")?;
+    let swapping_diamond =
+        GLattice::from_generator_images(&diamond(), &group, vec![vec![0, 2, 1, 3]])?;
+    let s3 = SubgroupGLattice::from_gap("SymmetricGroup(3)")?;
+    for g_lattice in [swapping_diamond, GLattice::clone(&s3)] {
+        let context = g_lattice.cotransfer_context();
+        let concepts = context.all_concepts();
+        let extents = concepts
+            .iter()
+            .map(|concept| expand_orbits(&g_lattice, concept.extent_names_iter()))
+            .collect::<HashSet<_>>();
+        assert_eq!(extents.len(), concepts.len());
+        let systems = g_lattice
+            .cotransfer_systems()
+            .systems()
+            .iter()
+            .map(|system| system.proper_relations())
+            .collect::<HashSet<_>>();
+        assert_eq!(extents, systems);
+
+        // Exchanging objects and attributes turns the G-transfer context into
+        // the G-cotransfer context: the concepts agree with extent and intent
+        // swapped.
+        let pairs = |concepts: &[fcars::FormalConcept<_, _>], swap: bool| {
+            concepts
+                .iter()
+                .map(|concept| {
+                    let extent = expand_orbits(&g_lattice, concept.extent_names_iter());
+                    let intent = expand_orbits(&g_lattice, concept.intent_names_iter());
+                    if swap {
+                        (intent, extent)
+                    } else {
+                        (extent, intent)
+                    }
+                })
+                .collect::<HashSet<_>>()
+        };
+        let transfer_concepts = g_lattice.transfer_context().all_concepts();
+        assert_eq!(pairs(&concepts, false), pairs(&transfer_concepts, true));
     }
     Ok(())
 }

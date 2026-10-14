@@ -9,8 +9,9 @@ calculations arising in homotopical combinatorics. It constructs and studies:
 - transfer and cotransfer systems;
 - model structures and weak factorization systems;
 - maps induced by monotone and lattice morphisms;
-- equivariant transfer systems for finite groups, via GAP; and
-- TikZ representations of the resulting orders and lattices.
+- equivariant transfer systems for finite groups, via GAP;
+- concept lattices of formal contexts, via [`fcars`](https://crates.io/crates/fcars); and
+- TikZ drawings of the resulting orders and lattices.
 
 The project is under active development. The API may change as the mathematical
 interface settles.
@@ -32,8 +33,8 @@ use hccr::prelude::*;
 fn main() -> hccr::Result<()> {
     // The horizontal join [3] * [3] * [3] has 298 transfer systems.
     let c3 = chain(3);
-    let fusion = horizontal_join([&c3, &c3, &c3])?;
-    assert_eq!(fusion.transfer_systems().size(), 298);
+    let joined = horizontal_join([&c3, &c3, &c3])?;
+    assert_eq!(joined.transfer_systems().size(), 298);
 
     // Lattices can also be given by labels and cover relations.
     let pentagon = Lattice::from_covers(
@@ -58,6 +59,43 @@ A few things to know:
   is never a need for `Arc` or `Rc`.
 - **One error type.** Every error converts into `hccr::Error`, so
   `fn main() -> hccr::Result<()>` with `?` works throughout.
+
+## Drawing
+
+Posets, lattices and lattices of transfer systems can be drawn as TikZ
+pictures. A lattice of transfer systems shows each transfer system as a small
+picture of the underlying lattice, with its relations highlighted:
+
+```rust
+use hccr::prelude::*;
+use hccr::tikz::PosetLayout;
+
+fn main() {
+    let tr = boolean(2).transfer_systems();
+
+    // The default drawing, as a complete LaTeX document.
+    println!("{}", tr.to_tikz().to_standalone_document());
+
+    // Drawings are plain data, so they can be adjusted before rendering:
+    // here, a different layout, wider spacing, and element ids.
+    let drawing = tr
+        .drawing_with(PosetLayout::BALANCED)
+        .spacing(3.0, 3.0)
+        .show_ids(true);
+    println!("{}", drawing.to_tikz());
+}
+```
+
+The [`tikz`](src/tikz.rs) module documentation describes the available
+layouts and every way to adjust a drawing.
+
+## Documentation and examples
+
+Until the crate is published, build the API documentation locally:
+
+```console
+cargo doc --open                    # add --features groups for the GAP parts
+```
 
 More complete programs are available in [`examples/`](examples), including
 horizontal joins, transfer-system morphisms, model calculations for groups, and

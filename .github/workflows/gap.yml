@@ -75,3 +75,6 @@ jobs:
 
       - name: Run tests with groups feature
         run: cargo test --features groups --tests --verbose
+
+      - name: Run doctests with groups feature
+        run: cargo test --doc --features groups --verbose

@@ -192,8 +192,8 @@ fn lifting_classes_satisfy_their_defining_conditions() {
                 })
                 .collect::<EdgeSet>();
 
-            assert_eq!(poset.llc(&arrows), expected_left);
-            assert_eq!(poset.rlc(&arrows), expected_right);
+            assert_eq!(poset.left_lifting_class(&arrows), expected_left);
+            assert_eq!(poset.right_lifting_class(&arrows), expected_right);
         }
     }
 }
@@ -272,13 +272,13 @@ fn two_out_of_three_satisfies_its_defining_condition() {
                 .filter_map(|(id, edge)| ((class_bits >> id) & 1 == 1).then_some(edge))
                 .collect::<EdgeSet>();
             assert_eq!(
-                poset.two_out_of_three(&class),
+                poset.satisfies_two_out_of_three(&class),
                 direct_two_out_of_three(&poset, &class),
             );
         }
     }
 
-    assert!(!Poset::chain(1).two_out_of_three(&EdgeSet::from([Edge::new(1, 0)])));
+    assert!(!Poset::chain(1).satisfies_two_out_of_three(&EdgeSet::from([Edge::new(1, 0)])));
 }
 
 #[test]
@@ -311,17 +311,17 @@ fn constructions_have_the_expected_order_structure() {
     // The horizontal join glues the factors along their bottoms and tops and
     // makes elements of different factors incomparable otherwise.
     let c3 = chain(3);
-    let (fusion, inclusions) = Lattice::horizontal_join_with_inclusions([&c3, &c3]).unwrap();
-    assert_eq!(fusion.size(), 6);
-    assert!(fusion.is_fusion_of_total_orders());
+    let (joined, inclusions) = Lattice::horizontal_join_with_inclusions([&c3, &c3]).unwrap();
+    assert_eq!(joined.size(), 6);
+    assert!(joined.is_horizontal_join_of_total_orders());
     for inclusion in &inclusions {
-        assert_eq!(inclusion.apply(c3.bottom()), fusion.bottom());
-        assert_eq!(inclusion.apply(c3.top()), fusion.top());
+        assert_eq!(inclusion.apply(c3.bottom()), joined.bottom());
+        assert_eq!(inclusion.apply(c3.top()), joined.top());
     }
     for x in 1..3 {
         for y in 1..3 {
             let (a, b) = (inclusions[0].apply(x), inclusions[1].apply(y));
-            assert!(!fusion.leq(a, b) && !fusion.leq(b, a));
+            assert!(!joined.leq(a, b) && !joined.leq(b, a));
         }
     }
 
@@ -404,6 +404,266 @@ fn covers_generate_the_order_and_are_not_composites() {
         }
         for system in lattice.cotransfer_systems().systems() {
             check_covers(&system.proper_relations(), &system.covers());
+        }
+    }
+}
+
+/// The element-level queries agree with their definitions in terms of `<=`.
+#[test]
+fn element_queries_agree_with_the_order() {
+    let pentagon = Lattice::from_covers(
+        ["0", "a", "b", "c", "1"],
+        [("0", "a"), ("a", "b"), ("b", "1"), ("0", "c"), ("c", "1")],
+    )
+    .unwrap();
+    for poset in [
+        pentagon.as_poset().clone(),
+        Lattice::boolean(3).as_poset().clone(),
+        Poset::disjoint_union([Poset::chain(2), Poset::antichain(2)]),
+    ] {
+        let ids = || poset.ids();
+        for x in ids() {
+            let below: Vec<_> = ids().filter(|&y| poset.leq(y, x)).collect();
+            let above: Vec<_> = ids().filter(|&y| poset.leq(x, y)).collect();
+            assert_eq!(poset.down_set(x), below);
+            assert_eq!(poset.up_set(x), above);
+            let covered: Vec<_> = ids()
+                .filter(|&y| poset.lt(y, x) && !ids().any(|z| poset.lt(y, z) && poset.lt(z, x)))
+                .collect();
+            let covering: Vec<_> = ids()
+                .filter(|&y| poset.lt(x, y) && !ids().any(|z| poset.lt(x, z) && poset.lt(z, y)))
+                .collect();
+            assert_eq!(poset.lower_covers(x), covered);
+            assert_eq!(poset.upper_covers(x), covering);
+            for y in ids() {
+                assert_eq!(poset.lt(x, y), x != y && poset.leq(x, y));
+                assert_eq!(poset.comparable(x, y), poset.leq(x, y) || poset.leq(y, x));
+                let between: Vec<_> = ids()
+                    .filter(|&z| poset.leq(x, z) && poset.leq(z, y))
+                    .collect();
+                assert_eq!(poset.interval(x, y), between);
+            }
+            assert_eq!(poset.try_id(poset.label(x).clone()), Some(x));
+        }
+        assert_eq!(poset.try_id("not an element"), None);
+    }
+}
+
+/// Equal values have equal hashes, so posets, lattices and transfer systems
+/// can be used as set members and map keys.
+#[test]
+fn equal_values_hash_equally() {
+    use std::collections::HashSet;
+    let lattice = Lattice::boolean(2);
+    let first = lattice.transfer_systems();
+    let second = Lattice::boolean(2).transfer_systems();
+    let systems: HashSet<_> = first.systems().iter().cloned().collect();
+    assert_eq!(systems.len(), first.size());
+    for system in second.systems() {
+        assert!(systems.contains(system));
+    }
+    let posets: HashSet<Poset> = [lattice.as_poset().clone(), Lattice::boolean(2).into_poset()]
+        .into_iter()
+        .collect();
+    assert_eq!(posets.len(), 1);
+}
+
+/// The concept lattice of a lattice's standard context is that lattice: the
+/// map sending `x` to the concept (join-irreducibles below `x`,
+/// meet-irreducibles above `x`) is an order isomorphism.
+#[test]
+fn the_standard_context_recovers_the_lattice() {
+    use hccr::label::Label;
+    let pentagon = Lattice::from_covers(
+        ["0", "a", "b", "c", "1"],
+        [("0", "a"), ("a", "b"), ("b", "1"), ("0", "c"), ("c", "1")],
+    )
+    .unwrap();
+    for lattice in [
+        Lattice::chain(0),
+        Lattice::chain(3),
+        Lattice::boolean(3),
+        pentagon,
+        Lattice::chain(3).transfer_systems().as_lattice().clone(),
+    ] {
+        let concepts = Lattice::from_formal_context(&lattice.standard_context()).unwrap();
+        assert_eq!(concepts.size(), lattice.size());
+        let joins = lattice.join_irreducibles();
+        let meets = lattice.meet_irreducibles();
+        let image = |x: usize| {
+            let label = Label::tuple([
+                Label::set(
+                    joins
+                        .iter()
+                        .filter(|&&j| lattice.leq(j, x))
+                        .map(|&j| lattice.label(j).clone()),
+                ),
+                Label::set(
+                    meets
+                        .iter()
+                        .filter(|&&m| lattice.leq(x, m))
+                        .map(|&m| lattice.label(m).clone()),
+                ),
+            ]);
+            concepts.id(label).unwrap()
+        };
+        for x in lattice.ids() {
+            for y in lattice.ids() {
+                assert_eq!(concepts.leq(image(x), image(y)), lattice.leq(x, y));
+            }
+        }
+    }
+}
+
+fn hash_of<T: std::hash::Hash>(value: &T) -> u64 {
+    use std::hash::{BuildHasher, RandomState};
+    // One hasher state for the whole test, so that hashes are comparable.
+    thread_local!(static STATE: RandomState = RandomState::new());
+    STATE.with(|state| state.hash_one(value))
+}
+
+/// Posets, lattices and transfer systems compute some structure lazily, the
+/// first time it is needed. Filling those caches must not change a value's
+/// hash or equality, or a hash set holding the value would stop finding it.
+#[test]
+fn hashes_are_unchanged_by_lazily_computed_structure() {
+    use std::collections::HashSet;
+    let lattice = Lattice::boolean(2);
+    let poset = lattice.as_poset().clone();
+    let system = lattice.transfer_systems().system(1).clone();
+
+    let before = (hash_of(&poset), hash_of(&lattice), hash_of(&system));
+    let posets: HashSet<Poset> = HashSet::from([poset.clone()]);
+    let lattices: HashSet<Lattice> = HashSet::from([lattice.clone()]);
+    let systems: HashSet<_> = HashSet::from([system.clone()]);
+
+    // Fill every cache: the lattice of transfer systems (already built
+    // above), the lattice of cotransfer systems, and the model structures.
+    let _ = lattice.cotransfer_systems();
+    let _ = lattice.model_structures();
+    let _ = poset.covers();
+
+    assert_eq!(
+        before,
+        (hash_of(&poset), hash_of(&lattice), hash_of(&system))
+    );
+    assert!(posets.contains(&poset));
+    assert!(lattices.contains(&lattice));
+    assert!(systems.contains(&system));
+}
+
+/// A lattice is a horizontal join of total orders exactly when comparability
+/// is an equivalence relation on its elements other than bottom and top, and
+/// exactly when any two incomparable elements have meet bottom and join top.
+/// `is_horizontal_join_of_total_orders` must agree with both
+/// characterizations, whatever the element ids, including on lattices with
+/// more than 64 elements.
+#[test]
+fn horizontal_join_of_total_orders_matches_definition() {
+    fn comparability_is_an_equivalence_on_the_interior(lattice: &Lattice) -> bool {
+        let interior = lattice
+            .ids()
+            .filter(|&x| x != lattice.bottom() && x != lattice.top())
+            .collect::<Vec<_>>();
+        interior.iter().all(|&x| {
+            interior.iter().all(|&y| {
+                interior.iter().all(|&z| {
+                    !(lattice.comparable(x, y) && lattice.comparable(y, z))
+                        || lattice.comparable(x, z)
+                })
+            })
+        })
+    }
+
+    fn incomparables_meet_at_bottom_and_join_at_top(lattice: &Lattice) -> bool {
+        lattice.ids().all(|x| {
+            lattice.ids().all(|y| {
+                lattice.comparable(x, y)
+                    || (lattice.meet(x, y) == lattice.bottom()
+                        && lattice.join(x, y) == lattice.top())
+            })
+        })
+    }
+
+    /// The same lattice with its element ids permuted.
+    fn scrambled(lattice: &Lattice) -> Lattice {
+        let mut order = lattice.ids().collect::<Vec<_>>();
+        order.sort_by_key(|&x| (x % 3, std::cmp::Reverse(x)));
+        Lattice::from_covers(
+            order.iter().map(|&x| lattice.label(x).clone()),
+            lattice.covers().iter().map(|edge| {
+                (
+                    lattice.label(edge.from).clone(),
+                    lattice.label(edge.to).clone(),
+                )
+            }),
+        )
+        .unwrap()
+    }
+
+    let pentagon = Lattice::from_covers(
+        ["0", "a", "b", "c", "1"],
+        [("0", "a"), ("a", "b"), ("b", "1"), ("0", "c"), ("c", "1")],
+    )
+    .unwrap();
+    // Incomparable b and c have meet bottom but join d, not top.
+    let joined_below_top = Lattice::from_covers(
+        ["bot", "b", "c", "d", "top"],
+        [
+            ("bot", "b"),
+            ("bot", "c"),
+            ("b", "d"),
+            ("c", "d"),
+            ("d", "top"),
+        ],
+    )
+    .unwrap();
+    let large =
+        Lattice::horizontal_join([Lattice::chain(40), Lattice::chain(30), Lattice::chain(5)])
+            .unwrap();
+    let large_with_cube =
+        Lattice::horizontal_join([Lattice::chain(40), Lattice::boolean(3), Lattice::chain(30)])
+            .unwrap();
+
+    let examples = [
+        Lattice::chain(0),
+        Lattice::chain(1),
+        Lattice::chain(4),
+        Lattice::boolean(2),
+        Lattice::horizontal_join([Lattice::chain(3), Lattice::chain(1), Lattice::chain(2)])
+            .unwrap(),
+        Lattice::horizontal_join(std::iter::empty::<Lattice>()).unwrap(),
+        pentagon,
+        Lattice::horizontal_join([Lattice::chain(2), Lattice::boolean(2)]).unwrap(),
+        large.clone(),
+    ];
+    let non_examples = [
+        joined_below_top,
+        Lattice::boolean(3),
+        Lattice::product([Lattice::chain(2), Lattice::chain(1)]),
+        Lattice::horizontal_join([Lattice::chain(2), Lattice::boolean(3)]).unwrap(),
+        large_with_cube,
+        Lattice::product([large, Lattice::chain(1)]),
+    ];
+    for (lattices, expected) in [(&examples[..], true), (&non_examples[..], false)] {
+        for lattice in lattices {
+            for lattice in [lattice.clone(), lattice.opposite(), scrambled(lattice)] {
+                assert_eq!(
+                    comparability_is_an_equivalence_on_the_interior(&lattice),
+                    expected,
+                    "{lattice}"
+                );
+                assert_eq!(
+                    incomparables_meet_at_bottom_and_join_at_top(&lattice),
+                    expected,
+                    "{lattice}"
+                );
+                assert_eq!(
+                    lattice.is_horizontal_join_of_total_orders(),
+                    expected,
+                    "{lattice}"
+                );
+            }
         }
     }
 }

@@ -27,6 +27,8 @@ jobs:
       run: cargo clippy --all-targets -- -D warnings
     - name: Run tests
       run: cargo test --all-targets --verbose
+    - name: Run doctests
+      run: cargo test --doc --verbose
     - name: Check documentation
       env:
         RUSTDOCFLAGS: -D warnings

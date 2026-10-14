@@ -89,6 +89,32 @@ pub(crate) fn intersection(left: &BitVec, right: &BitVec) -> BitVec {
     intersection
 }
 
+/// Returns whether `(first | second) & mask == target`, for equally sized
+/// vectors.
+pub(crate) fn union_within_equals(
+    first: &BitVec,
+    second: &BitVec,
+    mask: &BitVec,
+    target: &BitVec,
+) -> bool {
+    debug_assert!(
+        [second, mask, target]
+            .iter()
+            .all(|other| other.len() == first.len())
+    );
+    let bits_per_word = usize::BITS as usize;
+    let full_words = first.len() / bits_per_word;
+    let remainder = first.len() % bits_per_word;
+    let (first, second) = (first.as_raw_slice(), second.as_raw_slice());
+    let (mask, target) = (mask.as_raw_slice(), target.as_raw_slice());
+    let difference = |word: usize| ((first[word] | second[word]) & mask[word]) ^ target[word];
+
+    if (0..full_words).any(|word| difference(word) != 0) {
+        return false;
+    }
+    remainder == 0 || difference(full_words) & ((1usize << remainder) - 1) == 0
+}
+
 /// Removes every bit set in `right` from `left` in place.
 pub(crate) fn difference_assign(left: &mut BitVec, right: &BitVec) {
     debug_assert_eq!(left.len(), right.len());

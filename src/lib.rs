@@ -17,7 +17,7 @@
 //! fn main() -> hccr::Result<()> {
 //!     // Build lattices from standard constructions...
 //!     let c3 = chain(3);
-//!     let fusion = horizontal_join([&c3, &c3, &c3])?;
+//!     let joined = horizontal_join([&c3, &c3, &c3])?;
 //!     let square = product([chain(1), chain(1)]);
 //!
 //!     // ...or from labels and cover relations.
@@ -27,12 +27,12 @@
 //!     )?;
 //!
 //!     // Elements are named by labels, and found again by label.
-//!     let x = fusion.id((1, 2))?;
-//!     assert!(fusion.leq(x, fusion.top()));
+//!     let x = joined.id((1, 2))?;
+//!     assert!(joined.leq(x, joined.top()));
 //!     assert_eq!(square.label(square.top()).to_string(), "(1, 1)");
 //!
 //!     // Transfer systems.
-//!     assert_eq!(fusion.transfer_systems().size(), 298);
+//!     assert_eq!(joined.transfer_systems().size(), 298);
 //!     assert_eq!(pentagon.transfer_system_count(), 26);
 //!     let t = pentagon.transfer_system_generated_by([pentagon.edge("a", "1")?])?;
 //!     assert_eq!(t.to_string(), "{0 -> c, a -> b, a -> 1}");
@@ -41,7 +41,8 @@
 //!     let (_, inclusions) = Lattice::horizontal_join_with_inclusions([&c3, &c3, &c3])?;
 //!     let middle = &inclusions[1];
 //!     let s = c3.transfer_system_generated_by([(0, 3)])?;
-//!     assert!(s.pushforward(middle)?.contains_relation((middle.apply(0), middle.apply(3)).into()));
+//!     let image = (middle.apply(0), middle.apply(3));
+//!     assert!(s.pushforward(middle)?.contains_relation(image.into()));
 //!     Ok(())
 //! }
 //! ```
@@ -65,15 +66,42 @@
 //! pushout-closed duals, and [`model_structure`] constructs model structures
 //! from suitable intervals of transfer systems. [`transfer_morphism`]
 //! constructs the pushforward and pullback operations induced by monotone
-//! maps, which are described in [`morphism`]. [`tikz`] draws all of these.
+//! maps, which are described in [`morphism`].
 //!
 //! Errors from every module convert into the single type [`Error`], so
 //! `fn main() -> hccr::Result<()>` with `?` works throughout.
 //!
+//! # Drawing
+//!
+//! [`tikz`] draws posets, lattices and lattices of transfer systems as TikZ
+//! pictures, with a choice of layouts. Lattices of transfer systems show each
+//! transfer system as a small picture of the underlying lattice:
+//!
+//! ```
+//! use hccr::prelude::*;
+//!
+//! let picture = chain(2).transfer_systems().to_tikz();
+//! let latex = picture.to_standalone_document();
+//! assert!(latex.contains("\\begin{tikzpicture}"));
+//! ```
+//!
+//! # Formal concept analysis
+//!
+//! Transfer systems are enumerated as the formal concepts of a formal context,
+//! using the [`fcars`] crate, which is re-exported. The same bridge is
+//! available directly: [`Lattice::from_formal_context`](lattice::Lattice::from_formal_context)
+//! builds a concept lattice, and
+//! [`Lattice::standard_context`](lattice::Lattice::standard_context) goes the
+//! other way.
+//!
 //! # Groups
 //!
 //! The optional `groups` feature adds finite group actions and invariant
-//! transfer and cotransfer systems, using GAP for the group theory. GAP is
+//! transfer and cotransfer systems, using GAP for the group theory:
+//! `g_lattice` for lattices with a group action, such as subgroup lattices;
+//! `g_transfer_lattice` and `g_cotransfer_lattice` for invariant transfer and
+//! cotransfer systems; and `subgroup_morphism` and `g_transfer_morphism` for
+//! maps induced by group homomorphisms, including Rubin's functors. GAP is
 //! re-exported as `hccr::gap`, so no separate dependency is needed:
 //!
 //! ```no_run
@@ -122,6 +150,9 @@ pub mod model_structure;
 pub mod g_lattice;
 
 #[cfg(feature = "groups")]
+pub mod g_transfer_lattice;
+
+#[cfg(feature = "groups")]
 pub mod subgroup_morphism;
 
 #[cfg(feature = "groups")]
@@ -131,6 +162,11 @@ pub mod g_transfer_morphism;
 pub mod g_cotransfer_lattice;
 
 pub use error::{Error, Result};
+
+/// The formal concept analysis crate, re-exported so that its
+/// [`FormalContext`](fcars::FormalContext) type matches the one hccr uses, as
+/// in [`Lattice::from_formal_context`](lattice::Lattice::from_formal_context).
+pub use fcars;
 
 /// The GAP interface, re-exported from [`gap_sys`] so that it needs no
 /// separate dependency. For example, `hccr::gap::eval("SymmetricGroup(4);")`.

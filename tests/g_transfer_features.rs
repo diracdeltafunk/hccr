@@ -1,7 +1,10 @@
 #![cfg(feature = "groups")]
 
-use hccr::g_lattice::{GLattice, GTransferSystem};
+use hccr::g_lattice::{GLattice, RelationOrbitLabel, SubgroupGLattice};
+use hccr::g_transfer_lattice::{GTransferSystem, GTransferSystemError};
 use hccr::lattice::Lattice;
+use hccr::poset::{Edge, EdgeSet};
+use std::collections::HashSet;
 use std::error::Error;
 
 #[test]
@@ -144,6 +147,62 @@ fn saturated_g_transfer_systems_form_the_claimed_containment_lattice_and_pairs_e
     Ok(())
 }
 
+#[test]
+fn minimal_generating_set_checks_reject_invalid_relations_even_with_identities()
+-> Result<(), Box<dyn Error>> {
+    let g_lattice = swapping_diamond()?;
+    let size = g_lattice.size();
+    let top = g_lattice.top();
+    let left = g_lattice.id("left")?;
+    let right = g_lattice.id("right")?;
+    let system = g_lattice.complete_transfer_system();
+    let cosystem = g_lattice.complete_cotransfer_system();
+
+    // An out-of-range identity edge is invalid input, not a redundant generator.
+    let out_of_range = Edge::new(size, size);
+    assert_eq!(
+        system.is_minimal_generating_set([out_of_range]),
+        Err(GTransferSystemError::EdgeOutOfBounds {
+            edge: out_of_range,
+            lattice_size: size,
+        })
+    );
+    assert_eq!(
+        system.is_minimal_generating_set([out_of_range]).is_err(),
+        system.is_generated_by([out_of_range]).is_err()
+    );
+    assert_eq!(
+        system.is_minimal_generating_set([out_of_range]).is_err(),
+        cosystem.is_minimal_generating_set([out_of_range]).is_err()
+    );
+
+    // An invalid generator is reported even when an identity is also supplied.
+    let identity = Edge::new(top, top);
+    let non_relation = Edge::new(left, right);
+    assert_eq!(
+        system.is_minimal_generating_set([identity, non_relation]),
+        Err(GTransferSystemError::NotLatticeRelation { edge: non_relation })
+    );
+    assert_eq!(
+        system.is_minimal_generating_set([identity, Edge::new(top, size)]),
+        Err(GTransferSystemError::EdgeOutOfBounds {
+            edge: Edge::new(top, size),
+            lattice_size: size,
+        })
+    );
+
+    // A valid identity still makes a generating collection redundant.
+    let mut generators = system
+        .minimal_generating_set()
+        .iter()
+        .map(|label| label.canonical_representative())
+        .collect::<Vec<_>>();
+    assert!(system.is_minimal_generating_set(generators.iter().copied())?);
+    generators.push(identity);
+    assert!(!system.is_minimal_generating_set(generators)?);
+    Ok(())
+}
+
 fn contained(lower: &GTransferSystem, upper: &GTransferSystem) -> bool {
     let by_relations = lower
         .proper_relations()
@@ -168,4 +227,98 @@ fn swapping_diamond() -> Result<GLattice, Box<dyn Error>> {
         &group,
         vec![vec![0, 2, 1, 3]],
     )?)
+}
+
+/// Expands a set of relation-orbit labels to the set of all their relations.
+fn expand_orbits<'a>(
+    g_lattice: &GLattice,
+    labels: impl Iterator<Item = &'a RelationOrbitLabel>,
+) -> EdgeSet {
+    labels
+        .flat_map(|label| {
+            g_lattice
+                .relation_orbit(label.canonical_representative())
+                .unwrap()
+                .relations()
+        })
+        .collect()
+}
+
+#[test]
+fn g_transfer_context_closed_extents_are_exactly_the_g_transfer_systems()
+-> Result<(), Box<dyn Error>> {
+    let s3 = SubgroupGLattice::from_gap("SymmetricGroup(3)")?;
+    for g_lattice in [swapping_diamond()?, GLattice::clone(&s3)] {
+        let context = g_lattice.transfer_context();
+        let concepts = context.all_concepts();
+        let extents = concepts
+            .iter()
+            .map(|concept| expand_orbits(&g_lattice, concept.extent_names_iter()))
+            .collect::<HashSet<_>>();
+        assert_eq!(extents.len(), concepts.len());
+        let systems = g_lattice
+            .transfer_systems()
+            .systems()
+            .iter()
+            .map(|system| system.proper_relations())
+            .collect::<HashSet<_>>();
+        assert_eq!(extents, systems);
+    }
+    Ok(())
+}
+
+/// All inclusion-minimal sets of orbit generators of a G-transfer system
+/// have the same size, the generator complexity (Adamyk et al.,
+/// arXiv:2506.11159, Corollary 2.14), and the width is the number of
+/// G-orbits of meet-irreducible elements (Proposition 4.5 there). Checked by
+/// brute force over subsets of orbits, using generation as the only
+/// primitive.
+#[test]
+fn minimal_orbit_generating_sets_have_a_common_size_counted_by_known_invariants()
+-> Result<(), Box<dyn Error>> {
+    for expression in [
+        "SymmetricGroup(3)",
+        "DihedralGroup(8)",
+        "QuaternionGroup(8)",
+    ] {
+        let subgroups = SubgroupGLattice::from_gap(expression)?;
+        let g_lattice: &GLattice = &subgroups;
+        for system in g_lattice.transfer_systems().systems() {
+            let orbits = system.relation_orbit_labels();
+            let count = orbits.len();
+            let generates = (0u32..1 << count)
+                .map(|mask| {
+                    let subset = (0..count)
+                        .filter(|&i| mask >> i & 1 == 1)
+                        .map(|i| orbits[i].canonical_representative());
+                    g_lattice.transfer_system_generated_by(subset).unwrap() == *system
+                })
+                .collect::<Vec<_>>();
+            let sizes = (0u32..1 << count)
+                .filter(|&mask| {
+                    generates[mask as usize]
+                        && (0..count)
+                            .filter(|&i| mask >> i & 1 == 1)
+                            .all(|i| !generates[(mask & !(1 << i)) as usize])
+                })
+                .map(|mask| mask.count_ones() as usize)
+                .collect::<HashSet<_>>();
+            assert_eq!(sizes, HashSet::from([system.generator_complexity()]));
+        }
+
+        let lattice = g_lattice.lattice();
+        let meet_irreducibles = lattice.meet_irreducibles();
+        let meet_irreducible_orbits = g_lattice
+            .relation_orbits()
+            .iter()
+            .map(|orbit| orbit.canonical_representative())
+            .filter(|edge| edge.is_identity() && meet_irreducibles.contains(&edge.from))
+            .count();
+        assert_eq!(
+            g_lattice.transfer_system_width(),
+            meet_irreducible_orbits,
+            "{expression}"
+        );
+    }
+    Ok(())
 }
